@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 - 2026-06-19
+
+- Discord の rich copy に含まれる timestamp metadata を読み飛ばせるようにしました。
+- `import-visible-text --dry-run` と MCP `import_visible_discord_text(dry_run=true)` で、保存前 preview を確認できるようにしました。
+
 ## 0.2.0 - 2026-06-18
 
 - ChatGPT connector 向けに streamable HTTP MCP entrypoint を追加しました。

@@ -40,6 +40,7 @@ def build_server(
         text: str,
         guild_label: str = "example-community",
         channel_label: str = "general",
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Discord の可視テキストを local event store に取り込みます。"""
         return import_visible_text(
@@ -47,6 +48,7 @@ def build_server(
             path=store,
             guild_label=guild_label,
             channel_label=channel_label,
+            dry_run=dry_run,
         )
 
     @server.tool()

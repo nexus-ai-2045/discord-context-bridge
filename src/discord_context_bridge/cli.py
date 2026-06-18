@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     visible.add_argument("--input", type=Path)
     visible.add_argument("--guild", default="example-community")
     visible.add_argument("--channel", default="general")
+    visible.add_argument("--dry-run", action="store_true", help="保存せずに parsing 結果だけ確認する")
     visible.set_defaults(handler=_cmd_import_visible_text)
 
     briefing = sub.add_parser("fast-briefing", help="直近文脈の短い briefing を表示する")
@@ -42,6 +43,7 @@ def _cmd_import_visible_text(args: argparse.Namespace) -> int:
                 path=args.store,
                 guild_label=args.guild,
                 channel_label=args.channel,
+                dry_run=args.dry_run,
             )
         )
     )
