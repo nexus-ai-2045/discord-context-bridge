@@ -68,6 +68,14 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   fast-briefing
 ```
 
+ChatGPT connector や tunnel に出す前に、event store に private data らしきものがないか確認します。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store /tmp/discord-context-events.ndjson \
+  audit-store
+```
+
 返信意図を確認します。
 
 ```bash
@@ -90,6 +98,7 @@ MCP tool は 3 つです。
 
 - `import_visible_discord_text`: Discord の可視テキストを local event store に取り込みます。
 - `get_fast_briefing`: 直近文脈の短い briefing を返します。
+- `audit_event_store_before_tunnel`: tunnel 公開前に local event store の安全性を確認します。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
 
 送信 tool はありません。返信は人間が Discord 側で送信する前提です。
@@ -111,6 +120,7 @@ ChatGPT の connector URL に `https://.../mcp` を登録します。
 注意:
 
 - tunnel で外部公開する前に、event store に実 private data が混ざっていないか確認してください。
+- `audit-store` または `audit_event_store_before_tunnel` が `safe_for_tunnel=true` になることを確認してください。
 - この package は送信 tool を公開しません。
 - Discord token、cookie、webhook URL は不要です。
 

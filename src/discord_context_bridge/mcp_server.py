@@ -4,7 +4,14 @@ import argparse
 from pathlib import Path
 from typing import Any, Callable
 
-from .core import DEFAULT_STORE, fast_briefing, import_visible_text, load_events, review_reply_intent
+from .core import (
+    DEFAULT_STORE,
+    audit_event_store,
+    fast_briefing,
+    import_visible_text,
+    load_events,
+    review_reply_intent,
+)
 
 MCP_DEPENDENCY_HELP = (
     "MCP server を使うには optional dependency が必要です: "
@@ -55,6 +62,11 @@ def build_server(
     def get_fast_briefing(limit: int = 3) -> dict[str, Any]:
         """直近文脈の短い briefing を返します。"""
         return fast_briefing(load_events(store), limit=limit)
+
+    @server.tool()
+    def audit_event_store_before_tunnel() -> dict[str, Any]:
+        """tunnel 公開前に event store の安全性を確認します。"""
+        return audit_event_store(store)
 
     @server.tool()
     def review_reply_before_send(draft: str) -> dict[str, Any]:
