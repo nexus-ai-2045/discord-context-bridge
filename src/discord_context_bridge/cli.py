@@ -6,7 +6,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .core import DEFAULT_STORE, fast_briefing, import_visible_text, load_events, review_reply_intent
+from .core import (
+    DEFAULT_STORE,
+    audit_event_store,
+    fast_briefing,
+    import_visible_text,
+    load_events,
+    review_reply_intent,
+)
 
 
 def _json(payload: Any) -> str:
@@ -27,6 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     briefing = sub.add_parser("fast-briefing", help="直近文脈の短い briefing を表示する")
     briefing.set_defaults(handler=_cmd_fast_briefing)
+
+    audit = sub.add_parser("audit-store", help="tunnel 公開前に event store の安全性を確認する")
+    audit.set_defaults(handler=_cmd_audit_store)
 
     review = sub.add_parser("review-intent", help="返信意図を直近文脈と照合する")
     review.add_argument("--draft", required=True, help="送信前に確認したい返信 draft")
@@ -53,6 +63,12 @@ def _cmd_import_visible_text(args: argparse.Namespace) -> int:
 def _cmd_fast_briefing(args: argparse.Namespace) -> int:
     print(_json(fast_briefing(load_events(args.store))))
     return 0
+
+
+def _cmd_audit_store(args: argparse.Namespace) -> int:
+    report = audit_event_store(args.store)
+    print(_json(report))
+    return 0 if report["safe_for_tunnel"] else 2
 
 
 def _cmd_review_intent(args: argparse.Namespace) -> int:

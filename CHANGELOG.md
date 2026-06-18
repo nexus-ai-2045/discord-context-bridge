@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-06-19
+
+- tunnel 公開前に local event store を監査する `audit-store` CLI と MCP tool を追加しました。
+- Discord webhook URL、token 風文字列、Discord snowflake ID、local absolute path を検出します。
+
 ## 0.3.0 - 2026-06-19
 
 - Discord の rich copy に含まれる timestamp metadata を読み飛ばせるようにしました。
