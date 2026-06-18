@@ -11,6 +11,7 @@ mcp = ["mcp>=1.28,<2"]
 [project.scripts]
 discord-context-bridge = "discord_context_bridge.cli:main"
 discord-context-bridge-mcp = "discord_context_bridge.mcp_server:main"
+discord-context-bridge-mcp-http = "discord_context_bridge.mcp_server:main_http"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
