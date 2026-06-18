@@ -26,6 +26,14 @@ TIMESTAMP_METADATA_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})$",
     re.IGNORECASE,
 )
+DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d{17,20}/[A-Za-z0-9_-]+")
+DISCORD_TOKEN_RE = re.compile(
+    r"(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})"
+)
+DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
+LOCAL_ABSOLUTE_PATH_RE = re.compile(
+    r"(?:/Users/[^ \n]+|/home/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
+)
 
 
 class DisabledCapability(RuntimeError):
@@ -102,6 +110,44 @@ def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
         if line.strip():
             events.append(DiscordEvent.from_dict(json.loads(line)))
     return events
+
+
+def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
+    events = load_events(path)
+    issues: list[dict[str, Any]] = []
+    checks = [
+        ("discord_webhook_url", DISCORD_WEBHOOK_RE),
+        ("discord_token", DISCORD_TOKEN_RE),
+        ("local_absolute_path", LOCAL_ABSOLUTE_PATH_RE),
+        ("discord_snowflake_id", DISCORD_SNOWFLAKE_RE),
+    ]
+    for index, event in enumerate(events):
+        fields = {
+            "author_label": event.author_label,
+            "guild_label": event.guild_label,
+            "channel_label": event.channel_label,
+            "text_snippet": event.text_snippet,
+        }
+        for field, value in fields.items():
+            for kind, pattern in checks:
+                if pattern.search(value):
+                    issues.append(
+                        {
+                            "event_index": index,
+                            "event_id": event.event_id,
+                            "field": field,
+                            "kind": kind,
+                        }
+                    )
+                    break
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "store": str(path),
+        "event_count": len(events),
+        "issue_count": len(issues),
+        "safe_for_tunnel": not issues,
+        "issues": issues,
+    }
 
 
 def append_event(event: DiscordEvent, path: Path = DEFAULT_STORE) -> bool:

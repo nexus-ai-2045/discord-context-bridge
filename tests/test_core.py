@@ -5,6 +5,7 @@ import pytest
 
 from discord_context_bridge import (
     DisabledCapability,
+    audit_event_store,
     fast_briefing,
     import_visible_text,
     load_events,
@@ -13,6 +14,7 @@ from discord_context_bridge import (
     send_message,
 )
 from discord_context_bridge.cli import build_parser
+from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge import mcp_server
 
 FIXTURE = Path(__file__).parent / "fixtures" / "visible_text.txt"
@@ -64,6 +66,38 @@ def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
     assert not store.exists()
 
 
+def test_audit_event_store_reports_safe_empty_store(tmp_path):
+    report = audit_event_store(tmp_path / "events.ndjson")
+
+    assert report["safe_for_tunnel"] is True
+    assert report["event_count"] == 0
+    assert report["issues"] == []
+
+
+def test_audit_event_store_flags_private_identifiers(tmp_path):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(
+        "\n".join(
+            [
+                "member-a: webhook is https://discord.com/api/webhooks/123456789012345678/token",
+                "member-b: user id 987654321098765432 should not be stored",
+                "member-c: local path /Users/example/Library/Application Support/Discord",
+            ]
+        ),
+        path=store,
+    )
+
+    report = audit_event_store(store)
+
+    assert report["safe_for_tunnel"] is False
+    assert report["event_count"] == 3
+    assert [issue["kind"] for issue in report["issues"]] == [
+        "discord_webhook_url",
+        "discord_snowflake_id",
+        "local_absolute_path",
+    ]
+
+
 def test_fast_briefing_and_reply_review(tmp_path):
     store = tmp_path / "events.ndjson"
     import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store)
@@ -98,9 +132,9 @@ def test_package_version_tracks_current_release():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert metadata["project"]["version"] == "0.3.0"
-    assert "## 0.3.0 - 2026-06-19" in changelog
-    assert "streamable HTTP MCP" in changelog
+    assert metadata["project"]["version"] == "0.4.0"
+    assert "## 0.4.0 - 2026-06-19" in changelog
+    assert "audit-store" in changelog
 
 
 def test_user_facing_runtime_messages_are_japanese():
@@ -119,6 +153,18 @@ def test_cli_help_uses_japanese_user_facing_text():
 
     assert "可視会話テキスト" in help_text
     assert "直近文脈" in help_text
+    assert "audit-store" in help_text
+
+
+def test_cli_audit_store_returns_nonzero_when_unsafe(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text("member-a: https://discord.com/api/webhooks/123456789012345678/token", path=store)
+
+    result = cli_main(["--store", str(store), "audit-store"])
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"safe_for_tunnel": false' in output
 
 
 def test_mcp_dependency_error_is_japanese(monkeypatch):
@@ -157,16 +203,19 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert server.settings["port"] == 8000
     assert server.settings["streamable_http_path"] == "/mcp"
     assert sorted(server.tools) == [
+        "audit_event_store_before_tunnel",
         "get_fast_briefing",
         "import_visible_discord_text",
         "review_reply_before_send",
     ]
 
     imported = server.tools["import_visible_discord_text"]("member-a: 前提を確認したいです", dry_run=True)
+    audit = server.tools["audit_event_store_before_tunnel"]()
     review = server.tools["review_reply_before_send"]("前提を確認してから返信します")
 
     assert imported["language"] == "ja"
     assert imported["dry_run"] is True
+    assert audit["safe_for_tunnel"] is True
     assert review["language"] == "ja"
 
 
