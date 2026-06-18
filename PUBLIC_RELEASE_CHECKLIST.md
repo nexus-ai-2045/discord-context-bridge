@@ -27,6 +27,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store を読むだけで、Discord への送信 tool を公開しない。
+- ChatGPT connector 用の HTTP MCP は `/mcp` だけを公開し、tunnel 前に event store の private data を確認する。
 - fixture は合成データで、公開してよい。
 - README が、この package の「できること / しないこと」を説明している。
 - SECURITY.md が sensitive data exposure の扱いを説明している。
@@ -42,6 +43,7 @@ from discord_context_bridge.mcp_server import build_server
 server = build_server()
 assert getattr(server, "name", "") == "discord-context-bridge"
 PY
+discord-context-bridge-mcp-http --help
 rg -n "(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|discord(app)?\\.com/api/webhooks|Authorization|Bearer |mfa\\.|[A-Za-z0-9_-]{24}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27})" .
 ```
 

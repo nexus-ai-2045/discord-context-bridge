@@ -100,8 +100,9 @@ def test_mcp_dependency_error_is_japanese(monkeypatch):
 
 def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     class FakeFastMCP:
-        def __init__(self, name):
+        def __init__(self, name, **settings):
             self.name = name
+            self.settings = settings
             self.tools = {}
 
         def tool(self):
@@ -119,6 +120,9 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     server = mcp_server.build_server(store=tmp_path / "events.ndjson")
 
     assert server.name == "discord-context-bridge"
+    assert server.settings["host"] == "127.0.0.1"
+    assert server.settings["port"] == 8000
+    assert server.settings["streamable_http_path"] == "/mcp"
     assert sorted(server.tools) == [
         "get_fast_briefing",
         "import_visible_discord_text",
@@ -130,3 +134,40 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
 
     assert imported["language"] == "ja"
     assert review["language"] == "ja"
+
+
+def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeFastMCP:
+        def __init__(self, name, **settings):
+            self.name = name
+            self.settings = settings
+
+        def tool(self):
+            def register(func):
+                return func
+
+            return register
+
+    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+
+    result = mcp_server.main_http(
+        [
+            "--store",
+            str(tmp_path / "events.ndjson"),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8787",
+            "--path",
+            "/mcp",
+        ],
+        run=lambda server: calls.append(server),
+    )
+
+    assert result == 0
+    assert calls[0].settings["host"] == "0.0.0.0"
+    assert calls[0].settings["port"] == 8787
+    assert calls[0].settings["streamable_http_path"] == "/mcp"
+    assert "streamable HTTP MCP server" in mcp_server.build_http_parser().format_help()
