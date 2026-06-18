@@ -84,6 +84,24 @@ MCP tool は 3 つです。
 
 送信 tool はありません。返信は人間が Discord 側で送信する前提です。
 
+### ChatGPT connector 用に HTTP で起動する
+
+ChatGPT Apps / Connector から試す場合は、streamable HTTP MCP server として `/mcp` を出します。
+
+```bash
+python3 -m pip install ".[mcp]"
+discord-context-bridge-mcp-http --host 127.0.0.1 --port 8000 --path /mcp
+```
+
+local で起動したあと、Secure MCP Tunnel、ngrok、Cloudflare Tunnel などで HTTPS URL を作り、
+ChatGPT の connector URL に `https://.../mcp` を登録します。
+
+注意:
+
+- tunnel で外部公開する前に、event store に実 private data が混ざっていないか確認してください。
+- この package は送信 tool を公開しません。
+- Discord token、cookie、webhook URL は不要です。
+
 ## データ契約
 
 event store は newline-delimited JSON です。local-only で扱い、実会話データを含む場合は

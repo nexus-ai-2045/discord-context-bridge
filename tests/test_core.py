@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -70,6 +71,15 @@ def test_user_facing_docs_declare_japanese_default():
     assert "CLI / API のユーザー向けメッセージが日本語" in checklist
 
 
+def test_package_version_tracks_http_mcp_release():
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert metadata["project"]["version"] == "0.2.0"
+    assert "## 0.2.0 - 2026-06-18" in changelog
+    assert "streamable HTTP MCP" in changelog
+
+
 def test_user_facing_runtime_messages_are_japanese():
     gap = review_reply_intent("", [])
 
@@ -100,8 +110,9 @@ def test_mcp_dependency_error_is_japanese(monkeypatch):
 
 def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     class FakeFastMCP:
-        def __init__(self, name):
+        def __init__(self, name, **settings):
             self.name = name
+            self.settings = settings
             self.tools = {}
 
         def tool(self):
@@ -119,6 +130,9 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     server = mcp_server.build_server(store=tmp_path / "events.ndjson")
 
     assert server.name == "discord-context-bridge"
+    assert server.settings["host"] == "127.0.0.1"
+    assert server.settings["port"] == 8000
+    assert server.settings["streamable_http_path"] == "/mcp"
     assert sorted(server.tools) == [
         "get_fast_briefing",
         "import_visible_discord_text",
@@ -130,3 +144,44 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
 
     assert imported["language"] == "ja"
     assert review["language"] == "ja"
+
+
+def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeFastMCP:
+        def __init__(self, name, **settings):
+            self.name = name
+            self.settings = settings
+
+        def tool(self):
+            def register(func):
+                return func
+
+            return register
+
+        def run(self, **kwargs):
+            calls.append((self, kwargs))
+
+    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+
+    result = mcp_server.main_http(
+        [
+            "--store",
+            str(tmp_path / "events.ndjson"),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8787",
+            "--path",
+            "/mcp",
+        ]
+    )
+
+    assert result == 0
+    server, run_kwargs = calls[0]
+    assert server.settings["host"] == "0.0.0.0"
+    assert server.settings["port"] == 8787
+    assert server.settings["streamable_http_path"] == "/mcp"
+    assert run_kwargs == {"transport": "streamable-http", "mount_path": "/mcp"}
+    assert "streamable HTTP MCP server" in mcp_server.build_http_parser().format_help()
