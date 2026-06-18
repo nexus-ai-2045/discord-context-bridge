@@ -16,6 +16,7 @@ from discord_context_bridge.cli import build_parser
 from discord_context_bridge import mcp_server
 
 FIXTURE = Path(__file__).parent / "fixtures" / "visible_text.txt"
+RICH_COPY_FIXTURE = Path(__file__).parent / "fixtures" / "discord_rich_copy.txt"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -26,6 +27,15 @@ def test_parse_visible_text_supports_copied_blocks():
     assert events[0].text_snippet == "Can you clarify the premise before we reply?"
     assert events[2].text_snippet == "I think the reply should mention the audience."
     assert all(event.actions_allowed == ["read"] for event in events)
+
+
+def test_parse_visible_text_supports_discord_rich_copy_metadata():
+    events = parse_visible_text(RICH_COPY_FIXTURE.read_text(encoding="utf-8"))
+
+    assert [event.author_label for event in events] == ["member-a", "member-b", "member-c"]
+    assert events[0].text_snippet == "前提を確認してから返事したいです。 公開時期の話ですよね。"
+    assert events[1].text_snippet == "そうです。相手に伝わる言い方にしたいです。"
+    assert events[2].text_snippet == "返信前に文脈を揃えましょう。"
 
 
 def test_import_visible_text_appends_and_deduplicates(tmp_path):
@@ -39,6 +49,19 @@ def test_import_visible_text_appends_and_deduplicates(tmp_path):
     assert first["language"] == "ja"
     assert second["duplicate"] == 3
     assert len(load_events(store)) == 3
+
+
+def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
+    store = tmp_path / "events.ndjson"
+
+    result = import_visible_text(RICH_COPY_FIXTURE.read_text(encoding="utf-8"), path=store, dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["parsed"] == 3
+    assert result["appended"] == 0
+    assert result["preview"][0]["author_label"] == "member-a"
+    assert result["briefing"]["event_count"] == 3
+    assert not store.exists()
 
 
 def test_fast_briefing_and_reply_review(tmp_path):
@@ -71,12 +94,12 @@ def test_user_facing_docs_declare_japanese_default():
     assert "CLI / API のユーザー向けメッセージが日本語" in checklist
 
 
-def test_package_version_tracks_http_mcp_release():
+def test_package_version_tracks_current_release():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert metadata["project"]["version"] == "0.2.0"
-    assert "## 0.2.0 - 2026-06-18" in changelog
+    assert metadata["project"]["version"] == "0.3.0"
+    assert "## 0.3.0 - 2026-06-19" in changelog
     assert "streamable HTTP MCP" in changelog
 
 
@@ -139,10 +162,11 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "review_reply_before_send",
     ]
 
-    imported = server.tools["import_visible_discord_text"]("member-a: 前提を確認したいです")
+    imported = server.tools["import_visible_discord_text"]("member-a: 前提を確認したいです", dry_run=True)
     review = server.tools["review_reply_before_send"]("前提を確認してから返信します")
 
     assert imported["language"] == "ja"
+    assert imported["dry_run"] is True
     assert review["language"] == "ja"
 
 
