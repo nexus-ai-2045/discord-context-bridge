@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -68,6 +69,15 @@ def test_user_facing_docs_declare_japanese_default():
     assert "基本言語は日本語" in readme
     assert "Language Boundary" in checklist
     assert "CLI / API のユーザー向けメッセージが日本語" in checklist
+
+
+def test_package_version_tracks_http_mcp_release():
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert metadata["project"]["version"] == "0.2.0"
+    assert "## 0.2.0 - 2026-06-18" in changelog
+    assert "streamable HTTP MCP" in changelog
 
 
 def test_user_facing_runtime_messages_are_japanese():
@@ -150,6 +160,9 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
 
             return register
 
+        def run(self, **kwargs):
+            calls.append((self, kwargs))
+
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
 
     result = mcp_server.main_http(
@@ -162,12 +175,13 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             "8787",
             "--path",
             "/mcp",
-        ],
-        run=lambda server: calls.append(server),
+        ]
     )
 
     assert result == 0
-    assert calls[0].settings["host"] == "0.0.0.0"
-    assert calls[0].settings["port"] == 8787
-    assert calls[0].settings["streamable_http_path"] == "/mcp"
+    server, run_kwargs = calls[0]
+    assert server.settings["host"] == "0.0.0.0"
+    assert server.settings["port"] == 8787
+    assert server.settings["streamable_http_path"] == "/mcp"
+    assert run_kwargs == {"transport": "streamable-http", "mount_path": "/mcp"}
     assert "streamable HTTP MCP server" in mcp_server.build_http_parser().format_help()
