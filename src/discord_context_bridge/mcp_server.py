@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,9 +20,20 @@ def _load_fastmcp() -> Any:
     return FastMCP
 
 
-def build_server(*, store: Path = DEFAULT_STORE) -> Any:
+def build_server(
+    *,
+    store: Path = DEFAULT_STORE,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    http_path: str = "/mcp",
+) -> Any:
     FastMCP = _load_fastmcp()
-    server = FastMCP("discord-context-bridge")
+    server = FastMCP(
+        "discord-context-bridge",
+        host=host,
+        port=port,
+        streamable_http_path=http_path,
+    )
 
     @server.tool()
     def import_visible_discord_text(
@@ -60,6 +72,33 @@ def main(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = N
         run(server)
     else:
         server.run()
+    return 0
+
+
+def build_http_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Discord Context Bridge を streamable HTTP MCP server として起動する"
+    )
+    parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--path", default="/mcp")
+    return parser
+
+
+def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = None) -> int:
+    parser = build_http_parser()
+    args = parser.parse_args(argv)
+    server = build_server(
+        store=args.store,
+        host=args.host,
+        port=args.port,
+        http_path=args.path,
+    )
+    if run is not None:
+        run(server)
+    else:
+        server.run(transport="streamable-http", mount_path=args.path)
     return 0
 
 

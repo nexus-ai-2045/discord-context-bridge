@@ -1,6 +1,6 @@
 [project]
 name = "discord-context-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Discord の可視会話テキストを扱う local-first な文脈 bridge"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -11,6 +11,7 @@ mcp = ["mcp>=1.28,<2"]
 [project.scripts]
 discord-context-bridge = "discord_context_bridge.cli:main"
 discord-context-bridge-mcp = "discord_context_bridge.mcp_server:main"
+discord-context-bridge-mcp-http = "discord_context_bridge.mcp_server:main_http"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
