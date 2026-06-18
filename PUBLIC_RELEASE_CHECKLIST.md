@@ -29,6 +29,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store を読むだけで、Discord への送信 tool を公開しない。
 - ChatGPT connector 用の HTTP MCP は `/mcp` だけを公開し、tunnel 前に event store の private data を確認する。
+- import は `dry_run` で保存前 preview できる。
 - fixture は合成データで、公開してよい。
 - README が、この package の「できること / しないこと」を説明している。
 - SECURITY.md が sensitive data exposure の扱いを説明している。

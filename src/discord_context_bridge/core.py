@@ -13,6 +13,19 @@ DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
+AUTHOR_WITH_TIMESTAMP_RE = re.compile(
+    r"^(?P<author>.{1,80}?)\s+(?:—|–|-)\s+"
+    r"(?:(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?|"
+    r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?|"
+    r"\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})$",
+    re.IGNORECASE,
+)
+TIMESTAMP_METADATA_RE = re.compile(
+    r"^(?:(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?|"
+    r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?|"
+    r"\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})$",
+    re.IGNORECASE,
+)
 
 
 class DisabledCapability(RuntimeError):
@@ -120,6 +133,10 @@ def looks_like_author_line(line: str) -> bool:
     return bool(re.search(r"[A-Za-z一-龥ぁ-んァ-ン0-9]", line))
 
 
+def looks_like_timestamp_metadata(line: str) -> bool:
+    return bool(TIMESTAMP_METADATA_RE.match(line.strip()))
+
+
 def parse_visible_text(
     text: str,
     *,
@@ -154,6 +171,13 @@ def parse_visible_text(
 
     for raw_line in lines:
         line = TIMESTAMP_RE.sub("", raw_line).strip()
+        if not line or looks_like_timestamp_metadata(line):
+            continue
+        author_with_timestamp = AUTHOR_WITH_TIMESTAMP_RE.match(line)
+        if author_with_timestamp:
+            flush()
+            current_author = author_with_timestamp.group("author").strip()
+            continue
         match = COLON_MESSAGE_RE.match(line)
         if match:
             flush()
@@ -175,6 +199,7 @@ def import_visible_text(
     path: Path = DEFAULT_STORE,
     guild_label: str = "example-community",
     channel_label: str = "general",
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     observed_at = utc_now()
     events = parse_visible_text(
@@ -183,13 +208,16 @@ def import_visible_text(
         channel_label=channel_label,
         observed_at=observed_at,
     )
-    result = append_events(events, path)
+    result = {"appended": 0, "duplicate": 0} if dry_run else append_events(events, path)
+    loaded_events = events if dry_run else load_events(path)
     return {
         **result,
+        "dry_run": dry_run,
         "language": DEFAULT_LANGUAGE,
         "parsed": len(events),
         "store": str(path),
-        "briefing": fast_briefing(load_events(path)),
+        "preview": [event.to_dict() for event in events],
+        "briefing": fast_briefing(loaded_events),
     }
 
 

@@ -50,6 +50,16 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --channel general
 ```
 
+保存前に parsing 結果だけ確認します。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store /tmp/discord-context-events.ndjson \
+  import-visible-text \
+  --input tests/fixtures/discord_rich_copy.txt \
+  --dry-run
+```
+
 briefing を表示します。
 
 ```bash
@@ -83,6 +93,8 @@ MCP tool は 3 つです。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
 
 送信 tool はありません。返信は人間が Discord 側で送信する前提です。
+
+`import_visible_discord_text` は `dry_run=true` で保存前 preview として使えます。
 
 ### ChatGPT connector 用に HTTP で起動する
 
