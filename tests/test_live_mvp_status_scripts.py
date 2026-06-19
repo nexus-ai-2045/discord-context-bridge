@@ -1,4 +1,5 @@
 import sys
+import subprocess
 from pathlib import Path
 
 
@@ -89,3 +90,22 @@ def test_live_mvp_status_builds_capture_source_command_without_fullscreen():
     assert "--capture-region 10,20,300,400" in command
     assert "tesseract {image} stdout -l jpn+eng" in command
     assert "--screenshot-command" not in command
+
+
+def test_live_mvp_status_returns_safe_json_on_ops_timeout(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["ops_check.py"], timeout=0.01)
+
+    monkeypatch.setattr(live_mvp_status.subprocess, "run", fake_run)
+
+    result = live_mvp_status.run_script("ops_check.py", [], timeout=0.01)
+
+    assert result["returncode"] == 124
+    assert result["payload"] == {
+        "ok": False,
+        "issue_count": 1,
+        "failure_stage": "timeout",
+        "reason": "ops_check_timeout",
+        "text_output": "omitted",
+        "outbound_actions": "disabled",
+    }

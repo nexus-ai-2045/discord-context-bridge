@@ -59,15 +59,29 @@ def build_capture_source_command(*, capture_profile: str, capture_region: str, o
 def run_script(script_name: str, args: list[str], *, timeout: float) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT / "scripts"), env.get("PYTHONPATH", "")])
-    completed = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / script_name), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        env=env,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / script_name), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        stage = "ops_check_timeout" if script_name == "ops_check.py" else "script_timeout"
+        return {
+            "returncode": 124,
+            "payload": {
+                "ok": False,
+                "issue_count": 1,
+                "failure_stage": "timeout",
+                "reason": stage,
+                "text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -105,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", default="active-thread")
     parser.add_argument("--min-parsed", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--ops-timeout", type=float, default=90.0, help="ops_check.py の最大秒数")
     parser.add_argument(
         "--skip-preflight",
         action="store_true",
@@ -229,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2
-        ops = run_script("ops_check.py", [], timeout=30)
+        ops = run_script("ops_check.py", [], timeout=args.ops_timeout)
 
     ok = live["returncode"] == 0 and ops["returncode"] == 0 and bool(ops["payload"].get("ok"))
     print(
