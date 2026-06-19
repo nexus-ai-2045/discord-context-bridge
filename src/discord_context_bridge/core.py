@@ -221,6 +221,93 @@ def context_entry_id(kind: str, key: str) -> str:
     return stable_event_id({"kind": kind, "key": key})
 
 
+def normalize_safe_label(label: str) -> str:
+    return " ".join(label.strip().lstrip("#").casefold().split())
+
+
+def unique_safe_labels(labels: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        cleaned = " ".join(str(label).strip().split())
+        normalized = normalize_safe_label(cleaned)
+        if cleaned and normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(cleaned)
+    return unique
+
+
+def context_binding_candidates(kind: str, *, guild_label: str, channel_label: str) -> list[str]:
+    guild = guild_label.strip()
+    channel = channel_label.strip().lstrip("#")
+    if kind == "server":
+        return unique_safe_labels([guild])
+    if kind == "channel":
+        return unique_safe_labels(
+            [
+                channel,
+                f"{guild}/{channel}",
+                f"{guild}:{channel}",
+                f"{guild}#{channel}",
+            ]
+        )
+    if kind == "thread":
+        return unique_safe_labels(
+            [
+                channel,
+                f"{channel}:thread",
+                f"{guild}/{channel}",
+                f"{guild}/{channel}/thread",
+                f"{guild}:{channel}",
+            ]
+        )
+    raise ValueError("kind は server / channel / thread のいずれかです。")
+
+
+def resolve_context_binding(
+    kind: str,
+    *,
+    guild_label: str,
+    channel_label: str,
+    path: Path = DEFAULT_CONTEXT_STORE,
+) -> dict[str, str] | None:
+    candidates = {
+        normalize_safe_label(label)
+        for label in context_binding_candidates(kind, guild_label=guild_label, channel_label=channel_label)
+    }
+    for entry in load_context_library(path):
+        if entry.get("kind") != kind:
+            continue
+        labels = unique_safe_labels([str(entry.get("key") or ""), *list(entry.get("labels") or [])])
+        for label in labels:
+            if normalize_safe_label(label) in candidates:
+                return {
+                    "kind": kind,
+                    "key": str(entry.get("key") or ""),
+                    "matched_label": label,
+                }
+    return None
+
+
+def resolve_context_bindings(
+    *,
+    guild_label: str,
+    channel_label: str,
+    path: Path = DEFAULT_CONTEXT_STORE,
+) -> dict[str, dict[str, str]]:
+    bindings: dict[str, dict[str, str]] = {}
+    for kind in ("server", "channel", "thread"):
+        binding = resolve_context_binding(
+            kind,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            path=path,
+        )
+        if binding:
+            bindings[kind] = binding
+    return bindings
+
+
 def upsert_context_document(
     kind: str,
     key: str,
@@ -228,6 +315,7 @@ def upsert_context_document(
     *,
     path: Path = DEFAULT_CONTEXT_STORE,
     source: str = "manual",
+    labels: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     if kind not in {"server", "channel", "thread"}:
         raise ValueError("kind は server / channel / thread のいずれかです。")
@@ -241,6 +329,7 @@ def upsert_context_document(
         "id": entry_id,
         "kind": kind,
         "key": key,
+        "labels": unique_safe_labels(labels or []),
         "source": source,
         "text": text.strip(),
         "summary": compact_context_text(text),
@@ -293,6 +382,7 @@ def audit_context_store(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
             find_private_issues(
                 {
                     "key": str(entry.get("key") or ""),
+                    "labels": " ".join(str(label) for label in entry.get("labels") or []),
                     "source": str(entry.get("source") or ""),
                     "summary": str(entry.get("summary") or ""),
                     "text": str(entry.get("text") or ""),
