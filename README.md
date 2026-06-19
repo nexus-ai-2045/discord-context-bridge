@@ -327,7 +327,8 @@ Discord の会話領域が分かっている場合は、環境変数で private 
 python3 scripts/live_mvp_status.py \
   --capture-profile macos-screencapture-region \
   --capture-region "0,0,1400,1000" \
-  --ocr-language eng
+  --ocr-language eng \
+  --ops-timeout 90
 ```
 
 adapter probe と live smoke だけを切り分けたい場合は E2E check を使います。
