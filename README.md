@@ -136,6 +136,26 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --server-context-key nexus
 ```
 
+safe label だけで文脈庫を補助参照したい場合は、文脈に安全な別名を付けて保存し、
+`context-passport` / `watch-passport` で `--auto-context-bindings` を使えます。
+明示した `--server-context-key` などがある場合は、そちらを優先します。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  context-upsert \
+  --kind channel \
+  --key planning \
+  --label example-community/safe-planning \
+  --input /path/to/channel-purpose.txt
+
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  context-passport \
+  --source-command "python3 scripts/read_visible_discord_text.py" \
+  --guild example-community \
+  --channel safe-planning \
+  --auto-context-bindings
+```
+
 local observer command を監視し、Discord の見えている会話が変わった時だけ文脈パスポートを更新できます。
 まずは返信を作る前に、スレッド目的、参加者の温度感、暗黙前提、ルール注意を追いかける入口として使います。
 
@@ -429,6 +449,10 @@ commit しません。
 
 label は human-safe な alias にしてください。その境界を明示的に選んだ場合を除き、
 実 private identifier は保存しません。
+
+context store の `labels` も同じく human-safe な alias だけを入れます。
+`example-community/safe-planning` のような guild/channel label は自動紐付けのための公開安全な名前であり、
+Discord の実 ID ではありません。
 
 ## 公開安全境界
 

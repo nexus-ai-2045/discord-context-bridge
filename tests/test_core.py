@@ -25,6 +25,7 @@ from discord_context_bridge import (
 from discord_context_bridge import cli as cli_module
 from discord_context_bridge.cli import build_parser
 from discord_context_bridge.cli import main as cli_main
+from discord_context_bridge.core import resolve_context_bindings
 from discord_context_bridge import mcp_server
 
 FIXTURE = Path(__file__).parent / "fixtures" / "visible_text.txt"
@@ -263,6 +264,44 @@ def test_context_library_saves_audits_and_reuses_context(tmp_path):
     assert any("個人情報の共有は禁止" in note for note in passport["rule_notes"])
 
 
+def test_context_library_resolves_public_safe_labels(tmp_path):
+    context_store = tmp_path / "context-library.json"
+    upsert_context_document(
+        "server",
+        "nexus",
+        SERVER_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["example-community"],
+    )
+    upsert_context_document(
+        "channel",
+        "planning",
+        CHANNEL_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["example-community/safe-planning"],
+    )
+    upsert_context_document(
+        "thread",
+        "launch-thread",
+        THREAD_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["safe-planning:thread"],
+    )
+
+    bindings = resolve_context_bindings(
+        guild_label="example-community",
+        channel_label="#safe-planning",
+        path=context_store,
+    )
+
+    assert bindings["server"]["key"] == "nexus"
+    assert bindings["channel"]["key"] == "planning"
+    assert bindings["thread"]["key"] == "launch-thread"
+
+
 def test_context_library_audit_flags_private_identifiers(tmp_path):
     context_store = tmp_path / "context-library.json"
     upsert_context_document(
@@ -495,6 +534,89 @@ def test_cli_context_library_persists_and_passport_uses_keys(tmp_path, capsys):
     assert "個人情報の共有は禁止" in output
 
 
+def test_cli_context_passport_auto_binds_safe_labels(tmp_path, capsys):
+    context_store = tmp_path / "context-library.json"
+    upsert_context_document(
+        "server",
+        "nexus",
+        SERVER_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["example-community"],
+    )
+    upsert_context_document(
+        "channel",
+        "planning",
+        CHANNEL_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["example-community/safe-planning"],
+    )
+
+    result = cli_main(
+        [
+            "--context-store",
+            str(context_store),
+            "context-passport",
+            "--input",
+            str(RICH_COPY_FIXTURE),
+            "--guild",
+            "example-community",
+            "--channel",
+            "safe-planning",
+            "--auto-context-bindings",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "safe label から文脈庫を補助参照しました。" in output
+    assert "サーバー文脈" in output
+    assert "チャンネル文脈" in output
+    assert "個人情報の共有は禁止" in output
+
+
+def test_cli_context_passport_explicit_key_wins_over_auto_binding(tmp_path, capsys):
+    context_store = tmp_path / "context-library.json"
+    safe_auto_text = "自動側のサーバールール: 価格の相談用です。"
+    explicit_text = "明示側のサーバールール: ルールとして未確認の断定は禁止です。"
+    upsert_context_document(
+        "server",
+        "auto",
+        safe_auto_text,
+        path=context_store,
+        labels=["example-community"],
+    )
+    upsert_context_document(
+        "server",
+        "explicit",
+        explicit_text,
+        path=context_store,
+    )
+
+    result = cli_main(
+        [
+            "--context-store",
+            str(context_store),
+            "context-passport",
+            "--input",
+            str(RICH_COPY_FIXTURE),
+            "--guild",
+            "example-community",
+            "--channel",
+            "safe-planning",
+            "--auto-context-bindings",
+            "--server-context-key",
+            "explicit",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "明示側のサーバールール" in output
+    assert "自動側のサーバールール" not in output
+
+
 def test_cli_ops_view_outputs_safe_operations_summary(tmp_path, capsys):
     store = tmp_path / "events.ndjson"
     import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
@@ -706,6 +828,50 @@ def test_cli_watch_passport_uses_context_library_keys(tmp_path, capsys, monkeypa
     assert "文脈カード更新 #1" in output
     assert "個人情報の共有は禁止" in output
     assert "このツールから Discord へ送信しません。" in output
+
+
+def test_cli_watch_passport_auto_binds_safe_labels(tmp_path, capsys, monkeypatch):
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = RICH_COPY_FIXTURE.read_text(encoding="utf-8")
+
+    context_store = tmp_path / "context-library.json"
+    upsert_context_document(
+        "server",
+        "nexus",
+        SERVER_CONTEXT_FIXTURE.read_text(encoding="utf-8"),
+        path=context_store,
+        source="fixture",
+        labels=["example-community"],
+    )
+
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = cli_main(
+        [
+            "--context-store",
+            str(context_store),
+            "watch-passport",
+            "--source-command",
+            "discord-visible-text",
+            "--guild",
+            "example-community",
+            "--channel",
+            "safe-planning",
+            "--auto-context-bindings",
+            "--max-polls",
+            "1",
+            "--interval",
+            "0",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "文脈カード更新 #1" in output
+    assert "safe label から文脈庫を補助参照しました。" in output
+    assert "個人情報の共有は禁止" in output
 
 
 def test_cli_review_draft_alias_uses_stored_context(tmp_path, capsys):
