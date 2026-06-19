@@ -279,6 +279,15 @@ python3 scripts/probe_visible_source.py \
 
 `text_output` は常に `omitted` です。この probe pack から Discord へ送信しません。
 
+private adapter を環境変数で渡す場合は、まず軽い probe だけを単独で通します。これは本文を返さず、
+解析件数と失敗 stage だけを返します。
+
+```bash
+DISCORD_CONTEXT_BRIDGE_PRIVATE_COMMAND="python3 scripts/read_screenshot_ocr_text.py --image tests/fixtures/discord_rich_copy.txt --ocr-command 'cat {image}'" \
+PYTHONPATH=src:scripts \
+python3 scripts/private_adapter_probe.py
+```
+
 Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
 
 ```bash
