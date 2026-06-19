@@ -5,6 +5,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Repository Target
 
 - remote が意図した public Nexus repository を指している。
+- `python3 scripts/gh_guard.py --switch` で GitHub account と remote owner の一致を確認している。
 - git author name / email が public repository に適した名義になっている。
 - release commit が、この public package と必要 metadata だけを含んでいる。
 
@@ -14,6 +15,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 - 実 guild ID、channel ID、user ID、handle、private message、DM 本文がない。
 - maintainer machine の local absolute path が public docs / tests にない。
 - private `.env`、browser profile、database、cache、event store がない。
+- local context library は `.local/discord-context-bridge/context-library.json` などの非公開領域に置き、実データを commit しない。
 
 ## Language Boundary
 
@@ -27,10 +29,16 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
-- MCP server は local event store を読むだけで、Discord への送信 tool を公開しない。
+- MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
+- 文脈パスポートはスレッド目的 / 流れ / 前提 / ルール注意 / 温度感の確認だけを行い、Discord 送信はしない。
+- 返信ガイドは context / draft の照合だけを行い、Discord 送信はしない。
+- 自動取得は `--source-command` で local observer の stdout を読むだけにし、browser profile / Discord cookie / token を public package に入れない。
 - ChatGPT connector 用の HTTP MCP は `/mcp` だけを公開し、tunnel 前に event store の private data を確認する。
+- HTTP MCP を tunnel へ出す場合は `--require-safe-store` で起動前監査を必須にできる。
 - import は `dry_run` で保存前 preview できる。
+- clipboard import は local clipboard だけを読み、Discord token / cookie / webhook を要求しない。
 - tunnel 公開前に `audit-store` または MCP `audit_event_store_before_tunnel` を実行できる。
+- tunnel 公開前に `audit-context-store` または MCP `audit_context_library_before_tunnel` を実行できる。
 - fixture は合成データで、公開してよい。
 - README が、この package の「できること / しないこと」を説明している。
 - SECURITY.md が sensitive data exposure の扱いを説明している。
@@ -38,6 +46,8 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Verification
 
 ```bash
+python3 scripts/ops_check.py
+python3 scripts/ops_check.py --gh --gh-switch
 python3 -m pytest tests -q
 python3 -m compileall src tests
 python3 -m pip install ".[mcp]"
@@ -47,7 +57,9 @@ server = build_server()
 assert getattr(server, "name", "") == "discord-context-bridge"
 PY
 discord-context-bridge-mcp-http --help
+discord-context-bridge-mcp-http --store /tmp/discord-context-events.ndjson --require-safe-store --help
 discord-context-bridge --store /tmp/discord-context-events.ndjson audit-store
+discord-context-bridge --context-store /tmp/discord-context-library.json audit-context-store
 python3 - <<'PY'
 import tomllib
 from pathlib import Path
