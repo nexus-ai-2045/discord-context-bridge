@@ -20,6 +20,7 @@ from discord_context_bridge import (
     parse_visible_text,
     review_reply_intent,
     send_message,
+    status_dashboard,
     upsert_context_document,
 )
 from discord_context_bridge import cli as cli_module
@@ -142,6 +143,34 @@ def test_ops_view_summary_omits_message_text_and_reports_boundary(tmp_path):
     assert "このツールから Discord へ送信しません。" == summary["outbound_label"]
     assert "text_snippet" not in summary
     assert "authors" not in summary
+
+
+def test_status_dashboard_splits_operational_state_without_private_text(tmp_path):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    dashboard = status_dashboard(store, github_state="merged")
+
+    assert dashboard["schema"] == "discord_bridge_status_dashboard.v1"
+    assert dashboard["now"]["context_available"] is True
+    assert dashboard["now"]["event_count"] == 3
+    assert dashboard["broken"] == []
+    assert dashboard["blocked"] == []
+    assert dashboard["github"]["state"] == "merged"
+    assert dashboard["safety_boundary"]["outbound_actions"] == "disabled"
+    assert dashboard["safety_boundary"]["raw_text_included"] is False
+    assert "Can you clarify" not in str(dashboard)
+    assert "member-a" not in str(dashboard)
+    assert str(tmp_path) not in str(dashboard)
+
+
+def test_status_dashboard_reports_missing_context_without_local_path(tmp_path):
+    dashboard = status_dashboard(tmp_path / "missing.ndjson")
+
+    assert dashboard["now"]["context_available"] is False
+    assert dashboard["blocked"] == ["Discord 可視本文はまだ取り込まれていません。"]
+    assert dashboard["next"] == ["private adapter probe または import-visible-text を実行します。"]
+    assert str(tmp_path) not in str(dashboard)
 
 
 def test_fast_briefing_and_reply_review(tmp_path):
@@ -362,6 +391,7 @@ def test_cli_help_uses_japanese_user_facing_text():
     assert "直近文脈" in help_text
     assert "audit-store" in help_text
     assert "ops-view" in help_text
+    assert "status-dashboard" in help_text
     assert "import-clipboard" in help_text
     assert "guide-reply" in help_text
     assert "context-passport" in help_text
@@ -370,6 +400,31 @@ def test_cli_help_uses_japanese_user_facing_text():
     assert "オプション:" in help_text
     assert "show this help message and exit" not in help_text
     assert "positional arguments:" not in help_text
+
+
+def test_cli_status_dashboard_outputs_safe_json(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "status-dashboard",
+            "--json",
+            "--github-state",
+            "merged",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_bridge_status_dashboard.v1"' in output
+    assert '"state": "merged"' in output
+    assert '"outbound_actions": "disabled"' in output
+    assert "Can you clarify" not in output
+    assert "member-a" not in output
+    assert str(tmp_path) not in output
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):

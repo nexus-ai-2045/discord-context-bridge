@@ -26,6 +26,7 @@ from .core import (
     ops_view_summary,
     review_reply_intent,
     resolve_context_bindings,
+    status_dashboard,
     upsert_context_document,
 )
 
@@ -121,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
     ops_view = sub.add_parser("ops-view", help="本文なしで運用ログの状態を表示する")
     ops_view.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     ops_view.set_defaults(handler=_cmd_ops_view)
+
+    dashboard = sub.add_parser("status-dashboard", help="本文なしで現在の運用状態をまとめる")
+    dashboard.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    dashboard.add_argument("--github-state", default="not_checked", help="GitHub 状態の短い安全ラベル")
+    dashboard.set_defaults(handler=_cmd_status_dashboard)
 
     context_upsert = sub.add_parser("context-upsert", help="サーバー/チャンネル/スレッドの文脈をローカル文脈庫へ保存する")
     context_upsert.add_argument("--kind", required=True, choices=["server", "channel", "thread"], help="保存する文脈の種類")
@@ -376,6 +382,22 @@ def _cmd_ops_view(args: argparse.Namespace) -> int:
     print(summary["gate_verdict_label"])
     print(summary["outbound_label"])
     return 0 if summary["gate_verdict"] == "pass" else 2
+
+
+def _cmd_status_dashboard(args: argparse.Namespace) -> int:
+    dashboard = status_dashboard(args.store, github_state=args.github_state)
+    if args.json:
+        print(_json(dashboard))
+        return 0 if not dashboard["broken"] else 2
+    print(dashboard["message"])
+    print(f"now: event_count={dashboard['now']['event_count']} context_available={str(dashboard['now']['context_available']).lower()}")
+    print(f"done: {', '.join(dashboard['done'])}")
+    print(f"broken: {', '.join(dashboard['broken']) if dashboard['broken'] else 'なし'}")
+    print(f"blocked: {', '.join(dashboard['blocked']) if dashboard['blocked'] else 'なし'}")
+    print(f"next: {', '.join(dashboard['next']) if dashboard['next'] else 'なし'}")
+    print(f"github: {dashboard['github']['state']}")
+    print("outbound: disabled")
+    return 0 if not dashboard["broken"] else 2
 
 
 def _cmd_context_upsert(args: argparse.Namespace) -> int:
