@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="macOS Accessibility の focused / full 取得を短い timeout で順に試す",
     )
     source.add_argument("--list-macos-windows", action="store_true", help="macOS Accessibility で Discord window 候補名だけを表示する")
+    source.add_argument("--probe-macos-accessibility", action="store_true", help="本文を出さずに macOS Accessibility の候補別取得可否を確認する")
     parser.add_argument("--clipboard-command", default="pbpaste", help="clipboard 取得 command。既定は pbpaste")
     parser.add_argument("--process-name", default="Discord", help="macOS Accessibility で読む process 名")
     parser.add_argument(
@@ -42,9 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="macOS Accessibility で読む window 名の一部。未指定なら前面 window",
     )
     parser.add_argument("--window-index", type=int, default=0, help="macOS Accessibility で読む window 番号。0 の場合は名前 hint または前面 window")
+    parser.add_argument("--probe-limit", type=int, default=4, help="macOS Accessibility probe で試す最大 window 数")
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
     parser.add_argument("--timeout", type=float, default=15.0, help="local command / Accessibility 取得の最大秒数")
     parser.add_argument("--focused-only", action="store_true", help="macOS Accessibility で focused element だけを読む。重い window 全走査を避ける")
+    parser.add_argument("--no-focus", action="store_true", help="macOS Accessibility で Discord を前面化せずに読む")
     parser.add_argument("--show-window-names", action="store_true", help="window 診断で raw window 名も出す。通常は使わない")
     parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
     return parser
@@ -76,11 +79,13 @@ def build_macos_accessibility_script(
     *,
     window_index: int = 0,
     focused_only: bool = False,
+    focus_app: bool = True,
 ) -> str:
     process_literal = applescript_string(process_name)
     window_hint_literal = applescript_string(window_name_contains)
     window_index_literal = str(max(window_index, 0))
     focused_only_literal = "true" if focused_only else "false"
+    focus_app_literal = "true" if focus_app else "false"
     return f'''
 on appendText(textValues, candidateText)
   if candidateText is missing value then return textValues
@@ -102,13 +107,16 @@ end collectText
 set windowNameHint to {window_hint_literal}
 set targetWindowIndex to {window_index_literal}
 set focusedOnly to {focused_only_literal}
+set shouldFocusApp to {focus_app_literal}
 
 tell application "System Events"
   if not (exists process {process_literal}) then error "process not found: " & {process_literal}
   tell process {process_literal}
     set AppleScript's text item delimiters to linefeed
-    set frontmost to true
-    delay 0.1
+    if shouldFocusApp then
+      set frontmost to true
+      delay 0.1
+    end if
     set targetWindow to missing value
     if targetWindowIndex is greater than 0 then
       if (count of windows) is less than targetWindowIndex then error "window index not found: " & targetWindowIndex
@@ -125,15 +133,24 @@ tell application "System Events"
       end repeat
       if targetWindow is missing value then error "window not found: " & windowNameHint
     else
-      set targetWindow to front window
+      if shouldFocusApp then
+        set targetWindow to front window
+      else
+        if (count of windows) is less than 1 then error "window not found without focus"
+        set targetWindow to window 1
+      end if
     end if
-    try
-      set focusedElement to value of attribute "AXFocusedUIElement"
-      set focusedTexts to {{}}
-      set focusedTexts to my collectText(focusedElement, focusedTexts)
-      if focusedTexts is not {{}} then return focusedTexts as text
-    end try
-    if focusedOnly then error "focused element text not found"
+    if shouldFocusApp then
+      try
+        set focusedElement to value of attribute "AXFocusedUIElement"
+        set focusedTexts to {{}}
+        set focusedTexts to my collectText(focusedElement, focusedTexts)
+        if focusedTexts is not {{}} then return focusedTexts as text
+      end try
+      if focusedOnly then error "focused element text not found"
+    else if focusedOnly then
+      error "focused-only requires app focus"
+    end if
     try
       set windowTexts to {{}}
       repeat with uiElement in entire contents of targetWindow
@@ -177,12 +194,14 @@ def read_macos_accessibility(
     window_index: int = 0,
     timeout: float | None = None,
     focused_only: bool = False,
+    focus_app: bool = True,
 ) -> str:
     script = build_macos_accessibility_script(
         process_name,
         window_name_contains,
         window_index=window_index,
         focused_only=focused_only,
+        focus_app=focus_app,
     )
     return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
 
@@ -193,18 +212,15 @@ def read_macos_accessibility_auto(
     *,
     window_index: int = 0,
     timeout: float | None = None,
+    focus_app: bool = True,
 ) -> str:
-    attempts = [
-        ("selected focused", window_name_contains, window_index, True),
-        ("selected full", window_name_contains, window_index, False),
-    ]
-    if window_index or window_name_contains:
-        attempts.extend(
-            [
-                ("front focused", "", 0, True),
-                ("front full", "", 0, False),
-            ]
-        )
+    attempts: list[tuple[str, str, int, bool]] = []
+    if focus_app:
+        attempts.append(("selected focused", window_name_contains, window_index, True))
+    attempts.append(("selected full", window_name_contains, window_index, False))
+    if focus_app and (window_index or window_name_contains):
+        attempts.append(("front focused", "", 0, True))
+        attempts.append(("front full", "", 0, False))
 
     errors: list[str] = []
     for label, hint, index, focused_only in attempts:
@@ -215,6 +231,7 @@ def read_macos_accessibility_auto(
                 window_index=index,
                 timeout=timeout,
                 focused_only=focused_only,
+                focus_app=focus_app,
             )
         except Exception as exc:
             errors.append(f"{label}: {exc}")
@@ -278,6 +295,76 @@ def print_macos_window_candidates(text: str, *, show_names: bool = False, match_
             )
 
 
+def probe_macos_accessibility_routes(
+    process_name: str,
+    *,
+    timeout: float | None = None,
+    focus_app: bool = True,
+    limit: int = 4,
+) -> tuple[list[dict[str, object]], bool]:
+    candidates = preflight_macos_window_selection(process_name, timeout=timeout)
+    rows: list[dict[str, object]] = []
+    any_ready = False
+    for index, _name in candidates[: max(limit, 0)]:
+        row: dict[str, object] = {"index": index, "status": "unknown", "chars": 0, "lines": 0}
+        try:
+            text = normalize_visible_text(
+                read_macos_accessibility_auto(
+                    process_name,
+                    window_index=index,
+                    timeout=timeout,
+                    focus_app=focus_app,
+                )
+            )
+        except Exception as exc:
+            row["status"] = "error"
+            row["reason"] = safe_probe_reason(exc)
+        else:
+            issues = audit_visible_text(text)
+            if issues:
+                row["status"] = "unsafe"
+                row["issues"] = ",".join(issues)
+            elif text.strip():
+                row["status"] = "ready"
+                row["chars"] = len(text)
+                row["lines"] = len(text.splitlines())
+                any_ready = True
+            else:
+                row["status"] = "empty"
+        rows.append(row)
+    return rows, any_ready
+
+
+def safe_probe_reason(error: Exception) -> str:
+    text = str(error)
+    if audit_visible_text(text):
+        return "安全監査により詳細を省略しました。"
+    if "timed out" in text:
+        return "timeout"
+    if "empty" in text:
+        return "empty"
+    if "not found" in text:
+        return "not_found"
+    if "focused-only" in text or "focused element" in text:
+        return "focused_unavailable"
+    return "adapter_error"
+
+
+def print_macos_accessibility_probe(rows: list[dict[str, object]], *, focus_app: bool) -> None:
+    print("Discord Accessibility route probe:")
+    print(f"focus_app: {str(focus_app).lower()}")
+    if not rows:
+        print("- なし")
+        return
+    for row in rows:
+        detail = f"- {row['index']}: status={row['status']} chars={row['chars']} lines={row['lines']}"
+        if "issues" in row:
+            detail += f" issues={row['issues']}"
+        if "reason" in row:
+            detail += f" reason={row['reason']}"
+        print(detail)
+
+
 def read_visible_text(args: argparse.Namespace) -> str:
     if args.input:
         return args.input.read_text(encoding="utf-8")
@@ -292,6 +379,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
             window_index=args.window_index,
             timeout=args.timeout,
             focused_only=args.focused_only,
+            focus_app=not args.no_focus,
         )
     if args.macos_accessibility_auto:
         preflight_macos_window_selection(
@@ -304,6 +392,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
             args.window_name_contains,
             window_index=args.window_index,
             timeout=args.timeout,
+            focus_app=not args.no_focus,
         )
     if not sys.stdin.isatty():
         return sys.stdin.read()
@@ -329,6 +418,15 @@ def normalize_visible_text(text: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.probe_macos_accessibility:
+            rows, any_ready = probe_macos_accessibility_routes(
+                args.process_name,
+                timeout=args.timeout,
+                focus_app=not args.no_focus,
+                limit=args.probe_limit,
+            )
+            print_macos_accessibility_probe(rows, focus_app=not args.no_focus)
+            return 0 if any_ready else 2
         if args.list_macos_windows:
             text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
             if args.show_window_names:
