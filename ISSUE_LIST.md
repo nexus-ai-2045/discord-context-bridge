@@ -8,6 +8,10 @@
   - done when: `scripts/private_adapter_probe.py` と `scripts/live_ops_smoke.py` が fixture / private adapter test を通る。
 - macOS OCR private command を repo 内 runner で再現可能にする。
   - done when: `scripts/read_screenshot_ocr_text.py --capture-profile macos-screencapture-region` を `DISCORD_CONTEXT_BRIDGE_PRIVATE_COMMAND` に差し込み、`live_ops_smoke.py` が `text_output=omitted` のまま pass する。
+- 実運用MVP status command を1本化する。
+  - done when: `scripts/live_mvp_status.py` が preflight -> live smoke -> ops check を順番実行し、raw本文 / 参加者名 / store path を出さず `ok=true` を返す。
+- `@discord` bot route preflight を追加する。
+  - done when: token値、snowflake値、local path を出さずに token有無、dmPolicy、allow/group/pending件数だけを返す。
 
 ## P1
 
