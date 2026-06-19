@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--from-clipboard", action="store_true", help="local clipboard から可視テキストを読む")
     source.add_argument("--source-command", help="可視テキストを出力する private command を呼び出す")
     source.add_argument("--macos-accessibility", action="store_true", help="macOS Accessibility で Discord の前面ウィンドウから読む")
+    source.add_argument(
+        "--macos-accessibility-auto",
+        action="store_true",
+        help="macOS Accessibility の focused / full 取得を短い timeout で順に試す",
+    )
     source.add_argument("--list-macos-windows", action="store_true", help="macOS Accessibility で Discord window 候補名だけを表示する")
     parser.add_argument("--clipboard-command", default="pbpaste", help="clipboard 取得 command。既定は pbpaste")
     parser.add_argument("--process-name", default="Discord", help="macOS Accessibility で読む process 名")
@@ -182,19 +187,85 @@ def read_macos_accessibility(
     return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
 
 
+def read_macos_accessibility_auto(
+    process_name: str,
+    window_name_contains: str = "",
+    *,
+    window_index: int = 0,
+    timeout: float | None = None,
+) -> str:
+    attempts = [
+        ("selected focused", window_name_contains, window_index, True),
+        ("selected full", window_name_contains, window_index, False),
+    ]
+    if window_index or window_name_contains:
+        attempts.extend(
+            [
+                ("front focused", "", 0, True),
+                ("front full", "", 0, False),
+            ]
+        )
+
+    errors: list[str] = []
+    for label, hint, index, focused_only in attempts:
+        try:
+            text = read_macos_accessibility(
+                process_name,
+                hint,
+                window_index=index,
+                timeout=timeout,
+                focused_only=focused_only,
+            )
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            continue
+        if text.strip():
+            return text
+        errors.append(f"{label}: empty")
+    raise RuntimeError("macOS Accessibility auto fallback failed: " + "; ".join(errors))
+
+
 def list_macos_windows(process_name: str, *, timeout: float | None = None) -> str:
     script = build_macos_window_list_script(process_name)
     return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
 
 
+def parse_macos_window_candidates(text: str) -> list[tuple[int, str]]:
+    candidates: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        index_text, _, name = line.partition("\t")
+        try:
+            index = int(index_text)
+        except ValueError:
+            continue
+        candidates.append((index, name or "(名称なし)"))
+    return candidates
+
+
+def preflight_macos_window_selection(
+    process_name: str,
+    *,
+    window_index: int = 0,
+    timeout: float | None = None,
+) -> list[tuple[int, str]]:
+    candidates = parse_macos_window_candidates(list_macos_windows(process_name, timeout=timeout))
+    if not candidates:
+        raise RuntimeError("Discord window candidates not found. Discord の対象画面を開いてから再実行してください。")
+    if window_index and all(index != window_index for index, _ in candidates):
+        raise RuntimeError(
+            f"window index not found before scan: {window_index}; candidate_count={len(candidates)}"
+        )
+    return candidates
+
+
 def print_macos_window_candidates(text: str, *, show_names: bool = False, match_hint: str = "") -> None:
     print("Discord window candidates:")
-    if not text.strip():
+    candidates = parse_macos_window_candidates(text)
+    if not candidates:
         print("- なし")
         return
     normalized_hint = match_hint.casefold()
-    for line in text.splitlines():
-        index, _, name = line.partition("\t")
+    for index, name in candidates:
         safe_name = name or "(名称なし)"
         matched = bool(normalized_hint and normalized_hint in safe_name.casefold())
         if show_names:
@@ -222,9 +293,24 @@ def read_visible_text(args: argparse.Namespace) -> str:
             timeout=args.timeout,
             focused_only=args.focused_only,
         )
+    if args.macos_accessibility_auto:
+        preflight_macos_window_selection(
+            args.process_name,
+            window_index=args.window_index,
+            timeout=args.timeout,
+        )
+        return read_macos_accessibility_auto(
+            args.process_name,
+            args.window_name_contains,
+            window_index=args.window_index,
+            timeout=args.timeout,
+        )
     if not sys.stdin.isatty():
         return sys.stdin.read()
-    raise RuntimeError("input source が未指定です。--input / --from-clipboard / --source-command / --macos-accessibility のいずれかを指定してください。")
+    raise RuntimeError(
+        "input source が未指定です。--input / --from-clipboard / --source-command / "
+        "--macos-accessibility / --macos-accessibility-auto のいずれかを指定してください。"
+    )
 
 
 def audit_visible_text(text: str) -> list[str]:

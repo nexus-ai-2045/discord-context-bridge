@@ -269,6 +269,20 @@ PYTHONPATH=src python3 scripts/live_ops_smoke.py \
   --reset
 ```
 
+1回の取得で空読みやtimeoutになる場合は、自動fallback付きで試します。これは focused element を短く試し、
+だめなら同じ window の full scan、必要なら前面 window へ戻す順で確認します。
+
+```bash
+PYTHONPATH=src python3 scripts/live_ops_smoke.py \
+  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility-auto --window-index 1 --timeout 3" \
+  --source-timeout 12 \
+  --channel visible-thread \
+  --reset
+```
+
+`live_ops_smoke.py` は、解析件数が 0 件の時は `source_not_ready` として失敗します。
+本文を表示せずに、取得経路が運用可能かだけを確認できます。
+
 macOS Accessibility や browser automation が環境依存で不安定な場合は、private 側の command を `--source-command` に渡します。
 その command も stdout には可視本文だけを出し、credential や profile path を出さない契約にします。
 
