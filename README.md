@@ -212,7 +212,7 @@ adapter ができたら、既存の `watch-passport` と `watch-guide` にその
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
   watch-passport \
-  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility" \
+  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility --window-name-contains nexus-ai" \
   --server-context-key nexus \
   --interval 1
 ```

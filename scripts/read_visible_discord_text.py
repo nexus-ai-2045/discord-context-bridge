@@ -26,6 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--macos-accessibility", action="store_true", help="macOS Accessibility で Discord の前面ウィンドウから読む")
     parser.add_argument("--clipboard-command", default="pbpaste", help="clipboard 取得 command。既定は pbpaste")
     parser.add_argument("--process-name", default="Discord", help="macOS Accessibility で読む process 名")
+    parser.add_argument(
+        "--window-name-contains",
+        default="",
+        help="macOS Accessibility で読む window 名の一部。未指定なら前面 window",
+    )
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
     parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
     return parser
@@ -43,7 +48,13 @@ def run_command(command: str) -> str:
     return completed.stdout
 
 
-def build_macos_accessibility_script(process_name: str) -> str:
+def applescript_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def build_macos_accessibility_script(process_name: str, window_name_contains: str = "") -> str:
+    process_literal = applescript_string(process_name)
+    window_hint_literal = applescript_string(window_name_contains)
     return f'''
 on appendText(textValues, candidateText)
   if candidateText is missing value then return textValues
@@ -62,12 +73,29 @@ on collectText(uiElement, textValues)
   return textValues
 end collectText
 
+set windowNameHint to {window_hint_literal}
+
 tell application "System Events"
-  if not (exists process "{process_name}") then error "process not found: {process_name}"
-  tell process "{process_name}"
+  if not (exists process {process_literal}) then error "process not found: " & {process_literal}
+  tell process {process_literal}
     set AppleScript's text item delimiters to linefeed
     set frontmost to true
     delay 0.1
+    set targetWindow to missing value
+    if windowNameHint is not "" then
+      repeat with candidateWindow in windows
+        try
+          set candidateName to name of candidateWindow as text
+          if candidateName contains windowNameHint then
+            set targetWindow to candidateWindow
+            exit repeat
+          end if
+        end try
+      end repeat
+      if targetWindow is missing value then error "window not found: " & windowNameHint
+    else
+      set targetWindow to front window
+    end if
     try
       set focusedElement to value of attribute "AXFocusedUIElement"
       set focusedTexts to {{}}
@@ -76,7 +104,7 @@ tell application "System Events"
     end try
     try
       set windowTexts to {{}}
-      repeat with uiElement in entire contents of front window
+      repeat with uiElement in entire contents of targetWindow
         set windowTexts to my collectText(uiElement, windowTexts)
       end repeat
       return windowTexts as text
@@ -86,8 +114,8 @@ end tell
 '''
 
 
-def read_macos_accessibility(process_name: str) -> str:
-    script = build_macos_accessibility_script(process_name)
+def read_macos_accessibility(process_name: str, window_name_contains: str = "") -> str:
+    script = build_macos_accessibility_script(process_name, window_name_contains)
     return run_command("osascript -e " + shlex.quote(script))
 
 
@@ -99,7 +127,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
     if args.source_command:
         return run_command(args.source_command)
     if args.macos_accessibility:
-        return read_macos_accessibility(args.process_name)
+        return read_macos_accessibility(args.process_name, args.window_name_contains)
     if not sys.stdin.isatty():
         return sys.stdin.read()
     raise RuntimeError("input source が未指定です。--input / --from-clipboard / --source-command / --macos-accessibility のいずれかを指定してください。")

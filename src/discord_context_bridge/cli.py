@@ -22,6 +22,7 @@ from .core import (
     import_visible_text,
     list_context_documents,
     load_events,
+    ops_view_summary,
     review_reply_intent,
     upsert_context_document,
 )
@@ -103,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = sub.add_parser("audit-store", help="トンネル公開前に保存データの安全性を確認する")
     audit.set_defaults(handler=_cmd_audit_store)
+
+    ops_view = sub.add_parser("ops-view", help="本文なしで運用ログの状態を表示する")
+    ops_view.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    ops_view.set_defaults(handler=_cmd_ops_view)
 
     context_upsert = sub.add_parser("context-upsert", help="サーバー/チャンネル/スレッドの文脈をローカル文脈庫へ保存する")
     context_upsert.add_argument("--kind", required=True, choices=["server", "channel", "thread"], help="保存する文脈の種類")
@@ -302,6 +307,22 @@ def _cmd_audit_store(args: argparse.Namespace) -> int:
     report = audit_event_store(args.store)
     print(_json(report))
     return 0 if report["safe_for_tunnel"] else 2
+
+
+def _cmd_ops_view(args: argparse.Namespace) -> int:
+    summary = ops_view_summary(args.store)
+    if args.json:
+        print(_json(summary))
+        return 0 if summary["gate_verdict"] == "pass" else 2
+    print(summary["message"])
+    print(f"safe label: {', '.join(summary['safe_labels']) if summary['safe_labels'] else 'なし'}")
+    print(f"件数: {summary['event_count']}")
+    print(f"last_seen: {summary['last_seen'] or 'なし'}")
+    print(f"delta count: {summary['delta_count']}")
+    print(f"gate verdict: {summary['gate_verdict']}")
+    print(summary["gate_verdict_label"])
+    print(summary["outbound_label"])
+    return 0 if summary["gate_verdict"] == "pass" else 2
 
 
 def _cmd_context_upsert(args: argparse.Namespace) -> int:

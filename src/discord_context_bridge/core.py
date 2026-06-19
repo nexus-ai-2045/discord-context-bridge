@@ -182,6 +182,27 @@ def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
     }
 
 
+def ops_view_summary(path: Path = DEFAULT_STORE) -> dict[str, Any]:
+    events = load_events(path)
+    audit = audit_event_store(path)
+    labels = sorted({event.channel_label for event in events})
+    last_seen = max((event.observed_at for event in events), default=None)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "運用ログ表示を作成しました。",
+        "store": str(path),
+        "safe_labels": labels,
+        "event_count": len(events),
+        "last_seen": last_seen,
+        "delta_count": len(events),
+        "gate_verdict": "pass" if audit["safe_for_tunnel"] else "review_required",
+        "gate_verdict_label": audit["safe_for_tunnel_label"],
+        "issue_count": audit["issue_count"],
+        "outbound": "disabled",
+        "outbound_label": "このツールから Discord へ送信しません。",
+    }
+
+
 def load_context_library(path: Path = DEFAULT_CONTEXT_STORE) -> list[dict[str, Any]]:
     if not path.exists():
         return []
