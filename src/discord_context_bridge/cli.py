@@ -201,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch_passport.add_argument("--interval", type=float, default=1.0, help="入力元コマンドを確認する間隔秒")
     watch_passport.add_argument("--max-polls", type=int, default=0, help="確認回数。0 の場合は停止されるまで継続する")
+    watch_passport.add_argument("--source-timeout", type=float, default=20.0, help="入力元コマンドの最大秒数")
     watch_passport.add_argument("--json", action="store_true", help="機械処理用に JSON lines で出力する")
     watch_passport.set_defaults(handler=_cmd_watch_passport)
 
@@ -211,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_guide.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
     watch_guide.add_argument("--interval", type=float, default=1.0, help="入力元コマンドを確認する間隔秒")
     watch_guide.add_argument("--max-polls", type=int, default=0, help="確認回数。0 の場合は停止されるまで継続する")
+    watch_guide.add_argument("--source-timeout", type=float, default=20.0, help="入力元コマンドの最大秒数")
     watch_guide.add_argument("--json", action="store_true", help="機械処理用に JSON lines で出力する")
     watch_guide.set_defaults(handler=_cmd_watch_guide)
     return parser
@@ -538,7 +540,11 @@ def _cmd_watch_passport(args: argparse.Namespace) -> int:
     changed = 0
     while args.max_polls <= 0 or polls < args.max_polls:
         polls += 1
-        text = read_command_text(args.source_command, empty_message="source command の出力が空です。")
+        text = read_command_text(
+            args.source_command,
+            empty_message="source command の出力が空です。",
+            timeout=args.source_timeout,
+        )
         if text != last_text:
             last_text = text
             changed += 1
@@ -593,7 +599,11 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
     changed = 0
     while args.max_polls <= 0 or polls < args.max_polls:
         polls += 1
-        text = read_command_text(args.source_command, empty_message="source command の出力が空です。")
+        text = read_command_text(
+            args.source_command,
+            empty_message="source command の出力が空です。",
+            timeout=args.source_timeout,
+        )
         if text != last_text:
             last_text = text
             changed += 1
