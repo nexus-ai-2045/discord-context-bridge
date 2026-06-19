@@ -314,6 +314,8 @@ def safe_command_failure_reason(stderr: str) -> str:
         return "permission"
     if "empty" in lowered:
         return "empty"
+    if "not_found" in lowered or "not found" in lowered:
+        return "not_found"
     return "adapter_failed"
 
 
@@ -348,9 +350,10 @@ def read_command_text(
     except subprocess.TimeoutExpired as exc:
         raise SystemExit(f"local command が {timeout:g} 秒で完了しませんでした。") from exc
     if completed.returncode != 0:
+        failure_text = "\n".join(part for part in [completed.stderr.strip(), completed.stdout.strip()] if part)
         raise SystemExit(
             "local command の実行に失敗しました: "
-            f"exit_code={completed.returncode} reason={safe_command_failure_reason(completed.stderr.strip())}"
+            f"exit_code={completed.returncode} reason={safe_command_failure_reason(failure_text)}"
         )
     if not completed.stdout.strip():
         raise SystemExit(empty_message)
