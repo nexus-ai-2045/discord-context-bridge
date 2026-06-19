@@ -80,7 +80,18 @@ def command_result(
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             payload = {}
-        for key in ("parsed", "source_ready", "gate_verdict", "event_count", "text_output", "outbound"):
+        for key in (
+            "parsed",
+            "source_ready",
+            "gate_verdict",
+            "event_count",
+            "text_output",
+            "outbound",
+            "any_ready",
+            "candidate_count",
+            "failure_stage",
+            "reason",
+        ):
             if key in payload:
                 result[key] = payload[key]
     return result
@@ -167,6 +178,7 @@ def ax_probe_check(*, timeout: float, limit: int) -> dict[str, Any]:
             sys.executable,
             "scripts/read_visible_discord_text.py",
             "--probe-macos-accessibility",
+            "--json",
             "--no-focus",
             "--probe-limit",
             str(limit),
@@ -175,8 +187,12 @@ def ax_probe_check(*, timeout: float, limit: int) -> dict[str, Any]:
         ],
         ok_codes={0, 2},
         timeout=(timeout * max(limit, 1)) + 5,
+        json_summary=True,
     )
-    if result["status"] == "fail":
+    if result.get("exit_code") == 2:
+        result["status"] = "warn"
+        result["reason"] = result.get("failure_stage", result.get("reason", "not_ready"))
+    elif result["status"] == "fail":
         result["status"] = "warn"
     return result
 
