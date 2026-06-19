@@ -327,7 +327,10 @@ Discord の会話領域が分かっている場合は、環境変数で private 
 python3 scripts/live_mvp_status.py \
   --capture-profile macos-screencapture-region \
   --capture-region "0,0,1400,1000" \
-  --ocr-language eng \
+  --ocr-language jpn+eng \
+  --capture-timeout 120 \
+  --source-timeout 130 \
+  --timeout 150 \
   --ops-timeout 90
 ```
 

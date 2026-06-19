@@ -1671,6 +1671,33 @@ def test_live_ops_smoke_reports_structured_source_failure(tmp_path, capsys, monk
     assert not store.exists()
 
 
+def test_live_ops_smoke_reports_timeout_reason(tmp_path, capsys, monkeypatch):
+    live_smoke = load_script_module("live_ops_smoke_timeout_failure_for_test", ROOT / "scripts" / "live_ops_smoke.py")
+    store = tmp_path / "live-smoke.ndjson"
+
+    def fake_read_command_text(command, *, empty_message, timeout=None):
+        raise SystemExit("local command が 20 秒で完了しませんでした。")
+
+    monkeypatch.setattr(live_smoke, "read_command_text", fake_read_command_text)
+
+    result = live_smoke.main(
+        [
+            "--source-command",
+            "discord-visible-text",
+            "--store",
+            str(store),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 2
+    assert payload["failure_stage"] == "source_command_timeout"
+    assert payload["source_stage"] == "source_command_timeout"
+    assert payload["reason"] == "timeout"
+    assert payload["text_output"] == "omitted"
+
+
 def test_live_ops_smoke_fails_when_source_parses_no_messages(tmp_path, capsys, monkeypatch):
     live_smoke = load_script_module("live_ops_smoke_min_parsed_for_test", ROOT / "scripts" / "live_ops_smoke.py")
     store = tmp_path / "live-smoke.ndjson"

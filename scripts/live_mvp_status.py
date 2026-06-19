@@ -118,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guild", default="private-discord")
     parser.add_argument("--channel", default="active-thread")
     parser.add_argument("--min-parsed", type=int, default=1)
+    parser.add_argument("--source-timeout", type=float, default=30.0, help="live smoke 内で source command を待つ最大秒数")
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--ops-timeout", type=float, default=90.0, help="ops_check.py の最大秒数")
     parser.add_argument(
@@ -224,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.channel,
                 "--min-parsed",
                 str(args.min_parsed),
+                "--source-timeout",
+                str(args.source_timeout),
                 "--json",
             ],
             timeout=args.timeout,
