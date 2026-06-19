@@ -16,6 +16,7 @@ from discord_context_bridge import (
     import_visible_text,
     list_context_documents,
     load_events,
+    ops_view_summary,
     parse_visible_text,
     review_reply_intent,
     send_message,
@@ -122,6 +123,24 @@ def test_audit_event_store_flags_private_identifiers(tmp_path):
         "discord_snowflake_id",
         "local_absolute_path",
     ]
+
+
+def test_ops_view_summary_omits_message_text_and_reports_boundary(tmp_path):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    summary = ops_view_summary(store)
+
+    assert summary["message"] == "運用ログ表示を作成しました。"
+    assert summary["safe_labels"] == ["safe-general"]
+    assert summary["event_count"] == 3
+    assert summary["delta_count"] == 3
+    assert summary["last_seen"]
+    assert summary["gate_verdict"] == "pass"
+    assert summary["outbound"] == "disabled"
+    assert "このツールから Discord へ送信しません。" == summary["outbound_label"]
+    assert "text_snippet" not in summary
+    assert "authors" not in summary
 
 
 def test_fast_briefing_and_reply_review(tmp_path):
@@ -303,6 +322,7 @@ def test_cli_help_uses_japanese_user_facing_text():
     assert "可視会話テキスト" in help_text
     assert "直近文脈" in help_text
     assert "audit-store" in help_text
+    assert "ops-view" in help_text
     assert "import-clipboard" in help_text
     assert "guide-reply" in help_text
     assert "context-passport" in help_text
@@ -473,6 +493,22 @@ def test_cli_context_library_persists_and_passport_uses_keys(tmp_path, capsys):
     assert result == 0
     assert "明示文脈を併用しています。" in output
     assert "個人情報の共有は禁止" in output
+
+
+def test_cli_ops_view_outputs_safe_operations_summary(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    result = cli_main(["--store", str(store), "ops-view"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "運用ログ表示を作成しました。" in output
+    assert "safe label: safe-general" in output
+    assert "件数: 3" in output
+    assert "gate verdict: pass" in output
+    assert "このツールから Discord へ送信しません。" in output
+    assert "Can you clarify" not in output
 
 
 def test_cli_context_passport_reads_source_command(capsys, monkeypatch):
@@ -743,8 +779,25 @@ def test_visible_text_adapter_builds_macos_accessibility_script():
     assert 'process "Discord"' in script
     assert 'attribute "AXFocusedUIElement"' in script
     assert "focused UI element" not in script
-    assert "entire contents of front window" in script
+    assert "set targetWindow to front window" in script
+    assert "entire contents of targetWindow" in script
     assert "appendText" in script
+
+
+def test_visible_text_adapter_can_select_macos_window_by_name_hint():
+    adapter = load_script_module(
+        "visible_text_adapter_macos_window_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    script = adapter.build_macos_accessibility_script('Discord "Canary"', "nexus-ai")
+
+    assert 'process "Discord \\"Canary\\""' in script
+    assert 'set windowNameHint to "nexus-ai"' in script
+    assert "repeat with candidateWindow in windows" in script
+    assert "if candidateName contains windowNameHint" in script
+    assert "window not found" in script
+    assert 'process "Discord "Canary""' not in script
 
 
 def test_gh_guard_parses_github_remote_owner():
