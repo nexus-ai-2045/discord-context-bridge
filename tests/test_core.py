@@ -450,6 +450,37 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
     assert '"send_capability": "disabled"' in output
 
 
+def test_cli_source_command_error_redacts_sensitive_stderr(monkeypatch):
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "failed with https://discord.com/api/webhooks/123456789012345678/token"
+
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.read_command_text("discord-visible-text")
+
+    message = str(exc.value)
+    assert "安全監査により詳細を省略しました。" in message
+    assert "webhooks/123456789012345678" not in message
+    assert "discord-visible-text" not in message
+
+
+def test_cli_source_command_error_reports_safe_reason(monkeypatch):
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "permission denied"
+
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.read_command_text("discord-visible-text")
+
+    assert "exit_code=1 reason=permission" in str(exc.value)
+
+
 def test_cli_context_passport_outputs_human_readable_context(capsys):
     result = cli_main(
         [
@@ -960,6 +991,120 @@ def test_visible_text_adapter_can_read_source_command(capsys, monkeypatch):
 
     assert result == 0
     assert output == "member-a: 画面に見えている本文です\n"
+
+
+def test_screenshot_ocr_runner_reads_existing_image_with_private_ocr_command(tmp_path, capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    image = tmp_path / "capture.png"
+    image.write_bytes(b"fake-png")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "member-a: OCRで読めた本文です\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.main(["--image", str(image), "--ocr-command", "ocr-tool {image}", "--timeout", "4"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][0] == ["ocr-tool", str(image)]
+    assert calls[0][1]["timeout"] == 4
+    assert output == "member-a: OCRで読めた本文です\n"
+
+
+def test_screenshot_ocr_runner_runs_capture_then_ocr(capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_capture_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "ocr-tool":
+            return Completed("member-a: OCRで読めた本文です\n")
+        return Completed("")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.main(
+        [
+            "--screenshot-command",
+            "capture-tool {image}",
+            "--ocr-command",
+            "ocr-tool {image}",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][0] == "capture-tool"
+    assert calls[1][0] == "ocr-tool"
+    assert calls[0][1].endswith("capture.png")
+    assert calls[1][1].endswith("capture.png")
+    assert output == "member-a: OCRで読めた本文です\n"
+
+
+def test_screenshot_ocr_runner_blocks_sensitive_ocr_output(tmp_path, capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_sensitive_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    image = tmp_path / "capture.png"
+    image.write_bytes(b"fake-png")
+
+    class Completed:
+        returncode = 0
+        stdout = "member-a: https://discord.com/api/webhooks/123456789012345678/token\n"
+        stderr = ""
+
+    monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = runner.main(["--image", str(image), "--ocr-command", "ocr-tool {image}"])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "discord_webhook_url" in captured.err
+    assert "webhooks/123456789012345678" not in captured.err
+
+
+def test_screenshot_ocr_runner_redacts_sensitive_command_error(capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_error_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "failed near /private/tmp/discord-profile"
+
+    monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = runner.main(["--screenshot-command", "capture-tool {image}", "--ocr-command", "ocr-tool {image}"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "安全監査により詳細を省略しました。" in captured.err
+    assert "/private/tmp/discord-profile" not in captured.err
+
+
+def test_screenshot_ocr_runner_requires_image_placeholder(tmp_path, capsys):
+    runner = load_script_module("screenshot_ocr_runner_placeholder_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    image = tmp_path / "capture.png"
+    image.write_bytes(b"fake-png")
+
+    result = runner.main(["--image", str(image), "--ocr-command", "ocr-tool"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "placeholder_missing" in captured.err
 
 
 def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):

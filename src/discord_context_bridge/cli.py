@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -26,6 +27,17 @@ from .core import (
     review_reply_intent,
     resolve_context_bindings,
     upsert_context_document,
+)
+
+
+SENSITIVE_ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"https://discord(?:app)?\.com/api/webhooks/\S+", re.IGNORECASE),
+    re.compile(r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})\b"),
+    re.compile(r"(?:Library/Application Support/Discord|\\AppData\\Roaming\\discord)", re.IGNORECASE),
+    re.compile(r"(?<!\d)\d{17,20}(?!\d)"),
+    re.compile(r"(?:/(?:Users|home|private|tmp|var/folders|Volumes)/[^ \n]+|[A-Za-z]:\\[^ \n]+)"),
+    re.compile(r"\b" + "Author" + r"ization\s*:\s*(?:" + "Bear" + r"er\s+)?[^ \n]+", re.IGNORECASE),
+    re.compile(r"\b" + "Bear" + r"er\s+[A-Za-z0-9._~+/=-]{10,}\b", re.IGNORECASE),
 )
 
 
@@ -284,6 +296,19 @@ def read_clipboard_text(command: str) -> str:
     return read_command_text(command, empty_message="clipboard が空です。Discord の可視テキストをコピーしてから再実行してください。")
 
 
+def safe_command_failure_reason(stderr: str) -> str:
+    if any(pattern.search(stderr) for pattern in SENSITIVE_ERROR_PATTERNS):
+        return "安全監査により詳細を省略しました。"
+    lowered = stderr.casefold()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    if "permission" in lowered or "not authorized" in lowered:
+        return "permission"
+    if "empty" in lowered:
+        return "empty"
+    return "adapter_failed"
+
+
 def read_command_text(
     command: str,
     *,
@@ -317,7 +342,7 @@ def read_command_text(
     if completed.returncode != 0:
         raise SystemExit(
             "local command の実行に失敗しました: "
-            f"command={command!r} stderr={completed.stderr.strip()}"
+            f"exit_code={completed.returncode} reason={safe_command_failure_reason(completed.stderr.strip())}"
         )
     if not completed.stdout.strip():
         raise SystemExit(empty_message)
