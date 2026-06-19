@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -36,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source.add_argument("--list-macos-windows", action="store_true", help="macOS Accessibility で Discord window 候補名だけを表示する")
     source.add_argument("--probe-macos-accessibility", action="store_true", help="本文を出さずに macOS Accessibility の候補別取得可否を確認する")
+    parser.add_argument("--json", action="store_true", help="probe / list 系の結果を機械可読 JSON で出す")
     parser.add_argument("--clipboard-command", default="pbpaste", help="clipboard 取得 command。既定は pbpaste")
     parser.add_argument("--process-name", default="Discord", help="macOS Accessibility で読む process 名")
     parser.add_argument(
@@ -351,8 +353,10 @@ def safe_probe_reason(error: Exception) -> str:
         return "timeout"
     if "empty" in text:
         return "empty"
-    if "not found" in text:
+    if "not_found" in text or "not found" in text:
         return "not_found"
+    if "permission" in text or "not authorized" in text or "not authorised" in text:
+        return "permission"
     if "focused-only" in text or "focused element" in text:
         return "focused_unavailable"
     return "adapter_error"
@@ -375,6 +379,41 @@ def print_macos_accessibility_probe(rows: list[dict[str, object]], *, focus_app:
         if "reason" in row:
             detail += f" reason={row['reason']}"
         print(detail)
+
+
+def probe_failure_stage(reason: str) -> str:
+    return {
+        "not_found": "dependency_missing",
+        "timeout": "timeout",
+        "empty": "ocr_empty",
+        "focused_unavailable": "unsupported_screen_state",
+    }.get(reason, "capture_failed")
+
+
+def build_macos_accessibility_probe_payload(
+    rows: list[dict[str, object]],
+    *,
+    focus_app: bool,
+    reason: str = "",
+) -> dict[str, object]:
+    any_ready = any(row.get("status") == "ready" for row in rows)
+    payload: dict[str, object] = {
+        "schema": "discord_macos_accessibility_probe.v1",
+        "ok": any_ready,
+        "any_ready": any_ready,
+        "focus_app": focus_app,
+        "candidate_count": len(rows),
+        "rows": rows,
+        "text_output": "omitted",
+        "outbound": "disabled",
+    }
+    if not any_ready:
+        first_reason = reason
+        if not first_reason:
+            first_reason = next((str(row.get("reason")) for row in rows if row.get("reason")), "empty")
+        payload["failure_stage"] = probe_failure_stage(first_reason)
+        payload["reason"] = first_reason
+    return payload
 
 
 def read_visible_text(args: argparse.Namespace) -> str:
@@ -431,12 +470,29 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.probe_macos_accessibility:
-            rows, any_ready = probe_macos_accessibility_routes(
-                args.process_name,
-                timeout=args.timeout,
-                focus_app=not args.no_focus,
-                limit=args.probe_limit,
-            )
+            try:
+                rows, any_ready = probe_macos_accessibility_routes(
+                    args.process_name,
+                    timeout=args.timeout,
+                    focus_app=not args.no_focus,
+                    limit=args.probe_limit,
+                )
+            except Exception as exc:
+                reason = safe_probe_reason(exc)
+                payload = build_macos_accessibility_probe_payload(
+                    [],
+                    focus_app=not args.no_focus,
+                    reason=reason,
+                )
+                if args.json:
+                    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                else:
+                    print(f"Discord Accessibility route probe failed: {reason}", file=sys.stderr)
+                return 2
+            if args.json:
+                payload = build_macos_accessibility_probe_payload(rows, focus_app=not args.no_focus)
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                return 0 if payload["ok"] else 2
             print_macos_accessibility_probe(rows, focus_app=not args.no_focus)
             return 0 if any_ready else 2
         if args.list_macos_windows:
