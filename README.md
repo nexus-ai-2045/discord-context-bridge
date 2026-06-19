@@ -396,6 +396,13 @@ cat /private/path/from-discord-channel.txt | \
   python3 scripts/discord_main_route_smoke.py --json
 ```
 
+bot channel server / private adapter から渡せる text event が届いているかだけを見る場合は、
+channel event probe を使います。これは本文や file name を出しません。
+
+```bash
+python3 scripts/discord_channel_event_probe.py --json
+```
+
 Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
 
 ```bash
