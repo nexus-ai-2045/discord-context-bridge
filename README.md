@@ -279,6 +279,20 @@ python3 scripts/probe_visible_source.py \
 
 `text_output` は常に `omitted` です。この probe pack から Discord へ送信しません。
 
+Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
+
+```bash
+python3 scripts/probe_visible_source.py \
+  --capture-profile macos-screencapture-region \
+  --capture-region "0,0,1400,1000" \
+  --ocr-language eng \
+  --json
+```
+
+この経路も `live_ops_smoke.py` 経由で確認するため、本文は表示しません。範囲は `x,y,w,h` 形式で、
+`w` と `h` は 1 以上です。日本語 OCR を使う場合は、tesseract の `jpn` traineddata を導入してから
+`--ocr-language jpn+eng` を指定してください。
+
 まず window 候補だけを短く確認します。この出力は本文ではなく、既定では raw window 名も出しません。
 
 ```bash
@@ -335,10 +349,19 @@ PYTHONPATH=src python3 scripts/live_ops_smoke.py \
 macOS Accessibility や browser automation が環境依存で不安定な場合は、private 側の command を `--source-command` に渡します。
 その command も stdout には可視本文だけを出し、credential や profile path を出さない契約にします。
 
-ScreenCapture / OCR 経路を試す場合は、capture と OCR の実装を private command として差し込みます。
-public runner は画像や OCR engine を内蔵せず、`{image}` placeholder でコマンドをつなぎ、stdout の安全監査だけを行います。
-直接実行すると OCR で読めた本文が terminal に出ます。実運用の確認は、先に `probe_visible_source.py` または
-`live_ops_smoke.py` 経由で本文非表示のまま通してください。
+ScreenCapture / OCR 経路を運用確認する場合は、本文を terminal に出さない `probe_visible_source.py` か
+`live_ops_smoke.py` を既定にします。private adapter 開発者が OCR runner を直接試す場合だけ、
+次の command を local terminal で実行します。直接実行すると OCR で読めた本文が stdout に出ます。
+
+```bash
+python3 scripts/read_screenshot_ocr_text.py \
+  --capture-profile macos-screencapture-region \
+  --capture-region "0,0,1200,900" \
+  --ocr-command "tesseract {image} stdout -l eng"
+```
+
+任意の private capture command を使う場合だけ、次の形式にします。`screencapture` を使う場合は
+full screen capture を避けるため、`-R x,y,w,h` が必要です。
 
 ```bash
 python3 scripts/read_screenshot_ocr_text.py \

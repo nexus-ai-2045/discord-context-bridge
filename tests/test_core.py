@@ -1080,6 +1080,100 @@ def test_screenshot_ocr_runner_runs_capture_then_ocr(capsys, monkeypatch):
     assert output == "member-a: OCRで読めた本文です\n"
 
 
+def test_screenshot_ocr_runner_builds_macos_screencapture_region(capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_region_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "ocr-tool":
+            return Completed("member-a: OCRで読めた本文です\n")
+        return Completed("")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.main(
+        [
+            "--screencapture-region",
+            "10,20,300,400",
+            "--ocr-command",
+            "ocr-tool {image}",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][:3] == ["screencapture", "-x", "-R10,20,300,400"]
+    assert calls[1][0] == "ocr-tool"
+    assert output == "member-a: OCRで読めた本文です\n"
+
+
+def test_screenshot_ocr_runner_builds_named_capture_profile(capsys, monkeypatch):
+    runner = load_script_module(
+        "screenshot_ocr_runner_named_profile_for_test",
+        ROOT / "scripts" / "read_screenshot_ocr_text.py",
+    )
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "ocr-tool":
+            return Completed("member-a: OCRで読めた本文です\n")
+        return Completed("")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.main(
+        [
+            "--capture-profile",
+            "macos-screencapture-region",
+            "--capture-region",
+            "10,20,300,400",
+            "--ocr-command",
+            "ocr-tool {image}",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][:3] == ["screencapture", "-x", "-R10,20,300,400"]
+    assert calls[1][0] == "ocr-tool"
+    assert output == "member-a: OCRで読めた本文です\n"
+
+
+def test_screenshot_ocr_runner_rejects_invalid_capture_region(capsys):
+    runner = load_script_module("screenshot_ocr_runner_bad_region_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+
+    result = runner.main(
+        [
+            "--capture-profile",
+            "macos-screencapture-region",
+            "--capture-region",
+            "10,20,0,400",
+            "--ocr-command",
+            "ocr-tool {image}",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "invalid_capture_region" in captured.err
+
+
 def test_screenshot_ocr_runner_blocks_sensitive_ocr_output(tmp_path, capsys, monkeypatch):
     runner = load_script_module("screenshot_ocr_runner_sensitive_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
     image = tmp_path / "capture.png"
@@ -1153,6 +1247,23 @@ def test_screenshot_ocr_runner_requires_image_placeholder(tmp_path, capsys):
     assert "placeholder_missing" in captured.err
 
 
+def test_screenshot_ocr_runner_blocks_full_screen_screencapture(capsys):
+    runner = load_script_module("screenshot_ocr_runner_fullscreen_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+
+    result = runner.main(
+        [
+            "--screenshot-command",
+            "screencapture -x {image}",
+            "--ocr-command",
+            "ocr-tool {image}",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "full_screen_capture_blocked" in captured.err
+
+
 def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):
     live_smoke = load_script_module("live_ops_smoke_for_test", ROOT / "scripts" / "live_ops_smoke.py")
     store = tmp_path / "live-smoke.ndjson"
@@ -1218,6 +1329,116 @@ def test_probe_visible_source_reports_without_message_text(capsys, monkeypatch):
     assert "message text: omitted" in output
     assert "画面に見えている本文" not in output
     assert any("scripts/read_screenshot_ocr_text.py" in command for command in calls)
+
+
+def test_probe_visible_source_can_build_ocr_capture_region_source(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_region_for_test", ROOT / "scripts" / "probe_visible_source.py")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Completed()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(
+        [
+            "--capture-profile",
+            "macos-screencapture-region",
+            "--capture-region",
+            "10,20,300,400",
+            "--ocr-language",
+            "jpn+eng",
+            "--json",
+        ]
+    )
+    payload = capsys.readouterr().out
+
+    assert result == 0
+    live_smoke_call = next(command for command in calls if "scripts/live_ops_smoke.py" in command)
+    source_index = live_smoke_call.index("--source-command") + 1
+    source_command = live_smoke_call[source_index]
+    assert "--capture-profile macos-screencapture-region --capture-region 10,20,300,400" in source_command
+    assert "tesseract {image} stdout -l jpn+eng" in source_command
+    assert '"text_output": "omitted"' in payload
+    assert '"capture_profile"' in payload
+    assert '"image_output": "temporary"' in payload
+
+
+def test_probe_visible_source_reports_live_smoke_metrics(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_metrics_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        if "scripts/live_ops_smoke.py" in command:
+            return Completed(
+                '{"parsed": 7, "source_ready": true, "gate_verdict": "pass", '
+                '"event_count": 7, "text_output": "omitted", "outbound": "disabled"}'
+            )
+        return Completed()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(["--source-command", "visible-source", "--json"])
+    payload = capsys.readouterr().out
+
+    assert result == 0
+    assert '"parsed": 7' in payload
+    assert '"source_ready": true' in payload
+    assert '"gate_verdict": "pass"' in payload
+    assert '"text_output": "omitted"' in payload
+
+
+def test_probe_visible_source_rejects_invalid_ocr_language():
+    probe = load_script_module("probe_visible_source_bad_language_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    with pytest.raises(ValueError, match="ocr language"):
+        probe.build_ocr_capture_source_command(
+            region="10,20,300,400",
+            language="eng --psm 6",
+            timeout=20,
+        )
+
+
+def test_probe_visible_source_requires_capture_profile_for_capture_region(capsys):
+    probe = load_script_module("probe_visible_source_region_requires_profile_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    result = probe.main(["--capture-region", "10,20,300,400", "--json"])
+    payload = capsys.readouterr().out
+
+    assert result == 2
+    assert '"reason": "capture_profile_required"' in payload
+
+
+def test_probe_visible_source_reports_invalid_ocr_language_without_traceback(capsys):
+    probe = load_script_module("probe_visible_source_bad_language_cli_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    result = probe.main(
+        [
+            "--capture-profile",
+            "macos-screencapture-region",
+            "--capture-region",
+            "10,20,300,400",
+            "--ocr-language",
+            "eng --psm 6",
+            "--json",
+        ]
+    )
+    payload = capsys.readouterr().out
+
+    assert result == 2
+    assert '"reason": "invalid_ocr_language"' in payload
 
 
 def test_probe_visible_source_json_marks_dependency_warning(capsys, monkeypatch):
