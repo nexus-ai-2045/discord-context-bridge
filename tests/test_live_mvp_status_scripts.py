@@ -8,6 +8,7 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
 import discord_bot_route_preflight
+import discord_bot_private_ingest
 import e2e_private_adapter_check
 import live_ops_smoke
 import live_mvp_status
@@ -41,6 +42,55 @@ def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Pa
 
     assert status == {"exists": True, "token_set": True}
     assert "synthetic-secret" not in str(status)
+
+
+def test_bot_private_ingest_returns_context_without_text(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
+
+    payload = discord_bot_private_ingest.build_ingest_payload(
+        text,
+        channel_dir=channel_dir,
+        guild="safe-guild",
+        channel="safe-channel",
+        draft="公開時期の前提を確認します。",
+        min_parsed=1,
+    )
+
+    rendered = discord_bot_private_ingest._json(payload)
+    assert payload["ok"] is True
+    assert payload["parsed"] == 2
+    assert payload["context_ready"] is True
+    assert payload["send_capability"] == "disabled"
+    assert payload["text_output"] == "omitted"
+    assert payload["outbound_actions"] == "disabled"
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+
+
+def test_bot_private_ingest_empty_input_is_safe(tmp_path: Path):
+    payload = discord_bot_private_ingest.build_ingest_payload(
+        "",
+        channel_dir=tmp_path,
+        guild="safe-guild",
+        channel="safe-channel",
+        draft="",
+        min_parsed=1,
+    )
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "source_empty"
+    assert payload["text_output"] == "omitted"
+    assert payload["outbound_actions"] == "disabled"
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):
