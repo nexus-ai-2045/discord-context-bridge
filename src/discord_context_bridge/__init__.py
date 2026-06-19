@@ -18,6 +18,7 @@ from .core import (
     review_reply_intent,
     search_events,
     send_message,
+    status_dashboard,
     upsert_context_document,
 )
 
@@ -41,5 +42,6 @@ __all__ = [
     "review_reply_intent",
     "search_events",
     "send_message",
+    "status_dashboard",
     "upsert_context_document",
 ]

@@ -203,6 +203,59 @@ def ops_view_summary(path: Path = DEFAULT_STORE) -> dict[str, Any]:
     }
 
 
+def status_dashboard(path: Path = DEFAULT_STORE, *, github_state: str = "not_checked") -> dict[str, Any]:
+    events = load_events(path)
+    audit = audit_event_store(path)
+    labels = sorted({event.channel_label for event in events})
+    broken: list[str] = []
+    blocked: list[str] = []
+    next_steps: list[str] = []
+
+    if audit["issue_count"]:
+        broken.append("保存データの安全監査に確認事項があります。")
+        blocked.append("外部公開前に audit-store を確認してください。")
+    if not events:
+        blocked.append("Discord 可視本文はまだ取り込まれていません。")
+        next_steps.append("private adapter probe または import-visible-text を実行します。")
+    else:
+        next_steps.append("context-passport または review-draft で返信前確認を行えます。")
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_status_dashboard.v1",
+        "message": "Discord bridge status dashboard を作成しました。",
+        "now": {
+            "context_available": bool(events),
+            "event_count": len(events),
+            "safe_label_count": len(labels),
+            "latest_seen": max((event.observed_at for event in events), default=None),
+            "text_returned": False,
+            "text_saved_in_status": False,
+        },
+        "done": [
+            "read-only event store",
+            "ops-view",
+            "context-passport",
+            "review-draft",
+            "private-adapter-probe",
+        ],
+        "broken": broken,
+        "blocked": blocked,
+        "next": next_steps,
+        "github": {"state": github_state},
+        "residual": [
+            "Discord への送信、削除、reaction は無効です。",
+            "実 Discord 本文取得は private adapter 側で扱います。",
+        ],
+        "safety_boundary": {
+            "outbound_actions": "disabled",
+            "raw_text_included": False,
+            "participant_names_included": False,
+            "local_paths_included": False,
+        },
+    }
+
+
 def load_context_library(path: Path = DEFAULT_CONTEXT_STORE) -> list[dict[str, Any]]:
     if not path.exists():
         return []
