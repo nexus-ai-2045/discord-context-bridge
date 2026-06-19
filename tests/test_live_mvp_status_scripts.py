@@ -109,3 +109,49 @@ def test_live_mvp_status_returns_safe_json_on_ops_timeout(monkeypatch):
         "text_output": "omitted",
         "outbound_actions": "disabled",
     }
+
+
+def test_live_mvp_status_passes_source_timeout(monkeypatch):
+    calls = []
+
+    def fake_run_script(script_name, args, *, timeout):
+        calls.append({"script_name": script_name, "args": args, "timeout": timeout})
+        if script_name == "live_ops_smoke.py":
+            return {
+                "returncode": 0,
+                "payload": {
+                    "parsed": 1,
+                    "source_ready": True,
+                    "gate_verdict": "pass",
+                    "text_output": "omitted",
+                    "outbound": "disabled",
+                },
+            }
+        return {
+            "returncode": 0,
+            "payload": {
+                "ok": True,
+                "issue_count": 0,
+                "text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
+
+    monkeypatch.setattr(live_mvp_status, "run_script", fake_run_script)
+
+    result = live_mvp_status.main(
+        [
+            "--source-command",
+            "discord-visible-text",
+            "--source-timeout",
+            "61",
+            "--timeout",
+            "90",
+            "--skip-preflight",
+        ]
+    )
+
+    live_call = next(call for call in calls if call["script_name"] == "live_ops_smoke.py")
+    source_timeout_index = live_call["args"].index("--source-timeout") + 1
+    assert result == 0
+    assert live_call["args"][source_timeout_index] == "61.0"

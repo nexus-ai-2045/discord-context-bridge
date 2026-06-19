@@ -78,6 +78,8 @@ def safe_source_failure_reason(reason: str) -> str:
         tail = reason.rsplit("reason=", 1)[1].strip()
         if tail in {"timeout", "permission", "empty", "not_found", "adapter_failed"}:
             return tail
+    if "秒で完了しませんでした" in reason:
+        return "timeout"
     safe_reason = safe_command_failure_reason(reason)
     if safe_reason == "adapter_failed" and "not_found" in reason.casefold():
         return "not_found"
