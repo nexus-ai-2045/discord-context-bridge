@@ -771,6 +771,39 @@ def test_visible_text_adapter_can_read_source_command(capsys, monkeypatch):
     assert output == "member-a: 画面に見えている本文です\n"
 
 
+def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):
+    live_smoke = load_script_module("live_ops_smoke_for_test", ROOT / "scripts" / "live_ops_smoke.py")
+    store = tmp_path / "live-smoke.ndjson"
+
+    monkeypatch.setattr(
+        live_smoke,
+        "read_command_text",
+        lambda command, empty_message: FIXTURE.read_text(encoding="utf-8"),
+    )
+
+    result = live_smoke.main(
+        [
+            "--source-command",
+            "discord-visible-text",
+            "--store",
+            str(store),
+            "--channel",
+            "safe-general",
+            "--reset",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "live ops smoke が完了しました。" in output
+    assert "safe label: safe-general" in output
+    assert "parsed: 3" in output
+    assert "appended: 3" in output
+    assert "message text: omitted" in output
+    assert "Can you clarify" not in output
+    assert "text_snippet" not in output
+
+
 def test_visible_text_adapter_builds_macos_accessibility_script():
     adapter = load_script_module("visible_text_adapter_macos_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
 
