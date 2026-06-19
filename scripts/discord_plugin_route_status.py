@@ -25,6 +25,7 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
         "recommended_route": "bot_private_ingest" if bot_ready else "discord_configure_or_access",
         "routes": {
             "discord_configure": {
+                "route_class": "control",
                 "role": "bot token 設定の入口",
                 "status": "configured" if preflight["bot_token"]["set"] else "needs_token",
                 "token_set": bool(preflight["bot_token"]["set"]),
@@ -32,6 +33,7 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "mutation": "disabled",
             },
             "discord_access": {
+                "route_class": "control",
                 "role": "DM / group access allowlist の入口",
                 "status": "readable" if access.get("readable", True) else "invalid_json",
                 "dm_policy": access.get("dm_policy", "unknown"),
@@ -42,6 +44,7 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "mutation": "disabled",
             },
             "bot_private_ingest": {
+                "route_class": "main",
                 "role": "受け取った Discord 本文を文脈カード / 返信前 gate へ流す本線",
                 "status": "ready" if bot_ready else "blocked",
                 "next": preflight["next"],
@@ -49,12 +52,14 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "outbound_actions": "disabled",
             },
             "computer_use_discord": {
+                "route_class": "visual_fallback",
                 "role": "画面を人間確認する fallback",
                 "status": "manual_read_only_fallback",
                 "raw_text_output": "disabled_by_policy",
                 "send_capability": "disabled_by_policy",
             },
             "ocr_region": {
+                "route_class": "last_fallback",
                 "role": "bot route が使えない時の pixel fallback",
                 "status": "fallback",
                 "requires": "explicit_region",
