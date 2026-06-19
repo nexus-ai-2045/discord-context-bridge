@@ -11,6 +11,7 @@ import discord_bot_route_preflight
 import discord_bot_private_ingest
 import discord_plugin_route_status
 import discord_main_route_smoke
+import discord_channel_event_probe
 import e2e_private_adapter_check
 import live_ops_smoke
 import live_mvp_status
@@ -187,6 +188,57 @@ def test_discord_main_route_smoke_empty_input_is_safe(tmp_path: Path):
     assert payload["failure_stage"] in {"main_route_not_ready", "source_empty"}
     assert payload["text_output"] == "omitted"
     assert payload["outbound_actions"] == "disabled"
+
+
+def test_discord_channel_event_probe_reports_missing_text_without_names(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    inbox = channel_dir / "inbox"
+    inbox.mkdir(parents=True)
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    (inbox / "123456789012345678-sensitive.png").write_bytes(b"fake")
+
+    payload = discord_channel_event_probe.build_probe(channel_dir)
+    rendered = discord_channel_event_probe._json(payload)
+
+    assert payload["ok"] is False
+    assert payload["preflight_ok"] is True
+    assert payload["text_event_candidates"] == 0
+    assert payload["media_inbox_count"] == 1
+    assert payload["failure_stage"] == "no_text_event_source"
+    assert payload["text_output"] == "omitted"
+    assert payload["file_names_output"] == "omitted"
+    assert payload["outbound_actions"] == "disabled"
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678-sensitive.png" not in rendered
+    assert "123456789012345678" not in rendered
+
+
+def test_discord_channel_event_probe_detects_text_candidate_without_reading_it(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    inbox = channel_dir / "inbox"
+    inbox.mkdir(parents=True)
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    (inbox / "event.ndjson").write_text("member-a: 公開時期の前提を確認したいです。\n", encoding="utf-8")
+
+    payload = discord_channel_event_probe.build_probe(channel_dir)
+    rendered = discord_channel_event_probe._json(payload)
+
+    assert payload["ok"] is True
+    assert payload["source_ready"] is True
+    assert payload["text_event_candidates"] == 1
+    assert payload["next"] == "pipe_text_event_to_discord_main_route_smoke"
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):
