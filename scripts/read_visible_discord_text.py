@@ -43,24 +43,51 @@ def run_command(command: str) -> str:
     return completed.stdout
 
 
-def read_macos_accessibility(process_name: str) -> str:
-    script = f'''
+def build_macos_accessibility_script(process_name: str) -> str:
+    return f'''
+on appendText(textValues, candidateText)
+  if candidateText is missing value then return textValues
+  set candidateText to candidateText as text
+  if candidateText is not "" then set end of textValues to candidateText
+  return textValues
+end appendText
+
+on collectText(uiElement, textValues)
+  try
+    set textValues to my appendText(textValues, value of uiElement)
+  end try
+  try
+    set textValues to my appendText(textValues, name of uiElement)
+  end try
+  return textValues
+end collectText
+
 tell application "System Events"
   if not (exists process "{process_name}") then error "process not found: {process_name}"
   tell process "{process_name}"
+    set AppleScript's text item delimiters to linefeed
     set frontmost to true
     delay 0.1
     try
-      set focusedText to value of focused UI element as text
-      if focusedText is not "" then return focusedText
+      set focusedElement to value of attribute "AXFocusedUIElement"
+      set focusedTexts to {{}}
+      set focusedTexts to my collectText(focusedElement, focusedTexts)
+      if focusedTexts is not {{}} then return focusedTexts as text
     end try
     try
-      set windowText to value of every static text of front window as text
-      return windowText
+      set windowTexts to {{}}
+      repeat with uiElement in entire contents of front window
+        set windowTexts to my collectText(uiElement, windowTexts)
+      end repeat
+      return windowTexts as text
     end try
   end tell
 end tell
 '''
+
+
+def read_macos_accessibility(process_name: str) -> str:
+    script = build_macos_accessibility_script(process_name)
     return run_command("osascript -e " + shlex.quote(script))
 
 
