@@ -385,6 +385,7 @@ def probe_failure_stage(reason: str) -> str:
     return {
         "not_found": "dependency_missing",
         "timeout": "timeout",
+        "permission": "permission",
         "empty": "ocr_empty",
         "focused_unavailable": "unsupported_screen_state",
     }.get(reason, "capture_failed")

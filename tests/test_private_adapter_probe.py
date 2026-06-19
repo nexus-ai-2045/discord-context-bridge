@@ -154,6 +154,19 @@ def test_macos_accessibility_probe_payload_classifies_blocker():
     assert payload["text_output"] == "omitted"
 
 
+def test_macos_accessibility_probe_payload_classifies_permission_blocker():
+    payload = read_visible_discord_text.build_macos_accessibility_probe_payload(
+        [],
+        focus_app=False,
+        reason="permission",
+    )
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "permission"
+    assert payload["reason"] == "permission"
+    assert payload["text_output"] == "omitted"
+
+
 def test_visible_source_ax_probe_warns_when_no_focus_probe_not_ready(monkeypatch):
     def fake_command_result(name, command, **kwargs):
         assert name == "macos_accessibility_probe"
