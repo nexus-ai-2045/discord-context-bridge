@@ -184,13 +184,71 @@ def test_macos_window_list_payload_omits_titles():
 
 
 def test_macos_window_list_payload_classifies_timeout():
-    payload = read_visible_discord_text.build_macos_window_list_payload([], reason="timeout")
+    payload = read_visible_discord_text.build_macos_window_list_payload(
+        [],
+        reason="timeout",
+        source_stage="window_list_timeout",
+    )
 
     assert payload["ok"] is False
     assert payload["candidate_count"] == 0
     assert payload["failure_stage"] == "timeout"
     assert payload["reason"] == "timeout"
+    assert payload["source_stage"] == "window_list_timeout"
     assert payload["outbound"] == "disabled"
+
+
+def test_macos_accessibility_probe_payload_reports_source_stage():
+    payload = read_visible_discord_text.build_macos_accessibility_probe_payload(
+        [],
+        focus_app=False,
+        reason="timeout",
+        source_stage="window_list_timeout",
+    )
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "timeout"
+    assert payload["reason"] == "timeout"
+    assert payload["source_stage"] == "window_list_timeout"
+    assert payload["text_output"] == "omitted"
+
+
+def test_safe_probe_source_stage_classifies_timeout_contexts():
+    assert (
+        read_visible_discord_text.safe_probe_source_stage(
+            RuntimeError("command timed out after 2s"),
+            operation="window_list",
+        )
+        == "window_list_timeout"
+    )
+    assert (
+        read_visible_discord_text.safe_probe_source_stage(
+            RuntimeError("command timed out after 2s"),
+            operation="accessibility_scan",
+        )
+        == "full_scan_timeout"
+    )
+    assert (
+        read_visible_discord_text.safe_probe_source_stage(
+            RuntimeError("process not found: Discord"),
+            operation="window_list",
+        )
+        == "process_not_found"
+    )
+    assert (
+        read_visible_discord_text.safe_probe_source_stage(
+            RuntimeError("command failed with exit code 1: reason=not_found"),
+            operation="window_list",
+        )
+        == "process_not_found"
+    )
+    assert (
+        read_visible_discord_text.safe_probe_source_stage(
+            RuntimeError("Discord window candidates not found."),
+            operation="window_preflight",
+        )
+        == "window_not_found"
+    )
 
 
 def test_visible_source_ax_probe_warns_when_no_focus_probe_not_ready(monkeypatch):
@@ -203,6 +261,7 @@ def test_visible_source_ax_probe_warns_when_no_focus_probe_not_ready(monkeypatch
             "status": "pass",
             "exit_code": 2,
             "failure_stage": "unsupported_screen_state",
+            "source_stage": "window_not_found",
             "text_output": "omitted",
             "outbound": "disabled",
         }
@@ -213,4 +272,5 @@ def test_visible_source_ax_probe_warns_when_no_focus_probe_not_ready(monkeypatch
 
     assert result["status"] == "warn"
     assert result["reason"] == "unsupported_screen_state"
+    assert result["source_stage"] == "window_not_found"
     assert result["text_output"] == "omitted"

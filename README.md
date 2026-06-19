@@ -364,6 +364,11 @@ python3 scripts/read_visible_discord_text.py \
   --timeout 3
 ```
 
+JSON 出力では、粗い分類として `failure_stage`、次に見る場所として `source_stage` を返します。
+たとえば `failure_stage=timeout` の場合でも、`source_stage=window_list_timeout` なら window 候補取得、
+`source_stage=full_scan_timeout` なら window 内の Accessibility full scan を疑います。
+raw window 名や本文はこの JSON には出しません。
+
 1回の取得で空読みやtimeoutになる場合は、自動fallback付きで試します。これは focused element を短く試し、
 だめなら同じ window の full scan、必要なら前面 window へ戻す順で確認します。
 
