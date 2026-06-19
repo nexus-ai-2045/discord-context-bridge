@@ -14,8 +14,9 @@ Discord Context Bridge は local-first かつ read-only が既定です。
 次のものを commit しません。
 
 - Discord user token、bot token、webhook URL。
+- Discord snowflake らしき ID、HTTP 認証 header 形式の credential。
 - Browser cookie、profile、session store、screenshot。
-- 実 guild ID、channel ID、user ID、handle、private message 本文。
+- 実 guild ID、channel ID、user ID、handle、local absolute path、private message 本文。
 - private conversation を含む local event store。
 
 ## Reporting
