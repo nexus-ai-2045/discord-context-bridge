@@ -90,6 +90,7 @@ def command_result(
             "any_ready",
             "candidate_count",
             "failure_stage",
+            "source_stage",
             "reason",
         ):
             if key in payload:
@@ -191,7 +192,7 @@ def ax_probe_check(*, timeout: float, limit: int) -> dict[str, Any]:
     )
     if result.get("exit_code") == 2:
         result["status"] = "warn"
-        result["reason"] = result.get("failure_stage", result.get("reason", "not_ready"))
+        result["reason"] = result.get("reason", result.get("failure_stage", "not_ready"))
     elif result["status"] == "fail":
         result["status"] = "warn"
     return result

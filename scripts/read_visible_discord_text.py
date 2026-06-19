@@ -308,6 +308,7 @@ def build_macos_window_list_payload(
     *,
     match_hint: str = "",
     reason: str = "",
+    source_stage: str = "",
 ) -> dict[str, object]:
     normalized_hint = match_hint.casefold()
     payload: dict[str, object] = {
@@ -330,6 +331,8 @@ def build_macos_window_list_payload(
         safe_reason = reason or "not_found"
         payload["failure_stage"] = probe_failure_stage(safe_reason)
         payload["reason"] = safe_reason
+        if source_stage:
+            payload["source_stage"] = source_stage
     return payload
 
 
@@ -357,6 +360,9 @@ def probe_macos_accessibility_routes(
         except Exception as exc:
             row["status"] = "error"
             row["reason"] = safe_probe_reason(exc)
+            row_source_stage = safe_probe_source_stage(exc, operation="accessibility_scan")
+            if row_source_stage:
+                row["source_stage"] = row_source_stage
         else:
             issues = audit_visible_text(text)
             if issues:
@@ -390,6 +396,36 @@ def safe_probe_reason(error: Exception) -> str:
     if "focused-only" in text or "focused element" in text:
         return "focused_unavailable"
     return "adapter_error"
+
+
+def safe_probe_source_stage(error: Exception, *, operation: str) -> str:
+    text = str(error)
+    if audit_visible_text(text):
+        return "redacted"
+    if "process not found" in text:
+        return "process_not_found"
+    if "reason=not_found" in text and operation == "window_list":
+        return "process_not_found"
+    if "reason=not_found" in text and operation == "window_preflight":
+        return "process_not_found"
+    if "window index not found" in text:
+        return "window_not_found"
+    if "window candidates not found" in text:
+        return "window_not_found"
+    if "window not found" in text:
+        return "window_not_found"
+    if "timed out" in text:
+        return {
+            "window_list": "window_list_timeout",
+            "window_preflight": "window_list_timeout",
+            "accessibility_scan": "full_scan_timeout",
+            "source_command": "source_command_timeout",
+        }.get(operation, "system_events_timeout")
+    if "focused-only" in text or "focused element" in text:
+        return "focused_unavailable"
+    if "permission" in text or "not authorized" in text or "not authorised" in text:
+        return "permission"
+    return ""
 
 
 def unsafe_bypass_enabled(allow_unsafe: bool) -> bool:
@@ -426,6 +462,7 @@ def build_macos_accessibility_probe_payload(
     *,
     focus_app: bool,
     reason: str = "",
+    source_stage: str = "",
 ) -> dict[str, object]:
     any_ready = any(row.get("status") == "ready" for row in rows)
     payload: dict[str, object] = {
@@ -444,6 +481,11 @@ def build_macos_accessibility_probe_payload(
             first_reason = next((str(row.get("reason")) for row in rows if row.get("reason")), "empty")
         payload["failure_stage"] = probe_failure_stage(first_reason)
         payload["reason"] = first_reason
+        first_source_stage = source_stage
+        if not first_source_stage:
+            first_source_stage = next((str(row.get("source_stage")) for row in rows if row.get("source_stage")), "")
+        if first_source_stage:
+            payload["source_stage"] = first_source_stage
     return payload
 
 
@@ -510,10 +552,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except Exception as exc:
                 reason = safe_probe_reason(exc)
+                source_stage = safe_probe_source_stage(exc, operation="window_preflight")
                 payload = build_macos_accessibility_probe_payload(
                     [],
                     focus_app=not args.no_focus,
                     reason=reason,
+                    source_stage=source_stage,
                 )
                 if args.json:
                     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -531,8 +575,14 @@ def main(argv: list[str] | None = None) -> int:
                 text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
             except Exception as exc:
                 reason = safe_probe_reason(exc)
+                source_stage = safe_probe_source_stage(exc, operation="window_list")
                 if args.json:
-                    payload = build_macos_window_list_payload([], match_hint=args.window_name_contains, reason=reason)
+                    payload = build_macos_window_list_payload(
+                        [],
+                        match_hint=args.window_name_contains,
+                        reason=reason,
+                        source_stage=source_stage,
+                    )
                     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
                 else:
                     print(f"Discord window candidate list failed: {reason}", file=sys.stderr)
@@ -545,7 +595,11 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
             if args.json:
                 candidates = parse_macos_window_candidates(text)
-                payload = build_macos_window_list_payload(candidates, match_hint=args.window_name_contains)
+                payload = build_macos_window_list_payload(
+                    candidates,
+                    match_hint=args.window_name_contains,
+                    source_stage="" if candidates else "window_not_found",
+                )
                 print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
                 return 0 if payload["ok"] else 2
             print_macos_window_candidates(
