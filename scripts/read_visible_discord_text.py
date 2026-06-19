@@ -36,19 +36,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="macOS Accessibility で読む window 名の一部。未指定なら前面 window",
     )
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
+    parser.add_argument("--timeout", type=float, default=15.0, help="local command / Accessibility 取得の最大秒数")
+    parser.add_argument("--focused-only", action="store_true", help="macOS Accessibility で focused element だけを読む。重い window 全走査を避ける")
     parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
     return parser
 
 
-def run_command(command: str) -> str:
-    completed = subprocess.run(
-        shlex.split(command),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def run_command(command: str, *, timeout: float | None = None) -> str:
+    try:
+        completed = subprocess.run(
+            shlex.split(command),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"command timed out after {timeout:g}s") from exc
     if completed.returncode != 0:
-        raise RuntimeError(f"command failed: {command!r} stderr={completed.stderr.strip()}")
+        raise RuntimeError(f"command failed with exit code {completed.returncode}: stderr={completed.stderr.strip()}")
     return completed.stdout
 
 
@@ -56,9 +62,15 @@ def applescript_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def build_macos_accessibility_script(process_name: str, window_name_contains: str = "") -> str:
+def build_macos_accessibility_script(
+    process_name: str,
+    window_name_contains: str = "",
+    *,
+    focused_only: bool = False,
+) -> str:
     process_literal = applescript_string(process_name)
     window_hint_literal = applescript_string(window_name_contains)
+    focused_only_literal = "true" if focused_only else "false"
     return f'''
 on appendText(textValues, candidateText)
   if candidateText is missing value then return textValues
@@ -78,6 +90,7 @@ on collectText(uiElement, textValues)
 end collectText
 
 set windowNameHint to {window_hint_literal}
+set focusedOnly to {focused_only_literal}
 
 tell application "System Events"
   if not (exists process {process_literal}) then error "process not found: " & {process_literal}
@@ -106,6 +119,7 @@ tell application "System Events"
       set focusedTexts to my collectText(focusedElement, focusedTexts)
       if focusedTexts is not {{}} then return focusedTexts as text
     end try
+    if focusedOnly then error "focused element text not found"
     try
       set windowTexts to {{}}
       repeat with uiElement in entire contents of targetWindow
@@ -118,20 +132,31 @@ end tell
 '''
 
 
-def read_macos_accessibility(process_name: str, window_name_contains: str = "") -> str:
-    script = build_macos_accessibility_script(process_name, window_name_contains)
-    return run_command("osascript -e " + shlex.quote(script))
+def read_macos_accessibility(
+    process_name: str,
+    window_name_contains: str = "",
+    *,
+    timeout: float | None = None,
+    focused_only: bool = False,
+) -> str:
+    script = build_macos_accessibility_script(process_name, window_name_contains, focused_only=focused_only)
+    return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
 
 
 def read_visible_text(args: argparse.Namespace) -> str:
     if args.input:
         return args.input.read_text(encoding="utf-8")
     if args.from_clipboard:
-        return run_command(args.clipboard_command)
+        return run_command(args.clipboard_command, timeout=args.timeout)
     if args.source_command:
-        return run_command(args.source_command)
+        return run_command(args.source_command, timeout=args.timeout)
     if args.macos_accessibility:
-        return read_macos_accessibility(args.process_name, args.window_name_contains)
+        return read_macos_accessibility(
+            args.process_name,
+            args.window_name_contains,
+            timeout=args.timeout,
+            focused_only=args.focused_only,
+        )
     if not sys.stdin.isatty():
         return sys.stdin.read()
     raise RuntimeError("input source が未指定です。--input / --from-clipboard / --source-command / --macos-accessibility のいずれかを指定してください。")

@@ -969,7 +969,7 @@ def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         live_smoke,
         "read_command_text",
-        lambda command, empty_message: FIXTURE.read_text(encoding="utf-8"),
+        lambda command, empty_message, timeout=None: FIXTURE.read_text(encoding="utf-8"),
     )
 
     result = live_smoke.main(
@@ -995,6 +995,34 @@ def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):
     assert "text_snippet" not in output
 
 
+def test_live_ops_smoke_passes_source_timeout(tmp_path, capsys, monkeypatch):
+    live_smoke = load_script_module("live_ops_smoke_timeout_for_test", ROOT / "scripts" / "live_ops_smoke.py")
+    store = tmp_path / "live-smoke.ndjson"
+    calls = []
+
+    def fake_read_command_text(command, *, empty_message, timeout=None):
+        calls.append({"command": command, "empty_message": empty_message, "timeout": timeout})
+        return FIXTURE.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(live_smoke, "read_command_text", fake_read_command_text)
+
+    result = live_smoke.main(
+        [
+            "--source-command",
+            "discord-visible-text",
+            "--source-timeout",
+            "3.5",
+            "--store",
+            str(store),
+            "--reset",
+        ]
+    )
+
+    assert result == 0
+    assert calls[0]["timeout"] == 3.5
+    assert "message text: omitted" in capsys.readouterr().out
+
+
 def test_visible_text_adapter_builds_macos_accessibility_script():
     adapter = load_script_module("visible_text_adapter_macos_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
 
@@ -1006,6 +1034,44 @@ def test_visible_text_adapter_builds_macos_accessibility_script():
     assert "set targetWindow to front window" in script
     assert "entire contents of targetWindow" in script
     assert "appendText" in script
+
+
+def test_visible_text_adapter_builds_focused_only_macos_script():
+    adapter = load_script_module(
+        "visible_text_adapter_macos_focused_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    script = adapter.build_macos_accessibility_script("Discord", focused_only=True)
+
+    assert "set focusedOnly to true" in script
+    assert "focused element text not found" in script
+    assert "entire contents of targetWindow" in script
+
+
+def test_visible_text_adapter_passes_timeout_to_source_command(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_timeout_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "member-a: 画面に見えている本文です\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+    result = adapter.main(["--source-command", "discord-visible-text", "--timeout", "4"])
+
+    assert result == 0
+    assert calls[0][1]["timeout"] == 4
+    assert "画面に見えている本文です" in capsys.readouterr().out
 
 
 def test_visible_text_adapter_can_select_macos_window_by_name_hint():
