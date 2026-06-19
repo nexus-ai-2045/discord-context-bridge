@@ -1,5 +1,6 @@
-from pathlib import Path
 import importlib.util
+import os
+from pathlib import Path
 import tomllib
 
 import pytest
@@ -141,6 +142,7 @@ def test_fast_briefing_and_reply_review(tmp_path):
     assert review["message"] == "返信前レビューが完了しました。"
     assert review["ok_to_reply"] == "likely_ok"
     assert review["ok_to_reply_label"] == "返信してよさそうです。"
+    assert review["send_capability"] == "disabled"
     assert review["alignment_label"] == "文脈に合っています。"
     assert review["topic_warning_label"] == "話題の大きなズレは見つかりません。"
 
@@ -593,6 +595,43 @@ def test_cli_watch_passport_polls_source_command_and_outputs_updates(capsys, mon
     assert "文脈カード監視を終了しました。" in output
 
 
+def test_cli_watch_passport_allows_env_prefixed_source_command(capsys, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "outer")
+
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = PASSPORT_FIXTURE.read_text(encoding="utf-8")
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+
+    result = cli_main(
+        [
+            "watch-passport",
+            "--source-command",
+            "PYTHONPATH=src discord-visible-text",
+            "--max-polls",
+            "1",
+            "--interval",
+            "0",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][0] == ["discord-visible-text"]
+    assert calls[0][1]["env"]["PYTHONPATH"] == "src"
+    assert os.environ["PYTHONPATH"] == "outer"
+    assert '"event": "passport_update"' in output
+
+
 def test_cli_watch_passport_uses_context_library_keys(tmp_path, capsys, monkeypatch):
     class Completed:
         returncode = 0
@@ -631,6 +670,26 @@ def test_cli_watch_passport_uses_context_library_keys(tmp_path, capsys, monkeypa
     assert "文脈カード更新 #1" in output
     assert "個人情報の共有は禁止" in output
     assert "このツールから Discord へ送信しません。" in output
+
+
+def test_cli_review_draft_alias_uses_stored_context(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store)
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "review-draft",
+            "--draft",
+            "Before I reply, I will ask for the premise.",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"message": "返信前レビューが完了しました。"' in output
+    assert '"send_capability": "disabled"' in output
 
 
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
