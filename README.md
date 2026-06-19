@@ -366,6 +366,7 @@ python3 scripts/discord_bot_route_preflight.py
 
 `@discord`、`discord:configure`、`discord:access`、Computer Use fallback、OCR fallback をまとめて見る場合は、
 route status を使います。これは本文、参加者名、token、snowflake 値を出さず、どの入口を次に使うべきかだけを返します。
+経路の考え方は [`docs/routes.md`](docs/routes.md) に分けています。
 
 ```bash
 python3 scripts/discord_plugin_route_status.py --json
