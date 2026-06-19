@@ -52,3 +52,40 @@ def test_ops_preflight_reports_system_events_timeout(monkeypatch):
         "window_count": 0,
         "reason": "system_events_timeout",
     }
+
+
+def test_ops_preflight_accepts_region_capture_profile(monkeypatch):
+    monkeypatch.setattr(ops_preflight.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops_preflight, "command_available", lambda name: True)
+    monkeypatch.setattr(
+        ops_preflight,
+        "discord_process_status",
+        lambda app_name: {"checked": True, "running": True, "window_count": 1, "reason": "ok"},
+    )
+
+    payload = ops_preflight.build_preflight(
+        "Discord",
+        capture_profile="macos-screencapture-region",
+        capture_region="10,20,300,400",
+    )
+
+    assert payload["ok"] is True
+    assert payload["private_adapter_configured"] is True
+    assert payload["capture_profile"]["configured"] is True
+    assert payload["capture_profile"]["region_set"] is True
+    assert payload["capture_profile"]["text_output"] == "omitted"
+
+
+def test_live_mvp_status_builds_capture_source_command_without_fullscreen():
+    command = live_mvp_status.build_capture_source_command(
+        capture_profile="macos-screencapture-region",
+        capture_region="10,20,300,400",
+        ocr_language="jpn+eng",
+        capture_timeout=12,
+    )
+
+    assert "scripts/read_screenshot_ocr_text.py" in command
+    assert "--capture-profile macos-screencapture-region" in command
+    assert "--capture-region 10,20,300,400" in command
+    assert "tesseract {image} stdout -l jpn+eng" in command
+    assert "--screenshot-command" not in command

@@ -320,6 +320,16 @@ python3 scripts/live_mvp_status.py \
   --skip-preflight
 ```
 
+Discord の会話領域が分かっている場合は、環境変数で private command を組まずに region profile を直接渡せます。
+この経路も region 必須で、full-screen capture は使いません。
+
+```bash
+python3 scripts/live_mvp_status.py \
+  --capture-profile macos-screencapture-region \
+  --capture-region "0,0,1400,1000" \
+  --ocr-language eng
+```
+
 adapter probe と live smoke だけを切り分けたい場合は E2E check を使います。
 
 ```bash
@@ -332,6 +342,15 @@ python3 scripts/e2e_private_adapter_check.py \
 
 ```bash
 python3 scripts/ops_preflight.py --app-name Discord
+```
+
+preflight でも同じ region profile を渡すと、private adapter 設定済みとして依存関係と window 状態を確認できます。
+
+```bash
+python3 scripts/ops_preflight.py \
+  --app-name Discord \
+  --capture-profile macos-screencapture-region \
+  --capture-region "0,0,1400,1000"
 ```
 
 `@discord` bot route が使える環境では、token 値や snowflake 値を出さずに設定状態だけを確認できます。
