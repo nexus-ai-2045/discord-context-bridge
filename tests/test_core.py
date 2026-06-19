@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tomllib
@@ -554,6 +555,23 @@ def test_cli_source_command_error_reports_safe_reason(monkeypatch):
         cli_module.read_command_text("discord-visible-text")
 
     assert "exit_code=1 reason=permission" in str(exc.value)
+
+
+def test_cli_source_command_error_reports_safe_stdout_reason(monkeypatch):
+    class Completed:
+        returncode = 1
+        stdout = "Discord 可視テキストの取得に失敗しました: not_found"
+        stderr = ""
+
+    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+
+    with pytest.raises(SystemExit) as exc:
+        cli_module.read_command_text("discord-visible-text")
+
+    message = str(exc.value)
+    assert "exit_code=1 reason=not_found" in message
+    assert "Discord 可視テキストの取得に失敗しました" not in message
+    assert "discord-visible-text" not in message
 
 
 def test_cli_context_passport_outputs_human_readable_context(capsys):
@@ -1619,6 +1637,38 @@ def test_live_ops_smoke_passes_source_timeout(tmp_path, capsys, monkeypatch):
     assert result == 0
     assert calls[0]["timeout"] == 3.5
     assert "message text: omitted" in capsys.readouterr().out
+
+
+def test_live_ops_smoke_reports_structured_source_failure(tmp_path, capsys, monkeypatch):
+    live_smoke = load_script_module("live_ops_smoke_source_failure_for_test", ROOT / "scripts" / "live_ops_smoke.py")
+    store = tmp_path / "live-smoke.ndjson"
+
+    def fake_read_command_text(command, *, empty_message, timeout=None):
+        raise SystemExit("local command の実行に失敗しました: exit_code=1 reason=not_found")
+
+    monkeypatch.setattr(live_smoke, "read_command_text", fake_read_command_text)
+
+    result = live_smoke.main(
+        [
+            "--source-command",
+            "discord-visible-text",
+            "--store",
+            str(store),
+            "--reset",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 2
+    assert payload["source_ready"] is False
+    assert payload["gate_verdict"] == "source_not_ready"
+    assert payload["failure_stage"] == "dependency_missing"
+    assert payload["source_stage"] == "window_not_found"
+    assert payload["reason"] == "not_found"
+    assert payload["text_output"] == "omitted"
+    assert payload["outbound_actions"] == "disabled"
+    assert not store.exists()
 
 
 def test_live_ops_smoke_fails_when_source_parses_no_messages(tmp_path, capsys, monkeypatch):
