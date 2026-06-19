@@ -9,6 +9,7 @@ if str(ROOT / "scripts") not in sys.path:
 
 import discord_bot_route_preflight
 import discord_bot_private_ingest
+import discord_plugin_route_status
 import e2e_private_adapter_check
 import live_ops_smoke
 import live_mvp_status
@@ -91,6 +92,40 @@ def test_bot_private_ingest_empty_input_is_safe(tmp_path: Path):
     assert payload["failure_stage"] == "source_empty"
     assert payload["text_output"] == "omitted"
     assert payload["outbound_actions"] == "disabled"
+
+
+def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        (
+            '{"dmPolicy":"allowlist",'
+            '"allowFrom":["123456789012345678"],'
+            '"groups":{"987654321098765432":["111111111111111111"]},'
+            '"pending":{"222222222222222222":{"code":"333333"}}}'
+        ),
+        encoding="utf-8",
+    )
+
+    payload = discord_plugin_route_status.build_status(channel_dir)
+    rendered = discord_plugin_route_status._json(payload)
+
+    assert payload["ok"] is True
+    assert payload["recommended_route"] == "bot_private_ingest"
+    assert payload["routes"]["discord_configure"]["token_output"] == "omitted"
+    assert payload["routes"]["discord_access"]["snowflake_values_output"] == "omitted"
+    assert payload["routes"]["discord_access"]["pending_count"] == 1
+    assert payload["routes"]["bot_private_ingest"]["outbound_actions"] == "disabled"
+    assert payload["routes"]["computer_use_discord"]["send_capability"] == "disabled_by_policy"
+    assert payload["routes"]["ocr_region"]["full_screen_capture"] == "disabled_by_policy"
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "987654321098765432" not in rendered
+    assert "111111111111111111" not in rendered
+    assert "222222222222222222" not in rendered
+    assert "333333" not in rendered
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):
