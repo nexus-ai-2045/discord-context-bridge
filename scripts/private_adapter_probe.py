@@ -44,6 +44,9 @@ def safe_stage(error_class: str) -> str:
         "adapter_config_error": "dependency_missing",
         "adapter_failed": "capture_failed",
         "adapter_timeout": "timeout",
+        "permission_denied": "permission",
+        "source_not_found": "dependency_missing",
+        "source_empty": "ocr_empty",
         "ocr_empty": "ocr_empty",
         "parse_empty": "parse_empty",
         "min_parsed_failed": "min_parsed_failed",
@@ -58,10 +61,26 @@ def safe_reason(error_class: str, detail: str = "") -> str:
         "adapter_config_error": "private adapter の設定形式が不正です。",
         "adapter_failed": "private adapter の実行に失敗しました。",
         "adapter_timeout": "private adapter が timeout しました。",
+        "permission_denied": "private adapter の権限が足りません。",
+        "source_not_found": "Discord の対象画面または取得経路が見つかりません。",
+        "source_empty": "Discord 可視本文をまだ取得できていません。",
         "ocr_empty": "Discord 可視本文をまだ取得できていません。",
         "parse_empty": "Discord 可視本文を解析できませんでした。",
         "min_parsed_failed": "解析件数が成功条件に届いていません。",
     }.get(error_class, "private adapter を安全に確認できませんでした。")
+
+
+def classify_adapter_failure(reason: str) -> str:
+    normalized = reason.casefold()
+    if "timeout" in normalized:
+        return "adapter_timeout"
+    if "permission" in normalized or "not authorized" in normalized or "not authorised" in normalized:
+        return "permission_denied"
+    if "not_found" in normalized or "not found" in normalized:
+        return "source_not_found"
+    if "empty" in normalized:
+        return "source_empty"
+    return "adapter_failed"
 
 
 def failure_payload(error_class: str, *, detail: str = "") -> dict[str, Any]:
@@ -114,7 +133,8 @@ def read_private_adapter(args: argparse.Namespace) -> tuple[str | None, dict[str
         except OSError as exc:
             return None, failure_payload("adapter_failed", detail=str(exc))
         if completed.returncode != 0:
-            return None, failure_payload("adapter_failed", detail=safe_probe_reason(RuntimeError(completed.stderr)))
+            reason = safe_probe_reason(RuntimeError(completed.stderr))
+            return None, failure_payload(classify_adapter_failure(reason), detail=reason)
         return completed.stdout, None
 
     return None, failure_payload("adapter_not_configured")
