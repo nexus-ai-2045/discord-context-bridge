@@ -207,6 +207,8 @@ def test_guide_reply_from_text_returns_conversation_guide():
     assert guide["parsed"] == 3
     assert "公開時期の話ですよね" in guide["counterparty_context"]
     assert guide["reply_review"]["ok_to_reply_label"] == "返信してよさそうです。"
+    assert guide["reply_review"]["quick_verdict"] == "go"
+    assert guide["reply_review"]["quick_verdict_label"].startswith("go:")
     assert guide["send_capability_label"] == "このツールから Discord へ送信しません。"
     assert "文脈と返信意図は大きくずれていません。" in guide["next_actions"]
 
@@ -218,10 +220,28 @@ def test_guide_reply_warns_about_topic_mismatch():
     )
 
     assert guide["reply_review"]["ok_to_reply"] == "ask_first"
+    assert guide["reply_review"]["quick_verdict"] == "ask-context"
     assert "話題がずれている可能性があります" in guide["reply_review"]["topic_warning_label"]
     assert "文脈は公開時期" in guide["reply_review"]["topic_warning_label"]
     assert "返信案は価格" in guide["reply_review"]["topic_warning_label"]
     assert guide["next_actions"][0] == guide["reply_review"]["topic_warning_label"]
+
+
+def test_review_reply_intent_quick_verdict_waits_without_context():
+    review = review_reply_intent("前提を確認してから返します。", [])
+
+    assert review["quick_verdict"] == "wait"
+    assert review["quick_verdict_label"].startswith("wait:")
+    assert review["send_capability"] == "disabled"
+
+
+def test_review_reply_intent_quick_verdict_flags_risky_tone():
+    events = parse_visible_text(PASSPORT_FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent("それは最悪です。ふざけないでください。", events)
+
+    assert review["quick_verdict"] == "risky"
+    assert review["quick_verdict_label"].startswith("risky:")
+    assert review["send_capability"] == "disabled"
 
 
 def test_context_passport_from_text_summarizes_thread_context():

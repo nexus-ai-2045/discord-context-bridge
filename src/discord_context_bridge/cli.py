@@ -447,6 +447,7 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
     print(f"解析件数: {guide['parsed']}")
     print(f"相手側の文脈: {guide['counterparty_context']}")
     review = guide["reply_review"]
+    print(review["quick_verdict_label"])
     print(review["ok_to_reply_label"])
     print(review["alignment_label"])
     print(review["missing_knowledge_label"])
