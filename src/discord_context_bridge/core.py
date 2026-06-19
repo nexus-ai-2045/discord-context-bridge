@@ -823,7 +823,26 @@ def context_passport_from_text(
 def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str, Any]:
     loaded = list(events)
     gap = check_knowledge_gap(draft, loaded)
+    draft_folded = draft.casefold()
+    risky_tone = any(keyword in draft_folded for keyword in ("バカ", "黙れ", "最悪", "ふざけ", "攻撃", "怒"))
+    no_context = not loaded
     needs_check = bool(gap["knowledge_gap"] or gap["topic_mismatch"])
+    if risky_tone:
+        quick_verdict = "risky"
+        quick_verdict_label = "risky: そのまま出す前にトーンを落としてください。"
+        one_check = "相手を傷つける言い方になっていないかだけ確認してください。"
+    elif no_context:
+        quick_verdict = "wait"
+        quick_verdict_label = "wait: 文脈が足りないので今は待ちです。"
+        one_check = "先にスレッド本文を取り込んでください。"
+    elif needs_check:
+        quick_verdict = "ask-context"
+        quick_verdict_label = "ask-context: 前提を一つ確認してから入るのが安全です。"
+        one_check = "自分の返信が直近の話題に乗っているか確認してください。"
+    else:
+        quick_verdict = "go"
+        quick_verdict_label = "go: 短く入って問題なさそうです。"
+        one_check = "送る前に固有名詞と前提だけ確認してください。"
     ok_to_reply = "ask_first" if needs_check else "likely_ok"
     alignment = "minor_gap" if needs_check else "aligned"
     missing_knowledge = gap["knowledge_gap"]
@@ -837,6 +856,9 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
         "message": "返信前レビューが完了しました。",
         "ok_to_reply": ok_to_reply,
         "ok_to_reply_label": "先に確認した方がよさそうです。" if ok_to_reply == "ask_first" else "返信してよさそうです。",
+        "quick_verdict": quick_verdict,
+        "quick_verdict_label": quick_verdict_label,
+        "one_check_before_reply": one_check,
         "alignment": alignment,
         "alignment_label": "文脈に不足があります。" if alignment == "minor_gap" else "文脈に合っています。",
         "missing_knowledge": missing_knowledge,
