@@ -63,6 +63,19 @@ python3 scripts/discord_channel_event_probe.py --json
 `failure_stage=no_text_event_source` の場合、bot channel server / private adapter から smoke に渡せる本文イベントが
 まだ届いていない状態です。`source_empty` や parser failure とは分けて扱います。
 
+## E2E check
+
+fixture / private text と実イベント probe をまとめて見る場合は E2E check を使います。
+
+```bash
+python3 scripts/e2e_discord_route_check.py \
+  --input tests/fixtures/discord_rich_copy.txt \
+  --json
+```
+
+実イベント到達まで完了条件に含める場合は `--require-channel-event` を付けます。
+この時に `blocked_stage=no_text_event_source` なら、ingest や parser ではなく text event 未着が原因です。
+
 ## stoplines
 
 - Discord send / reaction / delete はしない。
