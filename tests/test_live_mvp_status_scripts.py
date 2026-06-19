@@ -9,8 +9,10 @@ if str(ROOT / "scripts") not in sys.path:
 
 import discord_bot_route_preflight
 import e2e_private_adapter_check
+import live_ops_smoke
 import live_mvp_status
 import ops_preflight
+from discord_context_bridge.cli import safe_command_failure_reason
 
 
 def test_public_safe_payload_omits_nested_store_paths():
@@ -155,3 +157,17 @@ def test_live_mvp_status_passes_source_timeout(monkeypatch):
     source_timeout_index = live_call["args"].index("--source-timeout") + 1
     assert result == 0
     assert live_call["args"][source_timeout_index] == "61.0"
+
+
+def test_ocr_empty_source_failure_is_classified_without_adapter_failed():
+    assert safe_command_failure_reason("OCR 結果が空です。対象範囲を確認してください。") == "ocr_empty"
+
+    summary = live_ops_smoke.build_source_failure_summary(
+        "local command の実行に失敗しました: exit_code=2 reason=ocr_empty",
+        min_parsed=1,
+    )
+
+    assert summary["failure_stage"] == "ocr_empty"
+    assert summary["source_stage"] == "ocr_empty"
+    assert summary["reason"] == "ocr_empty"
+    assert summary["text_output"] == "omitted"

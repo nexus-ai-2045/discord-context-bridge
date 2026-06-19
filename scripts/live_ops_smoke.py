@@ -66,6 +66,8 @@ def classify_source_failure(reason: str) -> tuple[str, str]:
         return "source_command_timeout", "source_command_timeout"
     if "permission" in normalized or "not authorized" in normalized:
         return "accessibility_permission", "accessibility_permission"
+    if "ocr_empty" in normalized:
+        return "ocr_empty", "ocr_empty"
     if "empty" in normalized or "空" in normalized:
         return "source_empty", "source_empty"
     if "not_found" in normalized:
@@ -76,7 +78,7 @@ def classify_source_failure(reason: str) -> tuple[str, str]:
 def safe_source_failure_reason(reason: str) -> str:
     if "reason=" in reason:
         tail = reason.rsplit("reason=", 1)[1].strip()
-        if tail in {"timeout", "permission", "empty", "not_found", "adapter_failed"}:
+        if tail in {"timeout", "permission", "empty", "ocr_empty", "not_found", "adapter_failed"}:
             return tail
     if "秒で完了しませんでした" in reason:
         return "timeout"

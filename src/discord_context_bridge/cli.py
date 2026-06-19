@@ -312,6 +312,8 @@ def safe_command_failure_reason(stderr: str) -> str:
         return "timeout"
     if "permission" in lowered or "not authorized" in lowered:
         return "permission"
+    if "ocr" in lowered and ("empty" in lowered or "空" in stderr):
+        return "ocr_empty"
     if "empty" in lowered:
         return "empty"
     if "not_found" in lowered or "not found" in lowered:
