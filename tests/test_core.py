@@ -676,6 +676,18 @@ def test_visible_text_adapter_can_read_source_command(capsys, monkeypatch):
     assert output == "member-a: 画面に見えている本文です\n"
 
 
+def test_visible_text_adapter_builds_macos_accessibility_script():
+    adapter = load_script_module("visible_text_adapter_macos_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
+
+    script = adapter.build_macos_accessibility_script("Discord")
+
+    assert 'process "Discord"' in script
+    assert 'attribute "AXFocusedUIElement"' in script
+    assert "focused UI element" not in script
+    assert "entire contents of front window" in script
+    assert "appendText" in script
+
+
 def test_gh_guard_parses_github_remote_owner():
     gh_guard = load_script_module("gh_guard_for_test", ROOT / "scripts" / "gh_guard.py")
 
