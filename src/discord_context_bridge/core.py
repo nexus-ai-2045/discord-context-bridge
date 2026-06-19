@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
+DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
@@ -34,10 +35,24 @@ DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
 LOCAL_ABSOLUTE_PATH_RE = re.compile(
     r"(?:/Users/[^ \n]+|/home/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
 )
+TOPIC_KEYWORDS = {
+    "公開時期": ("公開時期", "リリース", "launch", "launch timing"),
+    "価格": ("価格", "料金", "pricing", "price"),
+    "対象読者": ("対象読者", "読者", "audience"),
+}
+PURPOSE_KEYWORDS = {
+    "相談": ("相談", "困って", "help", "question", "質問"),
+    "雑談": ("雑談", "ノリ", "しりとり", "遊び", "fun", "chat"),
+    "企画": ("企画", "計画", "設計", "strategy", "plan"),
+    "告知": ("告知", "お知らせ", "announce", "release"),
+}
+RULE_KEYWORDS = ("ルール", "禁止", "注意", "ネタバレ", "spoiler", "敬意", "respect", "荒らし", "規約")
+SERIOUS_KEYWORDS = ("困って", "相談", "不安", "問題", "障害", "炎上", "注意", "ルール", "禁止")
+PLAY_KEYWORDS = ("しりとり", "雑談", "ノリ", "笑", "w", "www", "遊び", "冗談")
 
 
 class DisabledCapability(RuntimeError):
-    """Raised when a deliberately disabled external action is requested."""
+    """外部送信など、意図的に無効化した機能が呼ばれた時の例外。"""
 
 
 @dataclass(frozen=True)
@@ -65,13 +80,17 @@ class DiscordEvent:
         payload: dict[str, Any] = {
             "observed_at": self.observed_at,
             "source": self.source,
+            "source_label": "Discord の可視テキスト",
             "guild_label": self.guild_label,
             "channel_label": self.channel_label,
             "author_label": self.author_label,
             "text_snippet": self.text_snippet,
             "actions_allowed": self.actions_allowed,
+            "actions_allowed_label": "読み取りのみ",
             "private_surface": self.private_surface,
+            "private_surface_label": "非公開の会話面を含む可能性があります。",
             "confidence": self.confidence,
+            "confidence_label": "画面上で見えている範囲",
         }
         if include_id:
             payload["event_id"] = self.event_id
@@ -112,8 +131,7 @@ def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     return events
 
 
-def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
-    events = load_events(path)
+def find_private_issues(fields: dict[str, str], *, event_id: str = "", event_index: int = 0) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     checks = [
         ("discord_webhook_url", DISCORD_WEBHOOK_RE),
@@ -121,31 +139,155 @@ def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
         ("local_absolute_path", LOCAL_ABSOLUTE_PATH_RE),
         ("discord_snowflake_id", DISCORD_SNOWFLAKE_RE),
     ]
+    for field, value in fields.items():
+        for kind, pattern in checks:
+            if pattern.search(value):
+                issues.append(
+                    {
+                        "event_index": event_index,
+                        "event_id": event_id,
+                        "field": field,
+                        "kind": kind,
+                    }
+                )
+                break
+    return issues
+
+
+def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
+    events = load_events(path)
+    issues: list[dict[str, Any]] = []
     for index, event in enumerate(events):
-        fields = {
-            "author_label": event.author_label,
-            "guild_label": event.guild_label,
-            "channel_label": event.channel_label,
-            "text_snippet": event.text_snippet,
-        }
-        for field, value in fields.items():
-            for kind, pattern in checks:
-                if pattern.search(value):
-                    issues.append(
-                        {
-                            "event_index": index,
-                            "event_id": event.event_id,
-                            "field": field,
-                            "kind": kind,
-                        }
-                    )
-                    break
+        issues.extend(
+            find_private_issues(
+                {
+                    "author_label": event.author_label,
+                    "guild_label": event.guild_label,
+                    "channel_label": event.channel_label,
+                    "text_snippet": event.text_snippet,
+                },
+                event_id=event.event_id,
+                event_index=index,
+            )
+        )
     return {
         "language": DEFAULT_LANGUAGE,
+        "message": "保存データの安全監査が完了しました。",
         "store": str(path),
         "event_count": len(events),
         "issue_count": len(issues),
         "safe_for_tunnel": not issues,
+        "safe_for_tunnel_label": "外部公開前の監査を通過しました。" if not issues else "外部公開前に確認が必要です。",
+        "issues": issues,
+    }
+
+
+def load_context_library(path: Path = DEFAULT_CONTEXT_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, list):
+        raise ValueError("文脈庫の形式が不正です。list JSON が必要です。")
+    return [dict(item) for item in loaded]
+
+
+def save_context_library(entries: list[dict[str, Any]], path: Path = DEFAULT_CONTEXT_STORE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def context_entry_id(kind: str, key: str) -> str:
+    return stable_event_id({"kind": kind, "key": key})
+
+
+def upsert_context_document(
+    kind: str,
+    key: str,
+    text: str,
+    *,
+    path: Path = DEFAULT_CONTEXT_STORE,
+    source: str = "manual",
+) -> dict[str, Any]:
+    if kind not in {"server", "channel", "thread"}:
+        raise ValueError("kind は server / channel / thread のいずれかです。")
+    if not key.strip():
+        raise ValueError("key は空にできません。")
+    if not text.strip():
+        raise ValueError("text は空にできません。")
+    entries = load_context_library(path)
+    entry_id = context_entry_id(kind, key)
+    entry = {
+        "id": entry_id,
+        "kind": kind,
+        "key": key,
+        "source": source,
+        "text": text.strip(),
+        "summary": compact_context_text(text),
+        "updated_at": utc_now(),
+    }
+    replaced = False
+    for index, existing in enumerate(entries):
+        if existing.get("id") == entry_id:
+            entries[index] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+    save_context_library(entries, path)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫を更新しました。",
+        "changed": True,
+        "created": not replaced,
+        "context_store": str(path),
+        "entry": {key: value for key, value in entry.items() if key != "text"},
+    }
+
+
+def get_context_document(kind: str, key: str, *, path: Path = DEFAULT_CONTEXT_STORE) -> str:
+    entry_id = context_entry_id(kind, key)
+    for entry in load_context_library(path):
+        if entry.get("id") == entry_id:
+            return str(entry.get("text") or "")
+    return ""
+
+
+def list_context_documents(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
+    entries = load_context_library(path)
+    public_entries = [{key: value for key, value in entry.items() if key != "text"} for entry in entries]
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫の一覧を取得しました。",
+        "context_store": str(path),
+        "count": len(entries),
+        "entries": public_entries,
+    }
+
+
+def audit_context_store(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
+    entries = load_context_library(path)
+    issues: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        issues.extend(
+            find_private_issues(
+                {
+                    "key": str(entry.get("key") or ""),
+                    "source": str(entry.get("source") or ""),
+                    "summary": str(entry.get("summary") or ""),
+                    "text": str(entry.get("text") or ""),
+                },
+                event_id=str(entry.get("id") or ""),
+                event_index=index,
+            )
+        )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫の安全監査が完了しました。",
+        "context_store": str(path),
+        "entry_count": len(entries),
+        "issue_count": len(issues),
+        "safe_for_tunnel": not issues,
+        "safe_for_tunnel_label": "外部公開前の監査を通過しました。" if not issues else "外部公開前に確認が必要です。",
         "issues": issues,
     }
 
@@ -260,6 +402,7 @@ def import_visible_text(
         **result,
         "dry_run": dry_run,
         "language": DEFAULT_LANGUAGE,
+        "message": "Discord の可視テキストを取り込みました。" if not dry_run else "保存せずに取り込み結果を確認しました。",
         "parsed": len(events),
         "store": str(path),
         "preview": [event.to_dict() for event in events],
@@ -283,11 +426,14 @@ def fast_briefing(events: Iterable[DiscordEvent], limit: int = 3) -> dict[str, A
     latest = list(events)[-limit:]
     return {
         "language": DEFAULT_LANGUAGE,
+        "message": "直近文脈の短い要約を作成しました。",
         "event_count": len(latest),
         "channels": sorted({event.channel_label for event in latest}),
         "authors": [event.author_label for event in latest],
         "briefing": " / ".join(event.text_snippet for event in latest),
+        "briefing_label": " / ".join(event.text_snippet for event in latest) or "直近の文脈はまだ取り込まれていません。",
         "partial": True,
+        "partial_label": "直近の一部だけを使った要約です。",
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
     }
 
@@ -295,6 +441,9 @@ def fast_briefing(events: Iterable[DiscordEvent], limit: int = 3) -> dict[str, A
 def check_knowledge_gap(user_understanding: str, events: Iterable[DiscordEvent]) -> dict[str, Any]:
     context = fast_briefing(events)
     text = user_understanding.casefold()
+    context_topics = detect_topics(context["briefing"])
+    draft_topics = detect_topics(user_understanding)
+    topic_mismatch = bool(context_topics and draft_topics and context_topics.isdisjoint(draft_topics))
     missing: list[str] = []
     if "premise" not in text and "前提" not in text:
         missing.append("共有前提")
@@ -304,21 +453,262 @@ def check_knowledge_gap(user_understanding: str, events: Iterable[DiscordEvent])
         "language": DEFAULT_LANGUAGE,
         "context_drift_warning": bool(missing),
         "knowledge_gap": missing,
+        "context_topics": sorted(context_topics),
+        "draft_topics": sorted(draft_topics),
+        "topic_mismatch": topic_mismatch,
+        "topic_warning_label": (
+            "話題がずれている可能性があります: 文脈は"
+            + "・".join(sorted(context_topics))
+            + "、返信案は"
+            + "・".join(sorted(draft_topics))
+            + "に見えます。"
+            if topic_mismatch
+            else "話題の大きなズレは見つかりません。"
+        ),
         "recommended_briefing": context["briefing"] or "直近の文脈はまだ取り込まれていません。",
     }
+
+
+def detect_topics(text: str) -> set[str]:
+    folded = text.casefold()
+    topics: set[str] = set()
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        if any(keyword.casefold() in folded for keyword in keywords):
+            topics.add(topic)
+    return topics
+
+
+def detect_purposes(text: str) -> set[str]:
+    folded = text.casefold()
+    purposes: set[str] = set()
+    for purpose, keywords in PURPOSE_KEYWORDS.items():
+        if any(keyword.casefold() in folded for keyword in keywords):
+            purposes.add(purpose)
+    return purposes
+
+
+def extract_matching_snippets(events: Iterable[DiscordEvent], keywords: Iterable[str], *, limit: int = 3) -> list[str]:
+    lowered_keywords = [keyword.casefold() for keyword in keywords]
+    snippets: list[str] = []
+    for event in events:
+        folded = event.text_snippet.casefold()
+        if any(keyword in folded for keyword in lowered_keywords):
+            snippets.append(event.text_snippet)
+        if len(snippets) >= limit:
+            break
+    return snippets
+
+
+def compact_context_text(text: str, *, limit: int = 180) -> str:
+    compacted = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    return compacted[:limit].rstrip() + ("…" if len(compacted) > limit else "")
+
+
+def build_context_documents(
+    *,
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+) -> list[dict[str, str]]:
+    candidates = [
+        ("server_context", "サーバー文脈", server_context),
+        ("channel_context", "チャンネル文脈", channel_context),
+        ("thread_context", "スレッド文脈", thread_context),
+    ]
+    return [
+        {
+            "source": source,
+            "source_label": label,
+            "text": text.strip(),
+            "summary": compact_context_text(text),
+        }
+        for source, label, text in candidates
+        if text and text.strip()
+    ]
+
+
+def context_documents_text(context_documents: Iterable[dict[str, str]]) -> str:
+    return " ".join(document["text"] for document in context_documents)
+
+
+def extract_context_rule_notes(context_documents: Iterable[dict[str, str]], *, limit: int = 4) -> list[str]:
+    notes: list[str] = []
+    lowered_keywords = [keyword.casefold() for keyword in RULE_KEYWORDS]
+    for document in context_documents:
+        folded = document["text"].casefold()
+        if any(keyword in folded for keyword in lowered_keywords):
+            notes.append(f"{document['source_label']}: {document['summary']}")
+        if len(notes) >= limit:
+            break
+    return notes
+
+
+def summarize_thread_purpose(events: list[DiscordEvent], context_documents: list[dict[str, str]] | None = None) -> tuple[str, str]:
+    context_documents = context_documents or []
+    joined = " ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)
+    purposes = sorted(detect_purposes(joined))
+    topics = sorted(detect_topics(joined))
+    if purposes and topics:
+        value = " / ".join(purposes + topics)
+        return value, f"このスレッドは {value} に関係していそうです。"
+    if purposes:
+        value = " / ".join(purposes)
+        return value, f"このスレッドは {value} の場に見えます。"
+    if topics:
+        value = " / ".join(topics)
+        return value, f"このスレッドは {value} の話題に見えます。"
+    return "未特定", "目的はまだ断定できません。直近文脈だけで仮読みしています。"
+
+
+def classify_thread_temperature(events: list[DiscordEvent], context_documents: list[dict[str, str]] | None = None) -> tuple[str, str]:
+    context_documents = context_documents or []
+    joined = (" ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)).casefold()
+    if any(keyword.casefold() in joined for keyword in ("炎上", "荒れ", "怒", "攻撃", "揉め", "hot")):
+        return "hot", "温度が高い可能性があります。入る前に一度止めた方が安全です。"
+    if any(keyword.casefold() in joined for keyword in SERIOUS_KEYWORDS):
+        return "serious", "相談・注意・困りごと寄りです。勢いより前提確認が安全です。"
+    if any(keyword.casefold() in joined for keyword in PLAY_KEYWORDS):
+        return "play", "軽いノリの会話に見えます。短く入るなら自然です。"
+    return "chat", "通常の会話に見えます。文脈に一言つなげると入りやすいです。"
+
+
+def build_context_passport(
+    events: list[DiscordEvent],
+    *,
+    context_documents: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    context_documents = context_documents or []
+    briefing = fast_briefing(events, limit=5)
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    visible_rule_notes = extract_matching_snippets(events, RULE_KEYWORDS)
+    context_rule_notes = extract_context_rule_notes(context_documents)
+    rule_notes = context_rule_notes + visible_rule_notes
+    premise_notes = [
+        f"{document['source_label']}: {document['summary']}"
+        for document in context_documents
+        if any(keyword in document["text"] for keyword in ("前提", "目的", "ルール", "方針", "禁止", "注意"))
+    ]
+    premise_notes += extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
+    premise_notes = premise_notes[:5]
+    topics = sorted(detect_topics(briefing["briefing"] + " " + context_documents_text(context_documents)))
+    authors = [event.author_label for event in events[-5:]]
+    context_sources = [document["source"] for document in context_documents]
+    natural_entry_angles: list[str] = []
+    if rule_notes:
+        natural_entry_angles.append("先にルールや注意点を踏まえていることを示す。")
+    if context_documents:
+        natural_entry_angles.append("サーバー・チャンネル・スレッドの明示文脈を優先して確認する。")
+    if topics:
+        natural_entry_angles.append("今の話題（" + "、".join(topics) + "）に一言つなげて入る。")
+    if temperature == "play":
+        natural_entry_angles.append("短いノリで入る。説明しすぎない。")
+    elif temperature in {"serious", "hot"}:
+        natural_entry_angles.append("断定せず、前提確認から入る。")
+    else:
+        natural_entry_angles.append("直近発言への短い反応から入る。")
+
+    context_ready = bool(events) and bool(briefing["briefing"])
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "スレッド文脈カードを作成しました。",
+        "parsed": len(events),
+        "external_context_used": bool(context_documents),
+        "external_context_used_label": "明示文脈を併用しています。" if context_documents else "明示文脈は未入力です。可視本文だけで仮読みしています。",
+        "context_sources": context_sources,
+        "context_sources_label": "文脈ソース: " + ("、".join(document["source_label"] for document in context_documents) if context_documents else "可視本文のみ"),
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "conversation_flow": briefing["briefing_label"],
+        "conversation_flow_label": "直近の流れ: " + briefing["briefing_label"],
+        "implicit_premises": premise_notes,
+        "implicit_premises_label": "暗黙の前提候補: " + (" / ".join(premise_notes) if premise_notes else "まだ強い前提は見つかりません。"),
+        "rule_notes": rule_notes,
+        "rule_notes_label": "ルール注意: " + (" / ".join(rule_notes) if rule_notes else "直近可視範囲では明示ルールは見つかりません。"),
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "recent_authors": authors,
+        "natural_entry_angles": natural_entry_angles,
+        "context_ready": context_ready,
+        "context_ready_label": "発話前チェックに使える文脈があります。" if context_ready else "文脈が不足しています。先にスレッド本文を取り込んでください。",
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def context_passport_from_text(
+    text: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_passport(
+        events,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+    )
 
 
 def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str, Any]:
     loaded = list(events)
     gap = check_knowledge_gap(draft, loaded)
-    ok_to_reply = "ask_first" if gap["knowledge_gap"] else "likely_ok"
+    needs_check = bool(gap["knowledge_gap"] or gap["topic_mismatch"])
+    ok_to_reply = "ask_first" if needs_check else "likely_ok"
+    alignment = "minor_gap" if needs_check else "aligned"
+    missing_knowledge = gap["knowledge_gap"]
+    missing_knowledge_label = (
+        "不足している前提はありません。"
+        if not missing_knowledge
+        else "不足している前提: " + "、".join(missing_knowledge)
+    )
     return {
         "language": DEFAULT_LANGUAGE,
+        "message": "返信前レビューが完了しました。",
         "ok_to_reply": ok_to_reply,
-        "alignment": "minor_gap" if gap["knowledge_gap"] else "aligned",
-        "missing_knowledge": gap["knowledge_gap"],
+        "ok_to_reply_label": "先に確認した方がよさそうです。" if ok_to_reply == "ask_first" else "返信してよさそうです。",
+        "alignment": alignment,
+        "alignment_label": "文脈に不足があります。" if alignment == "minor_gap" else "文脈に合っています。",
+        "missing_knowledge": missing_knowledge,
+        "missing_knowledge_label": missing_knowledge_label,
+        "topic_warning_label": gap["topic_warning_label"],
         "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
-        "suggested_correction": gap["recommended_briefing"] if gap["knowledge_gap"] else "",
+        "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+    }
+
+
+def guide_reply_from_text(
+    text: str,
+    draft: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    briefing = fast_briefing(events)
+    review = review_reply_intent(draft, events)
+    next_actions = ["そのまま送らず、Discord 側で人間が確認してから返信してください。"]
+    if review["missing_knowledge"]:
+        next_actions.insert(0, "不足している前提を相手に確認してください。")
+    if review["topic_warning_label"] != "話題の大きなズレは見つかりません。":
+        next_actions.insert(0, review["topic_warning_label"])
+    elif not review["missing_knowledge"]:
+        next_actions.insert(0, "文脈と返信意図は大きくずれていません。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 返信ガイドを作成しました。",
+        "parsed": len(events),
+        "counterparty_context": briefing["briefing_label"],
+        "reply_review": review,
+        "next_actions": next_actions,
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
     }
 
 
