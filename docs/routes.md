@@ -53,6 +53,16 @@ cat /private/path/from-discord-channel.txt | \
 - `text_output=omitted`
 - `outbound_actions=disabled`
 
+実イベントがまだ届いているかだけを確認する場合は、channel event probe を使います。
+これは本文や file name を出さず、text event 候補数と media 件数だけを返します。
+
+```bash
+python3 scripts/discord_channel_event_probe.py --json
+```
+
+`failure_stage=no_text_event_source` の場合、bot channel server / private adapter から smoke に渡せる本文イベントが
+まだ届いていない状態です。`source_empty` や parser failure とは分けて扱います。
+
 ## stoplines
 
 - Discord send / reaction / delete はしない。
