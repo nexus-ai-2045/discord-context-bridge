@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -24,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ocr-command", required=True, help="{image} placeholder に画像 path を渡す OCR command")
     parser.add_argument("--timeout", type=float, default=20.0, help="各 command の最大秒数")
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
-    parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
+    parser.add_argument(
+        "--allow-unsafe",
+        action="store_true",
+        help="安全監査を通さず stdout へ出す。DCB_ALLOW_UNSAFE_OUTPUT=1 が必要です。",
+    )
     return parser
 
 
@@ -79,6 +84,10 @@ def read_screenshot_ocr_text(
         return run_private_command(ocr_command, image=capture_path, timeout=timeout)
 
 
+def unsafe_bypass_enabled(allow_unsafe: bool) -> bool:
+    return allow_unsafe and os.environ.get("DCB_ALLOW_UNSAFE_OUTPUT") == "1"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -94,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             print("OCR 結果が空です。対象範囲または OCR command を確認してください。", file=sys.stderr)
             return 2
         issues = audit_visible_text(text)
-        if issues and not args.allow_unsafe:
+        if issues and not unsafe_bypass_enabled(args.allow_unsafe):
             print("安全監査に失敗したため stdout へ出しません。", file=sys.stderr)
             print("issues: " + ", ".join(issues), file=sys.stderr)
             return 2
