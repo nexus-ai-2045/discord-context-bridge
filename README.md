@@ -311,6 +311,36 @@ PYTHONPATH=src:scripts \
 python3 scripts/private_adapter_probe.py
 ```
 
+private adapter の実運用ステータスを 1 コマンドで見る場合は、preflight、live smoke、ops check を順番に回します。
+出力は本文、参加者名、store path を出さず、件数と安全境界だけを返します。
+
+```bash
+python3 scripts/live_mvp_status.py \
+  --source-command "python3 scripts/read_visible_discord_text.py --input tests/fixtures/discord_rich_copy.txt" \
+  --skip-preflight
+```
+
+adapter probe と live smoke だけを切り分けたい場合は E2E check を使います。
+
+```bash
+python3 scripts/e2e_private_adapter_check.py \
+  --source-command "python3 scripts/read_visible_discord_text.py --input tests/fixtures/discord_rich_copy.txt"
+```
+
+実機前の依存関係と Discord window 状態だけを見る場合は preflight を使います。
+これは本文を読みません。
+
+```bash
+python3 scripts/ops_preflight.py --app-name Discord
+```
+
+`@discord` bot route が使える環境では、token 値や snowflake 値を出さずに設定状態だけを確認できます。
+token 保存、pairing approval、allowlist 変更はこの repository の自動処理には含めません。
+
+```bash
+python3 scripts/discord_bot_route_preflight.py
+```
+
 Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
 
 ```bash

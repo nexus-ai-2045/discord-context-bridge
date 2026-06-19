@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -115,21 +116,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    live = run_script(
-        "live_ops_smoke.py",
-        [
-            "--source-command",
-            args.source_command,
-            "--guild",
-            args.guild,
-            "--channel",
-            args.channel,
-            "--min-parsed",
-            str(args.min_parsed),
-            "--json",
-        ],
-        timeout=args.timeout,
-    )
+    with tempfile.TemporaryDirectory(prefix="dcb-private-e2e-") as temp_dir:
+        store = str(Path(temp_dir) / "events.ndjson")
+        live = run_script(
+            "live_ops_smoke.py",
+            [
+                "--store",
+                store,
+                "--source-command",
+                args.source_command,
+                "--guild",
+                args.guild,
+                "--channel",
+                args.channel,
+                "--min-parsed",
+                str(args.min_parsed),
+                "--json",
+            ],
+            timeout=args.timeout,
+        )
     ok = (
         live["returncode"] == 0
         and bool(live["payload"].get("source_ready"))
