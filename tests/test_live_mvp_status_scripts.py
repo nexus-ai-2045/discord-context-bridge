@@ -114,6 +114,11 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
 
     assert payload["ok"] is True
     assert payload["recommended_route"] == "bot_private_ingest"
+    assert payload["routes"]["discord_configure"]["route_class"] == "control"
+    assert payload["routes"]["discord_access"]["route_class"] == "control"
+    assert payload["routes"]["bot_private_ingest"]["route_class"] == "main"
+    assert payload["routes"]["computer_use_discord"]["route_class"] == "visual_fallback"
+    assert payload["routes"]["ocr_region"]["route_class"] == "last_fallback"
     assert payload["routes"]["discord_configure"]["token_output"] == "omitted"
     assert payload["routes"]["discord_access"]["snowflake_values_output"] == "omitted"
     assert payload["routes"]["discord_access"]["pending_count"] == 1
