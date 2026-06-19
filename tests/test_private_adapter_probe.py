@@ -167,6 +167,32 @@ def test_macos_accessibility_probe_payload_classifies_permission_blocker():
     assert payload["text_output"] == "omitted"
 
 
+def test_macos_window_list_payload_omits_titles():
+    payload = read_visible_discord_text.build_macos_window_list_payload(
+        [(1, "private-server / secret-thread")],
+        match_hint="secret",
+    )
+
+    assert payload["schema"] == "discord_macos_window_list.v1"
+    assert payload["ok"] is True
+    assert payload["candidate_count"] == 1
+    assert payload["windows"] == [
+        {"index": 1, "title_present": True, "title_length": 30, "hint_match": True}
+    ]
+    assert payload["text_output"] == "omitted"
+    assert "private-server" not in str(payload)
+
+
+def test_macos_window_list_payload_classifies_timeout():
+    payload = read_visible_discord_text.build_macos_window_list_payload([], reason="timeout")
+
+    assert payload["ok"] is False
+    assert payload["candidate_count"] == 0
+    assert payload["failure_stage"] == "timeout"
+    assert payload["reason"] == "timeout"
+    assert payload["outbound"] == "disabled"
+
+
 def test_visible_source_ax_probe_warns_when_no_focus_probe_not_ready(monkeypatch):
     def fake_command_result(name, command, **kwargs):
         assert name == "macos_accessibility_probe"

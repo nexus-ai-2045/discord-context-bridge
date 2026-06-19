@@ -303,6 +303,36 @@ def print_macos_window_candidates(text: str, *, show_names: bool = False, match_
             )
 
 
+def build_macos_window_list_payload(
+    candidates: list[tuple[int, str]],
+    *,
+    match_hint: str = "",
+    reason: str = "",
+) -> dict[str, object]:
+    normalized_hint = match_hint.casefold()
+    payload: dict[str, object] = {
+        "schema": "discord_macos_window_list.v1",
+        "ok": bool(candidates),
+        "candidate_count": len(candidates),
+        "windows": [
+            {
+                "index": index,
+                "title_present": name != "(名称なし)",
+                "title_length": len(name),
+                "hint_match": bool(normalized_hint and normalized_hint in name.casefold()),
+            }
+            for index, name in candidates
+        ],
+        "text_output": "omitted",
+        "outbound": "disabled",
+    }
+    if not candidates:
+        safe_reason = reason or "not_found"
+        payload["failure_stage"] = probe_failure_stage(safe_reason)
+        payload["reason"] = safe_reason
+    return payload
+
+
 def probe_macos_accessibility_routes(
     process_name: str,
     *,
@@ -497,13 +527,27 @@ def main(argv: list[str] | None = None) -> int:
             print_macos_accessibility_probe(rows, focus_app=not args.no_focus)
             return 0 if any_ready else 2
         if args.list_macos_windows:
-            text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
+            try:
+                text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
+            except Exception as exc:
+                reason = safe_probe_reason(exc)
+                if args.json:
+                    payload = build_macos_window_list_payload([], match_hint=args.window_name_contains, reason=reason)
+                    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                else:
+                    print(f"Discord window candidate list failed: {reason}", file=sys.stderr)
+                return 2
             if args.show_window_names:
                 issues = audit_visible_text(text)
                 if issues and not unsafe_bypass_enabled(args.allow_unsafe):
                     print("安全監査に失敗したため window 候補名を stdout へ出しません。", file=sys.stderr)
                     print("issues: " + ", ".join(issues), file=sys.stderr)
                     return 2
+            if args.json:
+                candidates = parse_macos_window_candidates(text)
+                payload = build_macos_window_list_payload(candidates, match_hint=args.window_name_contains)
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                return 0 if payload["ok"] else 2
             print_macos_window_candidates(
                 text,
                 show_names=args.show_window_names,
