@@ -47,6 +47,7 @@ def run_script(script_name: str, args: list[str], *, timeout: float) -> dict[str
         if script_name == "ops_check.py":
             payload = {
                 "ok": completed.returncode == 0,
+                "issue_count": 0 if completed.returncode == 0 else 1,
                 "failure_stage": None if completed.returncode == 0 else "ops_check_failed",
                 "reason": "ops_check_completed" if completed.returncode == 0 else "ops_check_failed",
                 "text_output": "omitted",
