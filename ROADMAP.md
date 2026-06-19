@@ -65,6 +65,7 @@ flowchart TD
 - 自動送信は後回し。MVP は copy/paste 前提とし、send automation は別 stopline。
 - thread policy は `momentum_ok` と `cushion_required` を分ける。
 - quick verdict は `go`, `wait`, `ask-context`, `risky` の 4 値にする。
+- `review-draft` / `guide-reply` は `quick_verdict` と `one_check_before_reply` を返し、勢いを止めすぎず危険時だけ短く止める。
 - review depth は risk-based にする。quick glance は 1-3 秒、deep review は返信前や怪しい時だけ使う。
 - 出力は短くする: 「問題なさそう」「ここだけズレ」「今は待ち」「こういう意味ですよね？」。
 

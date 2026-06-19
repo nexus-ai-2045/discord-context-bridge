@@ -23,6 +23,7 @@
 - 返信前ゲート quick verdict を作る。
   - values: `go`, `wait`, `ask-context`, `risky`。
   - done when: 1-3 秒で短い日本語 verdict と一点確認だけを返し、send / reaction / delete を実行しない。
+  - current: `review-draft` / `guide-reply` が `quick_verdict` と `one_check_before_reply` を返す。
 - status dashboard command を作る。
   - output: `now`, `done`, `broken`, `blocked`, `next`, `github`, `residual`。
   - done when: raw 本文、参加者名、secret、local path を出さず、運用状態を日本語で返す。
