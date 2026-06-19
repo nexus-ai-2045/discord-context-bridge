@@ -725,6 +725,8 @@ def test_cli_watch_guide_polls_source_command_and_outputs_updates(capsys, monkey
             "3",
             "--interval",
             "0",
+            "--source-timeout",
+            "4",
             "--json",
         ]
     )
@@ -732,6 +734,7 @@ def test_cli_watch_guide_polls_source_command_and_outputs_updates(capsys, monkey
 
     assert result == 0
     assert len(calls) == 3
+    assert calls[0][1]["timeout"] == 4
     assert '"event": "guide_update"' in output
     assert '"message": "Discord 返信ガイドを更新しました。"' in output
     assert '"polls": 3' in output
@@ -768,6 +771,8 @@ def test_cli_watch_passport_polls_source_command_and_outputs_updates(capsys, mon
             "3",
             "--interval",
             "0",
+            "--source-timeout",
+            "4",
             "--json",
         ]
     )
@@ -776,6 +781,7 @@ def test_cli_watch_passport_polls_source_command_and_outputs_updates(capsys, mon
     assert result == 0
     assert len(calls) == 3
     assert calls[0][0] == ["discord-visible-text"]
+    assert calls[0][1]["timeout"] == 4
     assert '"event": "passport_update"' in output
     assert '"message": "スレッド文脈カードを更新しました。"' in output
     assert '"polls": 3' in output
@@ -951,6 +957,24 @@ def test_visible_text_adapter_blocks_sensitive_output(tmp_path, capsys):
     assert "discord_webhook_url" in captured.err
 
 
+def test_visible_text_adapter_allow_unsafe_requires_env(tmp_path, capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_allow_unsafe_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    monkeypatch.delenv("DCB_ALLOW_UNSAFE_OUTPUT", raising=False)
+    unsafe = tmp_path / "unsafe.txt"
+    unsafe.write_text("member-a: https://discord.com/api/webhooks/123456789012345678/token", encoding="utf-8")
+
+    result = adapter.main(["--input", str(unsafe), "--allow-unsafe"])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "discord_webhook_url" in captured.err
+    assert "webhooks/123456789012345678" not in captured.err
+
+
 def test_visible_text_adapter_blocks_expanded_sensitive_output(tmp_path, capsys):
     adapter = load_script_module(
         "visible_text_adapter_expanded_sensitive_for_test",
@@ -1077,6 +1101,28 @@ def test_screenshot_ocr_runner_blocks_sensitive_ocr_output(tmp_path, capsys, mon
     assert "webhooks/123456789012345678" not in captured.err
 
 
+def test_screenshot_ocr_runner_allow_unsafe_requires_env(tmp_path, capsys, monkeypatch):
+    runner = load_script_module("screenshot_ocr_runner_allow_unsafe_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
+    monkeypatch.delenv("DCB_ALLOW_UNSAFE_OUTPUT", raising=False)
+    image = tmp_path / "capture.png"
+    image.write_bytes(b"fake-png")
+
+    class Completed:
+        returncode = 0
+        stdout = "member-a: https://discord.com/api/webhooks/123456789012345678/token\n"
+        stderr = ""
+
+    monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = runner.main(["--image", str(image), "--ocr-command", "ocr-tool {image}", "--allow-unsafe"])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "discord_webhook_url" in captured.err
+    assert "webhooks/123456789012345678" not in captured.err
+
+
 def test_screenshot_ocr_runner_redacts_sensitive_command_error(capsys, monkeypatch):
     runner = load_script_module("screenshot_ocr_runner_error_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
 
@@ -1138,6 +1184,117 @@ def test_live_ops_smoke_omits_message_text(tmp_path, capsys, monkeypatch):
     assert "message text: omitted" in output
     assert "Can you clarify" not in output
     assert "text_snippet" not in output
+
+
+def test_probe_visible_source_reports_without_message_text(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_for_test", ROOT / "scripts" / "probe_visible_source.py")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "member-a: 画面に見えている本文です\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Completed()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(
+        [
+            "--ocr-command",
+            "cat {image}",
+            "--source-command",
+            "python3 scripts/read_screenshot_ocr_text.py --image tests/fixtures/discord_rich_copy.txt --ocr-command 'cat {image}'",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "visible source probe pack が完了しました。" in output
+    assert "- ocr_fixture: pass" in output
+    assert "- live_ops_smoke: pass" in output
+    assert "message text: omitted" in output
+    assert "画面に見えている本文" not in output
+    assert any("scripts/read_screenshot_ocr_text.py" in command for command in calls)
+
+
+def test_probe_visible_source_json_marks_dependency_warning(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_json_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    class Completed:
+        stdout = ""
+        stderr = ""
+
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(command, **kwargs):
+        if command[:2] == ["tesseract", "--version"]:
+            return Completed(127)
+        return Completed(0)
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(["--json"])
+    payload = capsys.readouterr().out
+
+    assert result == 0
+    assert '"overall": "warn"' in payload
+    assert '"name": "tesseract"' in payload
+    assert '"status": "warn"' in payload
+    assert '"text_output": "omitted"' in payload
+
+
+def test_probe_visible_source_missing_optional_dependency_is_warning(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_missing_dependency_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        if command[:2] == ["tesseract", "--version"]:
+            raise FileNotFoundError("missing")
+        return Completed()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(["--json"])
+    payload = capsys.readouterr().out
+
+    assert result == 0
+    assert '"overall": "warn"' in payload
+    assert '"reason": "not_found"' in payload
+    assert '"name": "tesseract"' in payload
+
+
+def test_probe_visible_source_marks_accessibility_probe_failure_as_warning(capsys, monkeypatch):
+    probe = load_script_module("probe_visible_source_ax_warn_for_test", ROOT / "scripts" / "probe_visible_source.py")
+
+    class Completed:
+        stdout = ""
+        stderr = "Application is not running"
+
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(command, **kwargs):
+        if any("read_visible_discord_text.py" in part for part in command):
+            return Completed(1)
+        return Completed(0)
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+
+    result = probe.main(["--ax-probe", "--json"])
+    payload = capsys.readouterr().out
+
+    assert result == 0
+    assert '"overall": "warn"' in payload
+    assert '"name": "macos_accessibility_probe"' in payload
+    assert '"status": "warn"' in payload
 
 
 def test_live_ops_smoke_passes_source_timeout(tmp_path, capsys, monkeypatch):
@@ -1653,6 +1810,28 @@ def test_visible_text_adapter_probe_redacts_sensitive_error_reason(capsys, monke
     assert result == 2
     assert "reason=安全監査により詳細を省略しました。" in output
     assert "webhooks/123456789012345678" not in output
+
+
+def test_visible_text_adapter_source_command_error_redacts_sensitive_stderr(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_source_command_error_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "failed near https://discord.com/api/webhooks/123456789012345678/token"
+
+    monkeypatch.setattr(adapter.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = adapter.main(["--source-command", "private-adapter"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "安全監査により詳細を省略しました。" in captured.err
+    assert "webhooks/123456789012345678" not in captured.err
+    assert "private-adapter" not in captured.err
 
 
 def test_gh_guard_parses_github_remote_owner():

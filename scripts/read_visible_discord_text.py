@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import subprocess
@@ -49,7 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--focused-only", action="store_true", help="macOS Accessibility で focused element だけを読む。重い window 全走査を避ける")
     parser.add_argument("--no-focus", action="store_true", help="macOS Accessibility で Discord を前面化せずに読む")
     parser.add_argument("--show-window-names", action="store_true", help="window 診断で raw window 名も出す。通常は使わない")
-    parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
+    parser.add_argument(
+        "--allow-unsafe",
+        action="store_true",
+        help="安全監査を通さず stdout へ出す。DCB_ALLOW_UNSAFE_OUTPUT=1 が必要です。",
+    )
     return parser
 
 
@@ -65,7 +70,8 @@ def run_command(command: str, *, timeout: float | None = None) -> str:
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"command timed out after {timeout:g}s") from exc
     if completed.returncode != 0:
-        raise RuntimeError(f"command failed with exit code {completed.returncode}: stderr={completed.stderr.strip()}")
+        reason = safe_probe_reason(RuntimeError(completed.stderr.strip()))
+        raise RuntimeError(f"command failed with exit code {completed.returncode}: reason={reason}")
     return completed.stdout
 
 
@@ -337,6 +343,8 @@ def probe_macos_accessibility_routes(
 
 def safe_probe_reason(error: Exception) -> str:
     text = str(error)
+    if "安全監査により詳細を省略しました。" in text:
+        return "安全監査により詳細を省略しました。"
     if audit_visible_text(text):
         return "安全監査により詳細を省略しました。"
     if "timed out" in text:
@@ -348,6 +356,10 @@ def safe_probe_reason(error: Exception) -> str:
     if "focused-only" in text or "focused element" in text:
         return "focused_unavailable"
     return "adapter_error"
+
+
+def unsafe_bypass_enabled(allow_unsafe: bool) -> bool:
+    return allow_unsafe and os.environ.get("DCB_ALLOW_UNSAFE_OUTPUT") == "1"
 
 
 def print_macos_accessibility_probe(rows: list[dict[str, object]], *, focus_app: bool) -> None:
@@ -431,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
             text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
             if args.show_window_names:
                 issues = audit_visible_text(text)
-                if issues and not args.allow_unsafe:
+                if issues and not unsafe_bypass_enabled(args.allow_unsafe):
                     print("安全監査に失敗したため window 候補名を stdout へ出しません。", file=sys.stderr)
                     print("issues: " + ", ".join(issues), file=sys.stderr)
                     return 2
@@ -446,14 +458,14 @@ def main(argv: list[str] | None = None) -> int:
             print("Discord 可視テキストが空です。Discord の対象スレッドを表示してから再実行してください。", file=sys.stderr)
             return 2
         issues = audit_visible_text(text)
-        if issues and not args.allow_unsafe:
+        if issues and not unsafe_bypass_enabled(args.allow_unsafe):
             print("安全監査に失敗したため stdout へ出しません。", file=sys.stderr)
             print("issues: " + ", ".join(issues), file=sys.stderr)
             return 2
         print(text, end="")
         return 0
     except Exception as exc:
-        print(f"Discord 可視テキストの取得に失敗しました: {exc}", file=sys.stderr)
+        print(f"Discord 可視テキストの取得に失敗しました: {safe_probe_reason(exc)}", file=sys.stderr)
         return 1
 
 
