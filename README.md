@@ -364,6 +364,19 @@ token 保存、pairing approval、allowlist 変更はこの repository の自動
 python3 scripts/discord_bot_route_preflight.py
 ```
 
+bot channel server や private adapter から受け取った本文を、本文なしで文脈カード / 返信前 gate へ流す場合は
+private ingest smoke を使います。標準入力または一時ファイルから受け取りますが、本文、参加者名、token、
+snowflake は JSON に出しません。
+
+```bash
+cat /private/path/from-discord-channel.txt | \
+  python3 scripts/discord_bot_private_ingest.py \
+    --guild safe-guild \
+    --channel safe-channel \
+    --draft "前提を確認します。" \
+    --json
+```
+
 Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
 
 ```bash
