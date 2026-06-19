@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guild", default="live-smoke", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--channel", default="visible-thread", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--reset", action="store_true", help="既存の smoke store を消してから実行する")
+    parser.add_argument("--source-timeout", type=float, default=20.0, help="source command の最大秒数")
     parser.add_argument("--json", action="store_true", help="本文なしの JSON summary を出力する")
     return parser
 
@@ -72,7 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.reset and args.store.exists():
         args.store.unlink()
 
-    text = read_command_text(args.source_command, empty_message="source command の出力が空です。")
+    text = read_command_text(
+        args.source_command,
+        empty_message="source command の出力が空です。",
+        timeout=args.source_timeout,
+    )
     imported = import_visible_text(
         text,
         path=args.store,
