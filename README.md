@@ -207,6 +207,18 @@ public package は引き続き token、cookie、webhook、browser profile を受
    - 取得した本文を `live_ops_smoke.py`、`watch-passport`、`watch-guide` に差し込みます。
    - 成功条件は `parsed > 0`、本文非表示、送信無効、安全監査 pass です。
 
+調査表:
+
+| 経路 | 採用判断 | 理由 |
+|---|---|---|
+| macOS Accessibility / AXUIElement | 第一候補 | token/cookie不要。見えている UI tree を読める可能性がある。Discord/Electron が本文を安定露出しない場合は空読みや timeout になる。 |
+| ScreenCapture / OCR | fallback 採用 | token/cookie不要。見えている pixel だけを local 処理できる。Screen Recording 権限、OCR 誤読、重なりに注意する。 |
+| Browser automation | private 実験のみ | Playwright など既存機能は強いが、browser profile、cookie、storage state を credential として扱う必要がある。 |
+| Discord Bot / official API | 別用途 | bot が参加し権限を持つ範囲では正攻法。ただし「ユーザーに見えている任意の本文」を読む代替ではない。 |
+| user token / selfbot | 不採用 | 通常ユーザーアカウント自動化の禁止境界に触れるため扱わない。 |
+
+public package 側は、取得そのものを抱え込まず、private adapter の stdout contract と安全監査に集中します。
+
 最初の skeleton は、現在見えている Discord 本文を stdout に出すだけの小さな command です。
 
 ```text
@@ -309,6 +321,23 @@ PYTHONPATH=src python3 scripts/live_ops_smoke.py \
 
 macOS Accessibility や browser automation が環境依存で不安定な場合は、private 側の command を `--source-command` に渡します。
 その command も stdout には可視本文だけを出し、credential や profile path を出さない契約にします。
+
+ScreenCapture / OCR 経路を試す場合は、capture と OCR の実装を private command として差し込みます。
+public runner は画像や OCR engine を内蔵せず、`{image}` placeholder でコマンドをつなぎ、stdout の安全監査だけを行います。
+
+```bash
+python3 scripts/read_screenshot_ocr_text.py \
+  --screenshot-command "screencapture -x -R0,0,1200,900 {image}" \
+  --ocr-command "tesseract {image} stdout -l jpn+eng"
+```
+
+既に画像がある場合は、OCR command だけを検証できます。実画像は commit しません。
+
+```bash
+python3 scripts/read_screenshot_ocr_text.py \
+  --image /path/to/local-capture.png \
+  --ocr-command "tesseract {image} stdout -l jpn+eng"
+```
 
 ### 返信前ガイド
 
