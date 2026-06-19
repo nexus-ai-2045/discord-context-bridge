@@ -226,6 +226,17 @@ PYTHONPATH=src python3 scripts/local_smoke.py \
   --skip-http
 ```
 
+実 Discord 画面で試す時は、本文を terminal に出さない smoke を使います。
+これは adapter の stdout を取り込みますが、表示するのは safe label、件数、last_seen、delta count、
+gate verdict、outbound disabled だけです。
+
+```bash
+PYTHONPATH=src python3 scripts/live_ops_smoke.py \
+  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility --window-name-contains nexus-ai" \
+  --channel visible-thread \
+  --reset
+```
+
 macOS Accessibility や browser automation が環境依存で不安定な場合は、private 側の command を `--source-command` に渡します。
 その command も stdout には可視本文だけを出し、credential や profile path を出さない契約にします。
 
