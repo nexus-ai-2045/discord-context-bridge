@@ -6,6 +6,29 @@ AI アシスタントが安全に扱える文脈フィードへ変換する loca
 目的は Discord アカウントの自動操作ではありません。人間のユーザーが、現在の会話を理解し、
 抜けている前提を見つけ、返信する前に自分の返信意図を確認できるようにすることです。
 
+## 全体像
+
+```mermaid
+flowchart LR
+  discord["Discord で見えている文脈"] --> adapter["private adapter / source-command"]
+  adapter --> package["public package"]
+  package --> passport["文脈パスポート"]
+  package --> gate["返信前ゲート"]
+  passport --> human["人間が判断"]
+  gate --> human
+
+  adapter -. "禁止" .-> secrets["token / cookie / webhook / browser profile"]
+  package -. "禁止" .-> raw["raw Discord text in public docs/logs"]
+  gate -. "禁止" .-> outbound["Discord send / reaction / delete"]
+```
+
+| 領域 | 既定 | 公開してよいもの | 公開しないもの |
+|---|---|---|---|
+| 入力 | read-only visible context | safe label、件数、状態 | raw 本文、参加者名、実 ID |
+| adapter | private / local | stdout 契約、failure_stage | token、cookie、profile |
+| public package | 文脈処理 | passport、gate verdict | Discord 認証情報 |
+| outbound | disabled | copy/paste 前の確認結果 | send、reaction、delete |
+
 ## 基本言語
 
 この package の基本言語は日本語です。
