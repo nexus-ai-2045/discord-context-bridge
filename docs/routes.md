@@ -34,6 +34,25 @@ python3 scripts/discord_plugin_route_status.py --json
 - `route_class=visual_fallback`: 画面確認用。自動送信や本文抽出には使わない。
 - `route_class=last_fallback`: 最終 fallback。明示 region と安全境界が必須。
 
+## main route smoke
+
+`main` route の運用保証は、status と private ingest をまとめて確認します。
+
+```bash
+cat /private/path/from-discord-channel.txt | \
+  python3 scripts/discord_main_route_smoke.py --json
+```
+
+成功条件は次の通りです。
+
+- `route_ready=true`
+- `ingest_ready=true`
+- `parsed >= min_parsed`
+- `context_ready=true`
+- `quick_verdict` が `go` / `wait` / `ask-context` / `risky` のいずれか
+- `text_output=omitted`
+- `outbound_actions=disabled`
+
 ## stoplines
 
 - Discord send / reaction / delete はしない。

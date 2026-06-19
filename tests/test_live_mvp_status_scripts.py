@@ -10,6 +10,7 @@ if str(ROOT / "scripts") not in sys.path:
 import discord_bot_route_preflight
 import discord_bot_private_ingest
 import discord_plugin_route_status
+import discord_main_route_smoke
 import e2e_private_adapter_check
 import live_ops_smoke
 import live_mvp_status
@@ -131,6 +132,61 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert "111111111111111111" not in rendered
     assert "222222222222222222" not in rendered
     assert "333333" not in rendered
+
+
+def test_discord_main_route_smoke_reaches_gate_without_text(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
+
+    payload = discord_main_route_smoke.build_smoke_payload(
+        text,
+        channel_dir=channel_dir,
+        guild="safe-guild",
+        channel="safe-channel",
+        draft="公開時期の前提を確認します。",
+        min_parsed=1,
+    )
+    rendered = discord_main_route_smoke._json(payload)
+
+    assert payload["ok"] is True
+    assert payload["route"] == "bot_private_ingest"
+    assert payload["route_class"] == "main"
+    assert payload["route_ready"] is True
+    assert payload["ingest_ready"] is True
+    assert payload["parsed"] == 2
+    assert payload["context_ready"] is True
+    assert payload["quick_verdict"] in {"go", "wait", "ask-context", "risky"}
+    assert payload["text_output"] == "omitted"
+    assert payload["text_saved"] is False
+    assert payload["outbound_actions"] == "disabled"
+    assert payload["safety_boundary"]["send_capability"] == "disabled"
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+
+
+def test_discord_main_route_smoke_empty_input_is_safe(tmp_path: Path):
+    payload = discord_main_route_smoke.build_smoke_payload(
+        "",
+        channel_dir=tmp_path,
+        guild="safe-guild",
+        channel="safe-channel",
+        draft="",
+        min_parsed=1,
+    )
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] in {"main_route_not_ready", "source_empty"}
+    assert payload["text_output"] == "omitted"
+    assert payload["outbound_actions"] == "disabled"
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):

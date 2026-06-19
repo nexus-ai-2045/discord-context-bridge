@@ -389,6 +389,13 @@ cat /private/path/from-discord-channel.txt | \
     --json
 ```
 
+本線 route の準備状態と private ingest をまとめて確認する場合は、main route smoke を使います。
+
+```bash
+cat /private/path/from-discord-channel.txt | \
+  python3 scripts/discord_main_route_smoke.py --json
+```
+
 Discord の会話領域が分かっている場合は、任意の capture command を書かずに region profile で試せます。
 
 ```bash
