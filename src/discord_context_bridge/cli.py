@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -119,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     review = sub.add_parser("review-intent", help="返信意図を直近文脈と照合する")
     review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
     review.set_defaults(handler=_cmd_review_intent)
+
+    draft_review = sub.add_parser("review-draft", help="返信下書きを保存済みの直近文脈と照合する")
+    draft_review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    draft_review.set_defaults(handler=_cmd_review_intent)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
     guide.add_argument("--input", type=Path, help="読み込むテキストファイル")
@@ -258,11 +263,25 @@ def read_clipboard_text(command: str) -> str:
 
 
 def read_command_text(command: str, *, empty_message: str = "source command の出力が空です。") -> str:
+    tokens = shlex.split(command)
+    env = os.environ.copy()
+    while tokens:
+        key_value = tokens[0]
+        if "=" not in key_value or key_value.startswith("-"):
+            break
+        key, value = key_value.split("=", 1)
+        if not key.replace("_", "").isalnum():
+            break
+        tokens.pop(0)
+        env[key] = value
+    if not tokens:
+        raise SystemExit("local command が空です。")
     completed = subprocess.run(
-        shlex.split(command),
+        tokens,
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     if completed.returncode != 0:
         raise SystemExit(
