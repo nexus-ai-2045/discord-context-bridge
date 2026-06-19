@@ -680,6 +680,8 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
         "topic_warning_label": gap["topic_warning_label"],
         "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
         "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
     }
 
 
