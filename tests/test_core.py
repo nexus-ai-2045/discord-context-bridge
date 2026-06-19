@@ -1077,6 +1077,21 @@ def test_visible_text_adapter_builds_focused_only_macos_script():
     assert "entire contents of targetWindow" in script
 
 
+def test_visible_text_adapter_builds_no_focus_macos_script():
+    adapter = load_script_module(
+        "visible_text_adapter_macos_no_focus_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    script = adapter.build_macos_accessibility_script("Discord", focus_app=False)
+
+    assert "set shouldFocusApp to false" in script
+    assert "set frontmost to true" in script
+    assert "if shouldFocusApp then" in script
+    assert "set targetWindow to window 1" in script
+    assert "focused-only requires app focus" in script
+
+
 def test_visible_text_adapter_passes_timeout_to_source_command(capsys, monkeypatch):
     adapter = load_script_module(
         "visible_text_adapter_timeout_for_test",
@@ -1248,7 +1263,15 @@ def test_visible_text_adapter_auto_fallback_tries_focused_before_full(monkeypatc
     )
     calls = []
 
-    def fake_read(process_name, window_name_contains="", *, window_index=0, timeout=None, focused_only=False):
+    def fake_read(
+        process_name,
+        window_name_contains="",
+        *,
+        window_index=0,
+        timeout=None,
+        focused_only=False,
+        focus_app=True,
+    ):
         calls.append(
             {
                 "process_name": process_name,
@@ -1256,6 +1279,7 @@ def test_visible_text_adapter_auto_fallback_tries_focused_before_full(monkeypatc
                 "window_index": window_index,
                 "timeout": timeout,
                 "focused_only": focused_only,
+                "focus_app": focus_app,
             }
         )
         if focused_only:
@@ -1274,6 +1298,7 @@ def test_visible_text_adapter_auto_fallback_tries_focused_before_full(monkeypatc
             "window_index": 2,
             "timeout": 3,
             "focused_only": True,
+            "focus_app": True,
         },
         {
             "process_name": "Discord",
@@ -1281,6 +1306,7 @@ def test_visible_text_adapter_auto_fallback_tries_focused_before_full(monkeypatc
             "window_index": 2,
             "timeout": 3,
             "focused_only": False,
+            "focus_app": True,
         },
     ]
 
@@ -1291,7 +1317,15 @@ def test_visible_text_adapter_auto_fallback_reports_attempts(monkeypatch):
         ROOT / "scripts" / "read_visible_discord_text.py",
     )
 
-    def fake_read(process_name, window_name_contains="", *, window_index=0, timeout=None, focused_only=False):
+    def fake_read(
+        process_name,
+        window_name_contains="",
+        *,
+        window_index=0,
+        timeout=None,
+        focused_only=False,
+        focus_app=True,
+    ):
         if focused_only:
             raise RuntimeError("focused element text not found")
         return ""
@@ -1302,6 +1336,60 @@ def test_visible_text_adapter_auto_fallback_reports_attempts(monkeypatch):
         adapter.read_macos_accessibility_auto("Discord", timeout=3)
 
 
+def test_visible_text_adapter_auto_fallback_can_skip_focus(monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_macos_auto_no_focus_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    def fake_read(
+        process_name,
+        window_name_contains="",
+        *,
+        window_index=0,
+        timeout=None,
+        focused_only=False,
+        focus_app=True,
+    ):
+        calls.append({"focused_only": focused_only, "focus_app": focus_app, "window_index": window_index})
+        return "member-a: 画面に見えている本文です\n"
+
+    monkeypatch.setattr(adapter, "read_macos_accessibility", fake_read)
+
+    text = adapter.read_macos_accessibility_auto("Discord", window_index=2, timeout=3, focus_app=False)
+
+    assert text == "member-a: 画面に見えている本文です\n"
+    assert calls == [{"focused_only": False, "focus_app": False, "window_index": 2}]
+
+
+def test_visible_text_adapter_no_focus_does_not_fallback_to_front_window(monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_macos_no_focus_no_front_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    def fake_read(
+        process_name,
+        window_name_contains="",
+        *,
+        window_index=0,
+        timeout=None,
+        focused_only=False,
+        focus_app=True,
+    ):
+        calls.append({"focused_only": focused_only, "focus_app": focus_app, "window_index": window_index})
+        return ""
+
+    monkeypatch.setattr(adapter, "read_macos_accessibility", fake_read)
+
+    with pytest.raises(RuntimeError, match="selected full: empty"):
+        adapter.read_macos_accessibility_auto("Discord", window_index=2, timeout=3, focus_app=False)
+
+    assert calls == [{"focused_only": False, "focus_app": False, "window_index": 2}]
+
+
 def test_visible_text_adapter_cli_uses_macos_auto_fallback(capsys, monkeypatch):
     adapter = load_script_module(
         "visible_text_adapter_macos_auto_cli_for_test",
@@ -1309,8 +1397,8 @@ def test_visible_text_adapter_cli_uses_macos_auto_fallback(capsys, monkeypatch):
     )
     calls = []
 
-    def fake_auto(process_name, window_name_contains="", *, window_index=0, timeout=None):
-        calls.append((process_name, window_name_contains, window_index, timeout))
+    def fake_auto(process_name, window_name_contains="", *, window_index=0, timeout=None, focus_app=True):
+        calls.append((process_name, window_name_contains, window_index, timeout, focus_app))
         return "member-a: 画面に見えている本文です\n"
 
     monkeypatch.setattr(adapter, "preflight_macos_window_selection", lambda *args, **kwargs: [(2, "Discord")])
@@ -1320,8 +1408,106 @@ def test_visible_text_adapter_cli_uses_macos_auto_fallback(capsys, monkeypatch):
     output = capsys.readouterr().out
 
     assert result == 0
-    assert calls == [("Discord", "", 2, 3.0)]
+    assert calls == [("Discord", "", 2, 3.0, True)]
     assert output == "member-a: 画面に見えている本文です\n"
+
+
+def test_visible_text_adapter_cli_can_use_macos_auto_without_focus(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_macos_auto_cli_no_focus_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    def fake_auto(process_name, window_name_contains="", *, window_index=0, timeout=None, focus_app=True):
+        calls.append((process_name, window_name_contains, window_index, timeout, focus_app))
+        return "member-a: 画面に見えている本文です\n"
+
+    monkeypatch.setattr(adapter, "preflight_macos_window_selection", lambda *args, **kwargs: [(2, "Discord")])
+    monkeypatch.setattr(adapter, "read_macos_accessibility_auto", fake_auto)
+
+    result = adapter.main(["--macos-accessibility-auto", "--no-focus", "--window-index", "2", "--timeout", "3"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls == [("Discord", "", 2, 3.0, False)]
+    assert output == "member-a: 画面に見えている本文です\n"
+
+
+def test_visible_text_adapter_probe_reports_safe_route_without_body(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_probe_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    monkeypatch.setattr(adapter, "list_macos_windows", lambda process_name, timeout=None: "1\tDiscord\n2\tNexus AI\n")
+
+    def fake_auto(process_name, window_name_contains="", *, window_index=0, timeout=None, focus_app=True):
+        calls.append({"window_index": window_index, "focus_app": focus_app})
+        if window_index == 1:
+            return ""
+        return "member-a: 画面に見えている本文です\n"
+
+    monkeypatch.setattr(adapter, "read_macos_accessibility_auto", fake_auto)
+
+    result = adapter.main(["--probe-macos-accessibility", "--no-focus", "--timeout", "3"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls == [
+        {"window_index": 1, "focus_app": False},
+        {"window_index": 2, "focus_app": False},
+    ]
+    assert "Discord Accessibility route probe:" in output
+    assert "focus_app: false" in output
+    assert "- 1: status=empty chars=0 lines=0" in output
+    assert "- 2: status=ready" in output
+    assert "画面に見えている本文" not in output
+    assert "Nexus AI" not in output
+
+
+def test_visible_text_adapter_probe_blocks_unsafe_route_without_body(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_probe_unsafe_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    monkeypatch.setattr(adapter, "list_macos_windows", lambda process_name, timeout=None: "1\tDiscord\n")
+    monkeypatch.setattr(
+        adapter,
+        "read_macos_accessibility_auto",
+        lambda *args, **kwargs: "member-a: https://discord.com/api/webhooks/123456789012345678/token\n",
+    )
+
+    result = adapter.main(["--probe-macos-accessibility", "--timeout", "3"])
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert "status=unsafe" in output
+    assert "issues=discord_webhook_url" in output
+    assert "webhooks/123456789012345678" not in output
+
+
+def test_visible_text_adapter_probe_redacts_sensitive_error_reason(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_probe_redact_error_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    monkeypatch.setattr(adapter, "list_macos_windows", lambda process_name, timeout=None: "1\tDiscord\n")
+
+    def fake_auto(*args, **kwargs):
+        raise RuntimeError("failed near https://discord.com/api/webhooks/123456789012345678/token")
+
+    monkeypatch.setattr(adapter, "read_macos_accessibility_auto", fake_auto)
+
+    result = adapter.main(["--probe-macos-accessibility", "--timeout", "3"])
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert "reason=安全監査により詳細を省略しました。" in output
+    assert "webhooks/123456789012345678" not in output
 
 
 def test_gh_guard_parses_github_remote_owner():

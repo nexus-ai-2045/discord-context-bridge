@@ -192,16 +192,20 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 次の MVP は、public package 本体ではなく private adapter を足して、Discord を開いたまま本文取得だけを自動化する段階です。
 public package は引き続き token、cookie、webhook、browser profile を受け取らず、adapter の stdout だけを読みます。
 
-ロードマップは次の順番で薄く切ります。
+ロードマップは、車輪の再発明を避けるために OS / browser の既存機能を優先して薄く切ります。
 
-1. Discord 本文取得 adapter
-2. 画面またはスレッド選択
-3. 差分検知
-4. 文脈カード自動更新
-5. スレッド/サーバールール紐付け
-6. 返信前ゲート
-7. 下書きレビュー
-8. 運用 UI / ログ表示
+1. **Accessibility 経路**
+   - macOS Accessibility で window 候補、番号選択、前面化なし取得、短い timeout を確認します。
+   - 成功すれば最速です。失敗しても、window が見えない、空読み、timeout を人間語で切り分けます。
+2. **ScreenCapture / OCR 経路**
+   - Accessibility で window が見えない場合は、Apple ScreenCaptureKit / Vision OCR の private adapter へ切ります。
+   - public package は画像 capture や permission prompt を直接持たず、stdout 契約で本文だけを受けます。
+3. **Browser 経路**
+   - Discord Web を読む場合は Playwright などの既存 browser automation を private adapter に隔離します。
+   - browser profile、cookie、storage state は credential として扱い、public repository へ入れません。
+4. **運用統合**
+   - 取得した本文を `live_ops_smoke.py`、`watch-passport`、`watch-guide` に差し込みます。
+   - 成功条件は `parsed > 0`、本文非表示、送信無効、安全監査 pass です。
 
 最初の skeleton は、現在見えている Discord 本文を stdout に出すだけの小さな command です。
 
@@ -267,6 +271,26 @@ PYTHONPATH=src python3 scripts/live_ops_smoke.py \
   --source-timeout 8 \
   --channel visible-thread \
   --reset
+```
+
+Discord を前面化したくない場合は `--no-focus` を付けます。これは window 候補を確認した上で、
+対象 window の full scan だけを試します。
+
+```bash
+PYTHONPATH=src python3 scripts/live_ops_smoke.py \
+  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility-auto --no-focus --window-index 1 --timeout 3" \
+  --source-timeout 12 \
+  --channel visible-thread \
+  --reset
+```
+
+どの候補が読めるかだけを確認したい場合は、本文を出さない probe を使います。
+
+```bash
+python3 scripts/read_visible_discord_text.py \
+  --probe-macos-accessibility \
+  --no-focus \
+  --timeout 3
 ```
 
 1回の取得で空読みやtimeoutになる場合は、自動fallback付きで試します。これは focused element を短く試し、
