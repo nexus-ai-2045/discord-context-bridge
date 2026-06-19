@@ -754,6 +754,31 @@ def test_visible_text_adapter_blocks_sensitive_output(tmp_path, capsys):
     assert "discord_webhook_url" in captured.err
 
 
+def test_visible_text_adapter_blocks_expanded_sensitive_output(tmp_path, capsys):
+    adapter = load_script_module(
+        "visible_text_adapter_expanded_sensitive_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    unsafe_lines = [
+        ("discord_snowflake_id", "member-a: synthetic id 123456789012345678"),
+        ("local_absolute_path", "member-b: synthetic path /private/tmp/example-profile"),
+        ("authorization_header", "member-c: Authorization: synthetic-secret-value"),
+        ("bearer_token_like", "member-d: Bearer syntheticBearerValue123"),
+    ]
+    unsafe = tmp_path / "expanded-unsafe.txt"
+    unsafe.write_text("\n".join(line for _, line in unsafe_lines), encoding="utf-8")
+
+    result = adapter.main(["--input", str(unsafe)])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "安全監査に失敗" in captured.err
+    for issue, line in unsafe_lines:
+        assert issue in captured.err
+        assert line not in captured.err
+
+
 def test_visible_text_adapter_can_read_source_command(capsys, monkeypatch):
     adapter = load_script_module("visible_text_adapter_command_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
 

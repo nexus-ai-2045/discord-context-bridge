@@ -10,8 +10,12 @@ from pathlib import Path
 
 SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("discord_webhook_url", re.compile(r"https://discord(?:app)?\.com/api/webhooks/\S+", re.IGNORECASE)),
-    ("discord_token_like", re.compile(r"\b(?:mfa\.[A-Za-z0-9_-]+|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27})\b")),
+    ("discord_token", re.compile(r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})\b")),
     ("discord_profile_path", re.compile(r"(?:Library/Application Support/Discord|\\AppData\\Roaming\\discord)", re.IGNORECASE)),
+    ("discord_snowflake_id", re.compile(r"(?<!\d)\d{17,20}(?!\d)")),
+    ("local_absolute_path", re.compile(r"(?:/(?:Users|home|private|tmp|var/folders|Volumes)/[^ \n]+|[A-Za-z]:\\[^ \n]+)")),
+    ("authorization_header", re.compile(r"\b" + "Author" + r"ization\s*:\s*(?:" + "Bear" + r"er\s+)?[^ \n]+", re.IGNORECASE)),
+    ("bearer_token_like", re.compile(r"\b" + "Bear" + r"er\s+[A-Za-z0-9._~+/=-]{10,}\b", re.IGNORECASE)),
 )
 
 

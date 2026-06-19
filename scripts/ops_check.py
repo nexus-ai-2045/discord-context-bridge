@@ -65,6 +65,8 @@ def run_secret_scan() -> CheckResult:
     result = run_command("秘密情報スキャン", ["rg", "-n", pattern, "."])
     allowed_prefixes = (
         "./PUBLIC_RELEASE_CHECKLIST.md:",
+        "./SECURITY.md:",
+        "./scripts/read_visible_discord_text.py:",
         "./tests/test_core.py:",
     )
     unexpected = [
