@@ -250,9 +250,21 @@ PYTHONPATH=src python3 scripts/local_smoke.py \
 これは adapter の stdout を取り込みますが、表示するのは safe label、件数、last_seen、delta count、
 gate verdict、outbound disabled だけです。
 
+まず window 候補だけを短く確認します。この出力は本文ではなく、既定では raw window 名も出しません。
+
+```bash
+python3 scripts/read_visible_discord_text.py \
+  --list-macos-windows \
+  --timeout 5
+```
+
+window 名を見て選びたい時だけ、local terminal で `--show-window-names` を明示します。
+通常は候補番号を `--window-index` に渡すと、raw window 名を見ずに試せます。
+
 ```bash
 PYTHONPATH=src python3 scripts/live_ops_smoke.py \
-  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility --window-name-contains nexus-ai" \
+  --source-command "python3 scripts/read_visible_discord_text.py --macos-accessibility --window-index 1 --timeout 5" \
+  --source-timeout 8 \
   --channel visible-thread \
   --reset
 ```
