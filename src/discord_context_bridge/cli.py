@@ -24,6 +24,7 @@ from .core import (
     load_events,
     ops_view_summary,
     review_reply_intent,
+    resolve_context_bindings,
     upsert_context_document,
 )
 
@@ -114,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
     context_upsert.add_argument("--key", required=True, help="文脈を再利用するためのローカルキー")
     context_upsert.add_argument("--input", type=Path, required=True, help="保存する文脈テキスト")
     context_upsert.add_argument("--source", default="manual", help="文脈の取得元メモ")
+    context_upsert.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="自動紐付けに使う安全な別名。複数指定できます",
+    )
     context_upsert.set_defaults(handler=_cmd_context_upsert)
 
     context_list = sub.add_parser("context-list", help="ローカル文脈庫の一覧を表示する")
@@ -154,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     passport.add_argument("--server-context-key", help="文脈庫から読むサーバー文脈キー")
     passport.add_argument("--channel-context-key", help="文脈庫から読むチャンネル文脈キー")
     passport.add_argument("--thread-context-key", help="文脈庫から読むスレッド文脈キー")
+    passport.add_argument(
+        "--auto-context-bindings",
+        action="store_true",
+        help="安全な guild/channel label から文脈庫キーを補助的に解決する",
+    )
     passport.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     passport.set_defaults(handler=_cmd_context_passport)
 
@@ -170,6 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
     watch_passport.add_argument("--server-context-key", help="文脈庫から読むサーバー文脈キー")
     watch_passport.add_argument("--channel-context-key", help="文脈庫から読むチャンネル文脈キー")
     watch_passport.add_argument("--thread-context-key", help="文脈庫から読むスレッド文脈キー")
+    watch_passport.add_argument(
+        "--auto-context-bindings",
+        action="store_true",
+        help="安全な guild/channel label から文脈庫キーを補助的に解決する",
+    )
     watch_passport.add_argument("--interval", type=float, default=1.0, help="入力元コマンドを確認する間隔秒")
     watch_passport.add_argument("--max-polls", type=int, default=0, help="確認回数。0 の場合は停止されるまで継続する")
     watch_passport.add_argument("--json", action="store_true", help="機械処理用に JSON lines で出力する")
@@ -334,6 +351,7 @@ def _cmd_context_upsert(args: argparse.Namespace) -> int:
                 args.input.read_text(encoding="utf-8"),
                 path=args.context_store,
                 source=args.source,
+                labels=args.label,
             )
         )
     )
@@ -399,6 +417,8 @@ def _cmd_context_passport(args: argparse.Namespace) -> int:
     print(passport["message"])
     print(f"解析件数: {passport['parsed']}")
     print(passport["external_context_used_label"])
+    if passport.get("auto_context_bindings_used"):
+        print(passport["auto_context_bindings_label"])
     print(passport["context_sources_label"])
     print(passport["thread_purpose_label"])
     print(passport["conversation_flow_label"])
@@ -414,7 +434,7 @@ def _cmd_context_passport(args: argparse.Namespace) -> int:
 
 def build_context_passport_from_args(text: str, args: argparse.Namespace) -> dict[str, Any]:
     contexts = read_passport_contexts(args)
-    return context_passport_from_text(
+    passport = context_passport_from_text(
         text,
         guild_label=args.guild,
         channel_label=args.channel,
@@ -422,6 +442,13 @@ def build_context_passport_from_args(text: str, args: argparse.Namespace) -> dic
         channel_context=contexts["channel_context"],
         thread_context=contexts["thread_context"],
     )
+    if contexts["auto_context_bindings_used"]:
+        passport["auto_context_bindings_used"] = True
+        passport["auto_context_bindings_label"] = "safe label から文脈庫を補助参照しました。"
+    else:
+        passport["auto_context_bindings_used"] = False
+        passport["auto_context_bindings_label"] = "safe label による自動文脈参照は使っていません。"
+    return passport
 
 
 def read_optional_text_file(path: Path | None) -> str:
@@ -432,26 +459,42 @@ def merge_context_text(*parts: str) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
-def read_passport_contexts(args: argparse.Namespace) -> dict[str, str]:
+def read_passport_contexts(args: argparse.Namespace) -> dict[str, Any]:
+    bindings = (
+        resolve_context_bindings(
+            guild_label=args.guild,
+            channel_label=args.channel,
+            path=args.context_store,
+        )
+        if getattr(args, "auto_context_bindings", False)
+        else {}
+    )
+    auto_used = False
+
+    def context_from_key(kind: str, explicit_key: str | None) -> str:
+        nonlocal auto_used
+        if explicit_key:
+            return get_context_document(kind, explicit_key, path=args.context_store)
+        binding = bindings.get(kind)
+        if binding:
+            auto_used = True
+            return get_context_document(kind, binding["key"], path=args.context_store)
+        return ""
+
     return {
         "server_context": merge_context_text(
-            get_context_document("server", args.server_context_key, path=args.context_store)
-            if args.server_context_key
-            else "",
+            context_from_key("server", args.server_context_key),
             read_optional_text_file(args.server_context),
         ),
         "channel_context": merge_context_text(
-            get_context_document("channel", args.channel_context_key, path=args.context_store)
-            if args.channel_context_key
-            else "",
+            context_from_key("channel", args.channel_context_key),
             read_optional_text_file(args.channel_context),
         ),
         "thread_context": merge_context_text(
-            get_context_document("thread", args.thread_context_key, path=args.context_store)
-            if args.thread_context_key
-            else "",
+            context_from_key("thread", args.thread_context_key),
             read_optional_text_file(args.thread_context),
         ),
+        "auto_context_bindings_used": auto_used,
     }
 
 
@@ -479,6 +522,8 @@ def _cmd_watch_passport(args: argparse.Namespace) -> int:
                 print(_json(payload), flush=True)
             else:
                 print(f"\n== 文脈カード更新 #{changed} ==")
+                if passport.get("auto_context_bindings_used"):
+                    print(passport["auto_context_bindings_label"])
                 print(passport["thread_purpose_label"])
                 print(passport["conversation_flow_label"])
                 print(passport["implicit_premises_label"])
