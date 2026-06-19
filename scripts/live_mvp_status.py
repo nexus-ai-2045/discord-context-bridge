@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -12,6 +14,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OCR_LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_+-]+$")
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -27,6 +30,30 @@ def public_safe_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [public_safe_payload(item) for item in value]
     return value
+
+
+def build_capture_source_command(*, capture_profile: str, capture_region: str, ocr_language: str, capture_timeout: float) -> str:
+    if capture_profile != "macos-screencapture-region":
+        raise ValueError("unsupported_capture_profile")
+    if not capture_region:
+        raise ValueError("capture_region_required")
+    if not OCR_LANGUAGE_RE.fullmatch(ocr_language):
+        raise ValueError("invalid_ocr_language")
+    ocr_command = f"tesseract {{image}} stdout -l {ocr_language}"
+    return " ".join(
+        [
+            shlex.quote(sys.executable),
+            "scripts/read_screenshot_ocr_text.py",
+            "--capture-profile",
+            "macos-screencapture-region",
+            "--capture-region",
+            shlex.quote(capture_region),
+            "--ocr-command",
+            shlex.quote(ocr_command),
+            "--timeout",
+            shlex.quote(str(capture_timeout)),
+        ]
+    )
 
 
 def run_script(script_name: str, args: list[str], *, timeout: float) -> dict[str, Any]:
@@ -70,6 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--app-name", default="Discord")
     parser.add_argument("--source-command", default=os.environ.get("DISCORD_CONTEXT_BRIDGE_PRIVATE_COMMAND", ""))
+    parser.add_argument("--capture-profile", choices=["macos-screencapture-region"], default="")
+    parser.add_argument("--capture-region", default="", help="x,y,w,h。region 必須、full-screen capture は使わない。")
+    parser.add_argument("--ocr-language", default="eng", help="tesseract language code")
+    parser.add_argument("--capture-timeout", type=float, default=30.0)
     parser.add_argument("--guild", default="private-discord")
     parser.add_argument("--channel", default="active-thread")
     parser.add_argument("--min-parsed", type=int, default=1)
@@ -84,9 +115,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    source_command = args.source_command
+    capture_profile_payload = None
+    if not source_command.strip() and args.capture_profile:
+        try:
+            source_command = build_capture_source_command(
+                capture_profile=args.capture_profile,
+                capture_region=args.capture_region,
+                ocr_language=args.ocr_language,
+                capture_timeout=args.capture_timeout,
+            )
+            capture_profile_payload = {
+                "name": args.capture_profile,
+                "region_set": True,
+                "ocr_language": args.ocr_language,
+                "image_output": "temporary",
+                "text_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        except ValueError as exc:
+            print(
+                _json(
+                    {
+                        "schema": "discord_live_mvp_status.v1",
+                        "ok": False,
+                        "stage": "capture_profile_config",
+                        "reason": str(exc),
+                        "text_output": "omitted",
+                        "outbound_actions": "disabled",
+                    }
+                )
+            )
+            return 2
     preflight = None
     if not args.skip_preflight:
-        preflight = run_script("ops_preflight.py", ["--app-name", args.app_name], timeout=15)
+        preflight_args = ["--app-name", args.app_name]
+        if args.capture_profile:
+            preflight_args.extend(["--capture-profile", args.capture_profile, "--capture-region", args.capture_region])
+        preflight = run_script("ops_preflight.py", preflight_args, timeout=15)
         preflight_payload = preflight["payload"]
         hard_blockers = [
             item
@@ -112,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="dcb-live-mvp-") as temp_dir:
         store = str(Path(temp_dir) / "events.ndjson")
-        if not args.source_command.strip():
+        if not source_command.strip():
             print(
                 _json(
                     {
@@ -123,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                         "live_smoke": None,
                         "ops_check": None,
                         "blockers": ["source_command_missing"],
+                        "capture_profile": capture_profile_payload,
                         "text_output": "omitted",
                         "outbound_actions": "disabled",
                     }
@@ -135,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--store",
                 store,
                 "--source-command",
-                args.source_command,
+                source_command,
                 "--guild",
                 args.guild,
                 "--channel",
@@ -172,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": ok,
                 "stage": "done" if ok else "ops_check",
                 "preflight": preflight["payload"] if preflight else None,
+                "capture_profile": capture_profile_payload,
                 "live_smoke": live["payload"],
                 "ops_check": ops["payload"],
                 "success_conditions": {
