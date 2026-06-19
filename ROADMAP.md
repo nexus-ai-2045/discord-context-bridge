@@ -4,6 +4,30 @@
 
 Discord をほぼ開かずに、こちら側でスレッド文脈・参加者・ルール・返信前ゲートを扱える MVP を作る。これは単なる本文取得ツールではなく、Discord コミュニケーションのガイドである。送信・削除・reaction・外部投稿は別 stopline とし、この repo の既定は read-only / public-safe に保つ。
 
+## MVP 優先順位
+
+```mermaid
+flowchart TD
+  p0["P0: public-safe 境界固定"] --> p1["P1: context card schema"]
+  p1 --> p2["P2: quick verdict"]
+  p2 --> p3["P3: reply gate"]
+  p3 --> p4["P4: status dashboard"]
+  p4 --> p5["P5: private adapter probe"]
+
+  p0 -. "常時維持" .-> guard["raw 本文なし / secrets なし / outbound disabled"]
+  p5 -. "失敗時" .-> failure["failure_stage と reason だけ返す"]
+```
+
+5PR 目処の薄い切り方は、先に blocker を出す順に並べる。各 PR は `fixture + smoke + public-safe leak check` を最低条件にする。
+
+| PR | 主目的 | blocker として先に見ること | smoke / preflight |
+|---|---|---|---|
+| 1 | README / ROADMAP の可視化 | 目的、境界、順序が読み手に伝わるか | Markdown diff、secret / raw text grep |
+| 2 | private adapter probe の実機経路 | no-focus で取れるか、権限で止まるか | fixture probe、実機 probe、failure_stage |
+| 3 | context card 自動更新 | 差分検知と保存境界が崩れないか | watch-passport、store audit |
+| 4 | 返信前ゲート | 速い会話で過剰 gate にならないか | review-draft fixture、risk-based verdict |
+| 5 | 運用 UI / ログ | ユーザーが今の状態を一目で把握できるか | status-dashboard、raw text omitted check |
+
 ## Core intent
 
 - ユーザーは Discord アプリを起動しておくが、基本的には Discord 画面を見ない。
@@ -49,6 +73,16 @@ Discord をほぼ開かずに、こちら側でスレッド文脈・参加者・
 - README / PR / docs / CLI human output は日本語を既定にする。
 - public-safe path mask は local username、Discord 本文、参加者名、secret-like 文字列を visible output から消す。
 - status dashboard command は raw 本文、参加者名、secret、local path を出さず、`now / done / broken / blocked / next / github / residual` だけを短く返す。
+
+## 運用フェーズ図
+
+| フェーズ | 入口 | 出力 | 完了条件 |
+|---|---|---|---|
+| 取得確認 | private adapter / fixture | 件数、失敗 stage、safe reason | raw 本文を表示せず `parsed >= 1` または理由つき停止 |
+| 文脈化 | 可視テキスト + 明示文脈 | context card / passport | 実 ID ではなく safe label / role / 要約で説明できる |
+| 返信前確認 | draft + 直近文脈 | quick verdict / risk | 送信せず、人間が判断できる短い指摘になる |
+| 運用確認 | smoke / status command | `now / done / broken / blocked / next` | secret、local path、参加者名、raw 本文を出さない |
+| 引き継ぎ | handoff packet | 次の一手、stopline、residual | PR / 外部共有前に境界が再確認されている |
 
 ## Stopline
 
