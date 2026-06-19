@@ -364,6 +364,17 @@ token 保存、pairing approval、allowlist 変更はこの repository の自動
 python3 scripts/discord_bot_route_preflight.py
 ```
 
+`@discord`、`discord:configure`、`discord:access`、Computer Use fallback、OCR fallback をまとめて見る場合は、
+route status を使います。これは本文、参加者名、token、snowflake 値を出さず、どの入口を次に使うべきかだけを返します。
+
+```bash
+python3 scripts/discord_plugin_route_status.py --json
+```
+
+この status command では、`discord:configure` と `discord:access` は control plane として扱います。
+設定や許可の変更は、ユーザーが明示した plugin command にだけ委ねます。本文を文脈カード / 返信前 gate へ流す本線は
+`bot_private_ingest` です。Computer Use は画面確認 fallback、OCR は region 必須 fallback として残します。
+
 bot channel server や private adapter から受け取った本文を、本文なしで文脈カード / 返信前 gate へ流す場合は
 private ingest smoke を使います。標準入力または一時ファイルから受け取りますが、本文、参加者名、token、
 snowflake は JSON に出しません。
