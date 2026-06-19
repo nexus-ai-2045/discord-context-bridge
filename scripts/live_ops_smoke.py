@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", default="visible-thread", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--reset", action="store_true", help="既存の smoke store を消してから実行する")
     parser.add_argument("--source-timeout", type=float, default=20.0, help="source command の最大秒数")
+    parser.add_argument("--min-parsed", type=int, default=1, help="成功扱いに必要な最小解析件数")
     parser.add_argument("--json", action="store_true", help="本文なしの JSON summary を出力する")
     return parser
 
@@ -32,7 +33,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_parser().parse_args(argv)
 
 
-def build_summary(imported: dict, ops: dict, audit: dict) -> dict:
+def build_summary(imported: dict, ops: dict, audit: dict, *, min_parsed: int = 1) -> dict:
+    source_ready = imported["parsed"] >= min_parsed
+    gate_verdict = ops["gate_verdict"] if source_ready else "source_not_ready"
+    gate_verdict_label = ops["gate_verdict_label"] if source_ready else "Discord 可視本文をまだ解析できていません。"
     return {
         "language": "ja",
         "message": "live ops smoke が完了しました。",
@@ -44,8 +48,11 @@ def build_summary(imported: dict, ops: dict, audit: dict) -> dict:
         "safe_labels": ops["safe_labels"],
         "last_seen": ops["last_seen"],
         "delta_count": imported["appended"],
-        "gate_verdict": ops["gate_verdict"],
-        "gate_verdict_label": ops["gate_verdict_label"],
+        "min_parsed": min_parsed,
+        "source_ready": source_ready,
+        "source_ready_label": "Discord 可視本文を解析できました。" if source_ready else "Discord 可視本文をまだ解析できていません。",
+        "gate_verdict": gate_verdict,
+        "gate_verdict_label": gate_verdict_label,
         "issue_count": audit["issue_count"],
         "outbound": ops["outbound"],
         "outbound_label": ops["outbound_label"],
@@ -57,6 +64,8 @@ def print_human(summary: dict) -> None:
     print(summary["message"])
     print(f"safe label: {', '.join(summary['safe_labels']) if summary['safe_labels'] else 'なし'}")
     print(f"parsed: {summary['parsed']}")
+    print(f"min parsed: {summary['min_parsed']}")
+    print(summary["source_ready_label"])
     print(f"appended: {summary['appended']}")
     print(f"duplicate: {summary['duplicate']}")
     print(f"event count: {summary['event_count']}")
@@ -86,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     audit = audit_event_store(args.store)
     ops = ops_view_summary(args.store)
-    summary = build_summary(imported, ops, audit)
+    summary = build_summary(imported, ops, audit, min_parsed=args.min_parsed)
 
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
