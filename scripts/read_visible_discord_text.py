@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--from-clipboard", action="store_true", help="local clipboard から可視テキストを読む")
     source.add_argument("--source-command", help="可視テキストを出力する private command を呼び出す")
     source.add_argument("--macos-accessibility", action="store_true", help="macOS Accessibility で Discord の前面ウィンドウから読む")
+    source.add_argument("--list-macos-windows", action="store_true", help="macOS Accessibility で Discord window 候補名だけを表示する")
     parser.add_argument("--clipboard-command", default="pbpaste", help="clipboard 取得 command。既定は pbpaste")
     parser.add_argument("--process-name", default="Discord", help="macOS Accessibility で読む process 名")
     parser.add_argument(
@@ -35,9 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="macOS Accessibility で読む window 名の一部。未指定なら前面 window",
     )
+    parser.add_argument("--window-index", type=int, default=0, help="macOS Accessibility で読む window 番号。0 の場合は名前 hint または前面 window")
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
     parser.add_argument("--timeout", type=float, default=15.0, help="local command / Accessibility 取得の最大秒数")
     parser.add_argument("--focused-only", action="store_true", help="macOS Accessibility で focused element だけを読む。重い window 全走査を避ける")
+    parser.add_argument("--show-window-names", action="store_true", help="window 診断で raw window 名も出す。通常は使わない")
     parser.add_argument("--allow-unsafe", action="store_true", help="安全監査を通さず stdout へ出す。通常は使わない")
     return parser
 
@@ -66,10 +69,12 @@ def build_macos_accessibility_script(
     process_name: str,
     window_name_contains: str = "",
     *,
+    window_index: int = 0,
     focused_only: bool = False,
 ) -> str:
     process_literal = applescript_string(process_name)
     window_hint_literal = applescript_string(window_name_contains)
+    window_index_literal = str(max(window_index, 0))
     focused_only_literal = "true" if focused_only else "false"
     return f'''
 on appendText(textValues, candidateText)
@@ -90,6 +95,7 @@ on collectText(uiElement, textValues)
 end collectText
 
 set windowNameHint to {window_hint_literal}
+set targetWindowIndex to {window_index_literal}
 set focusedOnly to {focused_only_literal}
 
 tell application "System Events"
@@ -99,7 +105,10 @@ tell application "System Events"
     set frontmost to true
     delay 0.1
     set targetWindow to missing value
-    if windowNameHint is not "" then
+    if targetWindowIndex is greater than 0 then
+      if (count of windows) is less than targetWindowIndex then error "window index not found: " & targetWindowIndex
+      set targetWindow to window targetWindowIndex
+    else if windowNameHint is not "" then
       repeat with candidateWindow in windows
         try
           set candidateName to name of candidateWindow as text
@@ -132,15 +141,70 @@ end tell
 '''
 
 
+def build_macos_window_list_script(process_name: str) -> str:
+    process_literal = applescript_string(process_name)
+    return f'''
+tell application "System Events"
+  if not (exists process {process_literal}) then error "process not found: " & {process_literal}
+  tell process {process_literal}
+    set AppleScript's text item delimiters to linefeed
+    set windowLines to {{}}
+    set windowIndex to 0
+    repeat with candidateWindow in windows
+      set windowIndex to windowIndex + 1
+      set candidateName to ""
+      try
+        set candidateName to name of candidateWindow as text
+      end try
+      if candidateName is "" then set candidateName to "(名称なし)"
+      set end of windowLines to (windowIndex as text) & tab & candidateName
+    end repeat
+    return windowLines as text
+  end tell
+end tell
+'''
+
+
 def read_macos_accessibility(
     process_name: str,
     window_name_contains: str = "",
     *,
+    window_index: int = 0,
     timeout: float | None = None,
     focused_only: bool = False,
 ) -> str:
-    script = build_macos_accessibility_script(process_name, window_name_contains, focused_only=focused_only)
+    script = build_macos_accessibility_script(
+        process_name,
+        window_name_contains,
+        window_index=window_index,
+        focused_only=focused_only,
+    )
     return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
+
+
+def list_macos_windows(process_name: str, *, timeout: float | None = None) -> str:
+    script = build_macos_window_list_script(process_name)
+    return run_command("osascript -e " + shlex.quote(script), timeout=timeout)
+
+
+def print_macos_window_candidates(text: str, *, show_names: bool = False, match_hint: str = "") -> None:
+    print("Discord window candidates:")
+    if not text.strip():
+        print("- なし")
+        return
+    normalized_hint = match_hint.casefold()
+    for line in text.splitlines():
+        index, _, name = line.partition("\t")
+        safe_name = name or "(名称なし)"
+        matched = bool(normalized_hint and normalized_hint in safe_name.casefold())
+        if show_names:
+            print(f"- {index}: {safe_name}")
+        else:
+            title_present = safe_name != "(名称なし)"
+            print(
+                f"- {index}: title_present={str(title_present).lower()} "
+                f"title_length={len(safe_name)} hint_match={str(matched).lower()}"
+            )
 
 
 def read_visible_text(args: argparse.Namespace) -> str:
@@ -154,6 +218,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
         return read_macos_accessibility(
             args.process_name,
             args.window_name_contains,
+            window_index=args.window_index,
             timeout=args.timeout,
             focused_only=args.focused_only,
         )
@@ -178,6 +243,20 @@ def normalize_visible_text(text: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.list_macos_windows:
+            text = normalize_visible_text(list_macos_windows(args.process_name, timeout=args.timeout))
+            if args.show_window_names:
+                issues = audit_visible_text(text)
+                if issues and not args.allow_unsafe:
+                    print("安全監査に失敗したため window 候補名を stdout へ出しません。", file=sys.stderr)
+                    print("issues: " + ", ".join(issues), file=sys.stderr)
+                    return 2
+            print_macos_window_candidates(
+                text,
+                show_names=args.show_window_names,
+                match_hint=args.window_name_contains,
+            )
+            return 0
         text = normalize_visible_text(read_visible_text(args))
         if len(text.strip()) < args.min_chars:
             print("Discord 可視テキストが空です。Discord の対象スレッドを表示してから再実行してください。", file=sys.stderr)

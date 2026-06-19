@@ -1074,6 +1074,92 @@ def test_visible_text_adapter_passes_timeout_to_source_command(capsys, monkeypat
     assert "画面に見えている本文です" in capsys.readouterr().out
 
 
+def test_visible_text_adapter_builds_macos_window_list_script():
+    adapter = load_script_module(
+        "visible_text_adapter_macos_windows_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    script = adapter.build_macos_window_list_script('Discord "Canary"')
+
+    assert 'process "Discord \\"Canary\\""' in script
+    assert "repeat with candidateWindow in windows" in script
+    assert "candidateName" in script
+    assert "windowIndex" in script
+
+
+def test_visible_text_adapter_lists_macos_windows(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_list_windows_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "1\tDiscord\n2\tNexus AI - Discord\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+    result = adapter.main(["--list-macos-windows", "--window-name-contains", "Nexus", "--timeout", "4"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert calls[0][1]["timeout"] == 4
+    assert "Discord window candidates:" in output
+    assert "- 1: title_present=true title_length=7 hint_match=false" in output
+    assert "- 2: title_present=true title_length=18 hint_match=true" in output
+    assert "Nexus AI - Discord" not in output
+
+
+def test_visible_text_adapter_can_show_macos_window_names_with_opt_in(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_show_windows_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = "1\tDiscord\n2\tNexus AI - Discord\n"
+        stderr = ""
+
+    monkeypatch.setattr(adapter.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = adapter.main(["--list-macos-windows", "--show-window-names"])
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "- 1: Discord" in output
+    assert "- 2: Nexus AI - Discord" in output
+
+
+def test_visible_text_adapter_blocks_sensitive_macos_window_names_when_shown(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_sensitive_windows_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = "1\tDiscord 123456789012345678\n"
+        stderr = ""
+
+    monkeypatch.setattr(adapter.subprocess, "run", lambda command, **kwargs: Completed())
+
+    result = adapter.main(["--list-macos-windows", "--show-window-names"])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "安全監査に失敗" in captured.err
+    assert "discord_snowflake_id" in captured.err
+
+
 def test_visible_text_adapter_can_select_macos_window_by_name_hint():
     adapter = load_script_module(
         "visible_text_adapter_macos_window_for_test",
@@ -1088,6 +1174,19 @@ def test_visible_text_adapter_can_select_macos_window_by_name_hint():
     assert "if candidateName contains windowNameHint" in script
     assert "window not found" in script
     assert 'process "Discord "Canary""' not in script
+
+
+def test_visible_text_adapter_can_select_macos_window_by_index():
+    adapter = load_script_module(
+        "visible_text_adapter_macos_window_index_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+
+    script = adapter.build_macos_accessibility_script("Discord", window_index=2)
+
+    assert "set targetWindowIndex to 2" in script
+    assert "window index not found" in script
+    assert "set targetWindow to window targetWindowIndex" in script
 
 
 def test_gh_guard_parses_github_remote_owner():
