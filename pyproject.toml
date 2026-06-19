@@ -1,6 +1,6 @@
 [project]
 name = "discord-context-bridge"
-version = "0.4.0"
+version = "0.10.0"
 description = "Discord の可視会話テキストを扱う local-first な文脈 bridge"
 requires-python = ">=3.11"
 readme = "README.md"
