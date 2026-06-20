@@ -14,6 +14,7 @@ import discord_plugin_route_status
 import discord_main_route_smoke
 import discord_channel_event_probe
 import discord_inventory_dashboard
+import discord_live_text_source
 import discord_route_retry_decider
 import e2e_discord_route_check
 import e2e_private_adapter_check
@@ -22,6 +23,18 @@ import live_mvp_status
 import ops_preflight
 import route_timing_log
 from discord_context_bridge.cli import safe_command_failure_reason
+
+
+def ready_channel_dir(tmp_path: Path) -> Path:
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    return channel_dir
 
 
 def test_public_safe_payload_omits_nested_store_paths():
@@ -53,14 +66,7 @@ def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Pa
 
 
 def test_bot_private_ingest_returns_context_without_text(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
-    channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
-    )
+    channel_dir = ready_channel_dir(tmp_path)
     text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
 
     payload = discord_bot_private_ingest.build_ingest_payload(
@@ -141,14 +147,7 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
 
 
 def test_discord_main_route_smoke_reaches_gate_without_text(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
-    channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
-    )
+    channel_dir = ready_channel_dir(tmp_path)
     text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
 
     payload = discord_main_route_smoke.build_smoke_payload(
@@ -196,15 +195,9 @@ def test_discord_main_route_smoke_empty_input_is_safe(tmp_path: Path):
 
 
 def test_discord_channel_event_probe_reports_missing_text_without_names(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
+    channel_dir = ready_channel_dir(tmp_path)
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
-    )
     (inbox / "123456789012345678-sensitive.png").write_bytes(b"fake")
 
     payload = discord_channel_event_probe.build_probe(channel_dir)
@@ -224,15 +217,9 @@ def test_discord_channel_event_probe_reports_missing_text_without_names(tmp_path
 
 
 def test_discord_channel_event_probe_detects_text_candidate_without_reading_it(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
+    channel_dir = ready_channel_dir(tmp_path)
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
-    )
     (inbox / "event.ndjson").write_text("member-a: 公開時期の前提を確認したいです。\n", encoding="utf-8")
 
     payload = discord_channel_event_probe.build_probe(channel_dir)
@@ -246,15 +233,37 @@ def test_discord_channel_event_probe_detects_text_candidate_without_reading_it(t
     assert "公開時期の前提" not in rendered
 
 
-def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
-    channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
+def test_discord_live_text_source_writes_latest_without_leaking_text(tmp_path: Path):
+    channel_dir = ready_channel_dir(tmp_path)
+    text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
+
+    payload = discord_live_text_source.write_text_event(
+        text,
+        channel_dir=channel_dir,
+        source_label="fixture source",
     )
+    rendered = discord_live_text_source._json(payload)
+    latest_text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+    latest_rendered = discord_live_text_source._json(latest_payload)
+
+    assert payload["ok"] is True
+    assert payload["written"] is True
+    assert payload["text_event_candidates"] == 1
+    assert payload["text_output"] == "omitted"
+    assert payload["file_names_output"] == "omitted"
+    assert latest_text == text
+    assert latest_payload["ok"] is True
+    assert latest_payload["event"]["lines"] == 2
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "member-a" not in latest_rendered
+    assert "公開時期の前提" not in latest_rendered
+
+
+def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: Path):
+    channel_dir = ready_channel_dir(tmp_path)
     text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
 
     payload = e2e_discord_route_check.build_e2e_payload(
@@ -265,6 +274,7 @@ def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: 
         draft="公開時期の前提を確認します。",
         min_parsed=1,
         require_channel_event=False,
+        source_payload={"mode": "input", "write": None, "latest": None},
     )
     rendered = e2e_discord_route_check._json(payload)
 
@@ -281,14 +291,7 @@ def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: 
 
 
 def test_e2e_discord_route_check_blocks_when_channel_event_required(tmp_path: Path):
-    channel_dir = tmp_path / "discord"
-    channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
-    (channel_dir / "access.json").write_text(
-        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
-        encoding="utf-8",
-    )
+    channel_dir = ready_channel_dir(tmp_path)
     text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
 
     payload = e2e_discord_route_check.build_e2e_payload(
@@ -299,6 +302,7 @@ def test_e2e_discord_route_check_blocks_when_channel_event_required(tmp_path: Pa
         draft="公開時期の前提を確認します。",
         min_parsed=1,
         require_channel_event=True,
+        source_payload={"mode": "input", "write": None, "latest": None},
     )
 
     assert payload["ok"] is False
@@ -306,6 +310,35 @@ def test_e2e_discord_route_check_blocks_when_channel_event_required(tmp_path: Pa
     assert payload["blocked_stage"] == "no_text_event_source"
     assert payload["checks"]["main_route_smoke_ok"] is True
     assert payload["checks"]["channel_event_source_ready"] is False
+
+
+def test_e2e_discord_route_check_uses_channel_event_when_requested(tmp_path: Path):
+    channel_dir = ready_channel_dir(tmp_path)
+    text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
+    write_payload = discord_live_text_source.write_text_event(text, channel_dir=channel_dir)
+    latest_text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+
+    payload = e2e_discord_route_check.build_e2e_payload(
+        latest_text,
+        channel_dir=channel_dir,
+        guild="safe-guild",
+        channel="safe-channel",
+        draft="公開時期の前提を確認します。",
+        min_parsed=1,
+        require_channel_event=True,
+        source_payload={"mode": "channel_event", "write": write_payload, "latest": latest_payload},
+    )
+    rendered = e2e_discord_route_check._json(payload)
+
+    assert payload["ok"] is True
+    assert payload["checks"]["source_ready"] is True
+    assert payload["checks"]["channel_event_source_ready"] is True
+    assert payload["source"]["mode"] == "channel_event"
+    assert payload["text_output"] == "omitted"
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):
