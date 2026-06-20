@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from discord_context_bridge.cli import safe_command_failure_reason
+from route_timing_log import append_entry, compact_entry
 
 OCR_LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_+-]+$")
 
@@ -40,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ax-limit", type=int, default=3, help="Accessibility probe の window 候補数")
     parser.add_argument("--source-timeout", type=float, default=20.0, help="source command の timeout 秒")
     parser.add_argument("--min-parsed", type=int, default=1, help="live smoke の成功扱いに必要な最小解析件数")
+    parser.add_argument("--timing-log", type=Path, help="route timing JSONL の追記先")
     parser.add_argument("--json", action="store_true", help="JSON summary を出力する")
     return parser
 
@@ -54,6 +57,7 @@ def command_result(
 ) -> dict[str, Any]:
     ok_codes = ok_codes or {0}
     try:
+        started = time.perf_counter()
         completed = subprocess.run(
             command,
             cwd=ROOT,
@@ -62,16 +66,18 @@ def command_result(
             timeout=timeout,
             check=False,
         )
+        elapsed_ms = (time.perf_counter() - started) * 1000
     except subprocess.TimeoutExpired:
-        return {"name": name, "status": "fail", "reason": "timeout"}
+        return {"name": name, "status": "fail", "reason": "timeout", "elapsed_ms": round(float(timeout or 0) * 1000, 3)}
     except OSError:
-        return {"name": name, "status": "fail", "reason": "not_found"}
+        return {"name": name, "status": "fail", "reason": "not_found", "elapsed_ms": 0.0}
 
     status = "pass" if completed.returncode in ok_codes else "fail"
     result: dict[str, Any] = {
         "name": name,
         "status": status,
         "exit_code": completed.returncode,
+        "elapsed_ms": round(elapsed_ms, 3),
     }
     if status != "pass":
         result["reason"] = safe_command_failure_reason(completed.stderr)
@@ -263,6 +269,22 @@ def main(argv: list[str] | None = None) -> int:
         checks.append(ax_probe_check(timeout=args.ax_timeout, limit=args.ax_limit))
 
     summary = summarize(checks, capture_profile=capture_profile)
+    if args.timing_log:
+        for check in checks:
+            if "elapsed_ms" not in check:
+                continue
+            append_entry(
+                args.timing_log,
+                compact_entry(
+                    route=str(check.get("name", "unknown")),
+                    status=str(check.get("status", "fail")),
+                    elapsed_ms=float(check.get("elapsed_ms", 0)),
+                    parsed=check.get("parsed") if isinstance(check.get("parsed"), int) else None,
+                    gate_verdict=check.get("gate_verdict") if isinstance(check.get("gate_verdict"), str) else None,
+                    stage=check.get("source_stage") if isinstance(check.get("source_stage"), str) else None,
+                    source_ready=check.get("source_ready") if isinstance(check.get("source_ready"), bool) else None,
+                ),
+            )
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:
