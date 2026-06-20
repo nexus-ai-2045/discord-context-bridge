@@ -1,3 +1,4 @@
+import json
 import sys
 import subprocess
 from pathlib import Path
@@ -12,11 +13,14 @@ import discord_bot_private_ingest
 import discord_plugin_route_status
 import discord_main_route_smoke
 import discord_channel_event_probe
+import discord_inventory_dashboard
+import discord_route_retry_decider
 import e2e_discord_route_check
 import e2e_private_adapter_check
 import live_ops_smoke
 import live_mvp_status
 import ops_preflight
+import route_timing_log
 from discord_context_bridge.cli import safe_command_failure_reason
 
 
@@ -432,3 +436,259 @@ def test_ocr_empty_source_failure_is_classified_without_adapter_failed():
     assert summary["source_stage"] == "ocr_empty"
     assert summary["reason"] == "ocr_empty"
     assert summary["text_output"] == "omitted"
+
+
+def test_route_timing_log_appends_and_summarizes(tmp_path: Path):
+    log = tmp_path / "timing.jsonl"
+
+    route_timing_log.append_entry(
+        log,
+        route_timing_log.compact_entry(
+            route="chrome-visible-dom",
+            status="pass",
+            elapsed_ms=1234.5678,
+            parsed=10,
+            gate_verdict="pass",
+            source_ready=True,
+        ),
+    )
+    route_timing_log.append_entry(
+        log,
+        route_timing_log.compact_entry(route="source-command", status="fail", elapsed_ms=50, stage="timeout"),
+    )
+
+    entries = route_timing_log.read_entries(log)
+    summary = route_timing_log.summarize_entries(entries)
+
+    rendered = json.dumps(summary, ensure_ascii=False)
+    assert len(entries) == 2
+    assert entries[0]["elapsed_ms"] == 1234.568
+    assert entries[0]["text_output"] == "omitted"
+    assert summary["routes"]["chrome-visible-dom"]["pass_count"] == 1
+    assert summary["routes"]["source-command"]["last_status"] == "fail"
+    assert "Discord本文" not in rendered
+
+
+def test_live_ops_smoke_writes_timing_log(tmp_path: Path):
+    source = tmp_path / "visible.txt"
+    store = tmp_path / "events.ndjson"
+    log = tmp_path / "timing.jsonl"
+    source.write_text("member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n", encoding="utf-8")
+
+    result = live_ops_smoke.main(
+        [
+            "--source-command",
+            f"{sys.executable} -c \"from pathlib import Path; print(Path(r'{source}').read_text(), end='')\"",
+            "--store",
+            str(store),
+            "--timing-log",
+            str(log),
+            "--route-label",
+            "fixture-source-command",
+            "--json",
+        ]
+    )
+
+    entries = route_timing_log.read_entries(log)
+    assert result == 0
+    assert entries[0]["route"] == "fixture-source-command"
+    assert entries[0]["status"] == "pass"
+    assert entries[0]["parsed"] == 2
+    assert entries[0]["elapsed_ms"] >= 0
+    assert entries[0]["outbound_actions"] == "disabled"
+
+
+def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    inbox = channel_dir / "inbox"
+    inbox.mkdir(parents=True)
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    (inbox / "123456789012345678-sensitive.png").write_bytes(b"fake")
+    (inbox / "event.ndjson").write_text("member-a: 公開時期の前提を確認したいです。\n", encoding="utf-8")
+
+    store = tmp_path / "dcb-safe.ndjson"
+    live_ops_smoke.main(
+        [
+            "--source-command",
+            f"{sys.executable} -c \"print('member-a: 公開時期の前提を確認したいです。')\"",
+            "--store",
+            str(store),
+            "--json",
+        ]
+    )
+    timing = tmp_path / "dcb-route-timing.jsonl"
+    route_timing_log.append_entry(
+        timing,
+        route_timing_log.compact_entry(route="bot-private-ingest-fixture", status="pass", elapsed_ms=10, parsed=1),
+    )
+
+    payload = discord_inventory_dashboard.build_inventory(channel_dir, tmp_path, store_limit=10)
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema"] == "discord_inventory_dashboard.v1"
+    assert payload["inbox"]["text_event_candidates"] == 1
+    assert payload["inbox"]["media_inbox_count"] == 1
+    assert payload["stores"]["shown_count"] == 1
+    assert payload["timing_logs"][0]["entry_count"] == 1
+    assert payload["safety_boundary"]["inbox_file_names_output"] == "omitted"
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678-sensitive.png" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+
+
+def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_timeout(command: str, timeout: float) -> dict[str, object]:
+        calls.append((command, timeout))
+        return {
+            "ok": False,
+            "failure_stage": "timeout",
+            "returncode": 124,
+            "elapsed_ms": 10,
+            "stdout_chars": 0,
+            "stderr_chars": 0,
+            "text_output": "omitted",
+        }
+
+    payload = discord_route_retry_decider.build_decision(
+        channel_dir=channel_dir,
+        gateway_command="gateway-fetch",
+        rest_command="rest-fetch",
+        attempts=4,
+        timeout=0.01,
+        interval=0,
+        runner=fake_timeout,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is False
+    assert payload["decision"] == "ask_browser_fallback"
+    assert payload["chrome_fallback"]["auto_open"] is False
+    assert payload["chrome_fallback"]["requires_user_go"] is True
+    assert payload["routes"]["gateway_live_event"]["attempted"] == 4
+    assert payload["routes"]["rest_backfill"]["attempted"] == 4
+    assert len(calls) == 8
+    assert "Chrome / visible fallback に切り替えますか" in payload["fallback_prompt"]
+    assert "synthetic-secret" not in rendered
+    assert "123456789012345678" not in rendered
+
+
+def test_route_retry_decider_local_command_timeout_kills_process_group():
+    result = discord_route_retry_decider.run_local_command(
+        f"{sys.executable} -c \"import time; time.sleep(5)\"",
+        timeout=0.05,
+    )
+
+    assert result["ok"] is False
+    assert result["failure_stage"] == "timeout"
+    assert result["returncode"] == 124
+    assert result["elapsed_ms"] < 1000
+    assert result["text_output"] == "omitted"
+
+
+def test_route_retry_decider_uses_gateway_without_leaking_text(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+
+    def fake_gateway(command: str, timeout: float) -> dict[str, object]:
+        return {
+            "ok": True,
+            "failure_stage": None,
+            "returncode": 0,
+            "elapsed_ms": 3,
+            "stdout_chars": len("member-a: 公開時期の前提を確認したいです。"),
+            "stderr_chars": 0,
+            "text_output": "omitted",
+        }
+
+    payload = discord_route_retry_decider.build_decision(
+        channel_dir=channel_dir,
+        gateway_command="gateway-fetch",
+        rest_command="rest-fetch",
+        attempts=5,
+        timeout=1,
+        interval=0,
+        runner=fake_gateway,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is True
+    assert payload["decision"] == "use_api_route"
+    assert payload["selected_route"] == "gateway_live_event"
+    assert payload["routes"]["gateway_live_event"]["attempted"] == 1
+    assert payload["text_output"] == "omitted"
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+
+
+def test_route_retry_decider_uses_inbox_when_api_unconfigured(tmp_path: Path):
+    channel_dir = tmp_path / "discord"
+    inbox = channel_dir / "inbox"
+    inbox.mkdir(parents=True)
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    (inbox / "event.ndjson").write_text("member-a: 公開時期の前提を確認したいです。\n", encoding="utf-8")
+
+    payload = discord_route_retry_decider.build_decision(
+        channel_dir=channel_dir,
+        gateway_command=None,
+        rest_command=None,
+        attempts=5,
+        timeout=1,
+        interval=0,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is True
+    assert payload["decision"] == "use_bot_private_ingest"
+    assert payload["selected_route"] == "bot_private_ingest"
+    assert payload["routes"]["gateway_live_event"]["failure_stage"] == "not_configured"
+    assert payload["routes"]["rest_backfill"]["failure_stage"] == "not_configured"
+    assert payload["routes"]["bot_text_event_inbox"]["text_event_candidates"] == 1
+    assert "member-a" not in rendered
+    assert "公開時期の前提" not in rendered
+
+
+def test_route_retry_decider_notification_reports_osascript_failure(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["script"] = args[-1]
+        return subprocess.CompletedProcess(args=args, returncode=7, stdout="", stderr="denied")
+
+    monkeypatch.setattr(discord_route_retry_decider.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(discord_route_retry_decider.subprocess, "run", fake_run)
+
+    payload = discord_route_retry_decider.notify_user(
+        "Discord route fallback",
+        "ログインできませんでした。Chrome に切り替えますか？",
+    )
+
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert payload["ok"] is False
+    assert payload["reason"] == "notification_failed"
+    assert payload["returncode"] == 7
+    assert payload["stderr_chars"] == len("denied")
+    assert "ログインできませんでした" in captured["script"]
+    assert "\\u30ed" not in captured["script"]
+    assert "denied" not in rendered
