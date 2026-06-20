@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import discord_bot_private_ingest
 import discord_bot_route_preflight
 import discord_channel_event_probe
+import discord_live_text_source
 import discord_main_route_smoke
 import discord_plugin_route_status
 
@@ -27,6 +28,48 @@ def read_input_text(path: Path | None) -> str:
     return discord_bot_private_ingest.read_input_text(path)
 
 
+def resolve_source_text(
+    *,
+    input_path: Path | None,
+    channel_dir: Path,
+    source_command: str | None,
+    source_timeout: float,
+    source_label: str,
+    use_channel_event: bool,
+) -> tuple[str, dict[str, Any]]:
+    if source_command:
+        write_payload = discord_live_text_source.write_source_command_event(
+            source_command,
+            channel_dir=channel_dir,
+            source_label=source_label,
+            source_timeout=source_timeout,
+        )
+        if not write_payload["ok"]:
+            return "", {
+                "mode": "source_command_to_channel_event",
+                "write": write_payload,
+                "latest": None,
+            }
+        text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+        return text, {
+            "mode": "source_command_to_channel_event",
+            "write": write_payload,
+            "latest": latest_payload,
+        }
+    if use_channel_event:
+        text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+        return text, {
+            "mode": "channel_event",
+            "write": None,
+            "latest": latest_payload,
+        }
+    return read_input_text(input_path), {
+        "mode": "input",
+        "write": None,
+        "latest": None,
+    }
+
+
 def build_e2e_payload(
     text: str,
     *,
@@ -36,6 +79,7 @@ def build_e2e_payload(
     draft: str,
     min_parsed: int,
     require_channel_event: bool,
+    source_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     route_status = discord_plugin_route_status.build_status(channel_dir)
     main_smoke = discord_main_route_smoke.build_smoke_payload(
@@ -49,8 +93,14 @@ def build_e2e_payload(
     channel_probe = discord_channel_event_probe.build_probe(channel_dir)
     fixture_path_ready = bool(main_smoke["ok"])
     channel_event_ready = bool(channel_probe["ok"])
-    ok = fixture_path_ready and (channel_event_ready or not require_channel_event)
-    blocked_stage = None if ok else first_blocked_stage(main_smoke, channel_probe, require_channel_event)
+    source_ready = source_payload is None or source_payload_is_ready(source_payload)
+    ok = source_ready and fixture_path_ready and (channel_event_ready or not require_channel_event)
+    blocked_stage = None if ok else first_blocked_stage(
+        main_smoke,
+        channel_probe,
+        require_channel_event,
+        source_payload,
+    )
     return {
         "schema": "discord_route_e2e_check.v1",
         "ok": ok,
@@ -63,7 +113,9 @@ def build_e2e_payload(
             "main_route_smoke_ok": fixture_path_ready,
             "channel_event_source_ready": channel_event_ready,
             "channel_event_required": require_channel_event,
+            "source_ready": source_ready,
         },
+        "source": source_payload or {"mode": "input"},
         "main_route": {
             "route_ready": bool(main_smoke.get("route_ready")),
             "ingest_ready": bool(main_smoke.get("ingest_ready")),
@@ -79,7 +131,7 @@ def build_e2e_payload(
             "reason": channel_probe.get("reason"),
         },
         "blocked_stage": blocked_stage,
-        "reason": None if ok else blocked_reason(main_smoke, channel_probe, require_channel_event),
+        "reason": None if ok else blocked_reason(main_smoke, channel_probe, require_channel_event, source_payload),
         "text_output": "omitted",
         "file_names_output": "omitted",
         "outbound_actions": "disabled",
@@ -94,7 +146,31 @@ def build_e2e_payload(
     }
 
 
-def first_blocked_stage(main_smoke: dict[str, Any], channel_probe: dict[str, Any], require_channel_event: bool) -> str:
+def source_payload_is_ready(source_payload: dict[str, Any]) -> bool:
+    if source_payload.get("mode") == "input":
+        return True
+    write_payload = source_payload.get("write")
+    latest_payload = source_payload.get("latest")
+    if write_payload is not None and not write_payload.get("ok"):
+        return False
+    if latest_payload is not None and not latest_payload.get("ok"):
+        return False
+    return True
+
+
+def first_blocked_stage(
+    main_smoke: dict[str, Any],
+    channel_probe: dict[str, Any],
+    require_channel_event: bool,
+    source_payload: dict[str, Any] | None = None,
+) -> str:
+    if source_payload is not None and not source_payload_is_ready(source_payload):
+        write_payload = source_payload.get("write")
+        latest_payload = source_payload.get("latest")
+        failed = write_payload if write_payload is not None and not write_payload.get("ok") else latest_payload
+        if failed:
+            return str(failed.get("failure_stage") or "source_not_ready")
+        return "source_not_ready"
     if not main_smoke.get("ok"):
         return str(main_smoke.get("failure_stage") or "main_route_smoke_failed")
     if require_channel_event and not channel_probe.get("ok"):
@@ -102,7 +178,19 @@ def first_blocked_stage(main_smoke: dict[str, Any], channel_probe: dict[str, Any
     return "unknown"
 
 
-def blocked_reason(main_smoke: dict[str, Any], channel_probe: dict[str, Any], require_channel_event: bool) -> str:
+def blocked_reason(
+    main_smoke: dict[str, Any],
+    channel_probe: dict[str, Any],
+    require_channel_event: bool,
+    source_payload: dict[str, Any] | None = None,
+) -> str:
+    if source_payload is not None and not source_payload_is_ready(source_payload):
+        write_payload = source_payload.get("write")
+        latest_payload = source_payload.get("latest")
+        failed = write_payload if write_payload is not None and not write_payload.get("ok") else latest_payload
+        if failed:
+            return str(failed.get("reason") or "text event source が未準備です。")
+        return "text event source が未準備です。"
     if not main_smoke.get("ok"):
         return str(main_smoke.get("reason") or "main route smoke が成功条件を満たしていません。")
     if require_channel_event and not channel_probe.get("ok"):
@@ -113,6 +201,10 @@ def blocked_reason(main_smoke: dict[str, Any], channel_probe: dict[str, Any], re
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discord main route の E2E 状態を本文なしで確認する。")
     parser.add_argument("--input", type=Path, help="fixture または private adapter からの一時テキスト。")
+    parser.add_argument("--source-command", help="Discord 可視テキストを stdout に出すローカルコマンド。")
+    parser.add_argument("--source-timeout", type=float, default=20.0)
+    parser.add_argument("--source-label", default="e2e-source-command", help="実IDではなく安全な仮ラベル。")
+    parser.add_argument("--use-channel-event", action="store_true", help="channel inbox の latest text event を入力として使う。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel", default="e2e-route-check", help="実IDではなく安全な仮ラベル。")
@@ -140,14 +232,23 @@ def print_human(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    source_text, source_payload = resolve_source_text(
+        input_path=args.input,
+        channel_dir=args.channel_dir,
+        source_command=args.source_command,
+        source_timeout=args.source_timeout,
+        source_label=args.source_label,
+        use_channel_event=args.use_channel_event,
+    )
     payload = build_e2e_payload(
-        read_input_text(args.input),
+        source_text,
         channel_dir=args.channel_dir,
         guild=args.guild,
         channel=args.channel,
         draft=args.draft,
         min_parsed=args.min_parsed,
         require_channel_event=args.require_channel_event,
+        source_payload=source_payload,
     )
     if args.json:
         print(_json(payload))
