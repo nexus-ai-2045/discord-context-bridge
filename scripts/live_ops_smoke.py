@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from discord_context_bridge.cli import read_command_text, safe_command_failure_reason
 from discord_context_bridge.core import audit_event_store, import_visible_text, ops_view_summary
+from route_timing_log import append_entry, compact_entry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reset", action="store_true", help="既存の smoke store を消してから実行する")
     parser.add_argument("--source-timeout", type=float, default=20.0, help="source command の最大秒数")
     parser.add_argument("--min-parsed", type=int, default=1, help="成功扱いに必要な最小解析件数")
+    parser.add_argument("--route-label", default="source-command", help="速度比較ログ用の route 名")
+    parser.add_argument("--timing-log", type=Path, help="route timing JSONL の追記先")
     parser.add_argument("--json", action="store_true", help="本文なしの JSON summary を出力する")
     return parser
 
@@ -141,17 +145,36 @@ def print_human(summary: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    started = time.perf_counter()
     if args.reset and args.store.exists():
         args.store.unlink()
 
     try:
+        source_started = time.perf_counter()
         text = read_command_text(
             args.source_command,
             empty_message="source command の出力が空です。",
             timeout=args.source_timeout,
         )
+        source_elapsed_ms = (time.perf_counter() - source_started) * 1000
     except SystemExit as exc:
         summary = build_source_failure_summary(str(exc), min_parsed=args.min_parsed)
+        summary["route_label"] = args.route_label
+        summary["source_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        summary["total_elapsed_ms"] = summary["source_elapsed_ms"]
+        if args.timing_log:
+            append_entry(
+                args.timing_log,
+                compact_entry(
+                    route=args.route_label,
+                    status="fail",
+                    elapsed_ms=summary["total_elapsed_ms"],
+                    parsed=0,
+                    gate_verdict=summary.get("gate_verdict"),
+                    stage=summary.get("failure_stage"),
+                    source_ready=False,
+                ),
+            )
         if args.json:
             print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         else:
@@ -166,6 +189,22 @@ def main(argv: list[str] | None = None) -> int:
     audit = audit_event_store(args.store)
     ops = ops_view_summary(args.store)
     summary = build_summary(imported, ops, audit, min_parsed=args.min_parsed)
+    summary["route_label"] = args.route_label
+    summary["source_elapsed_ms"] = round(source_elapsed_ms, 3)
+    summary["total_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+    if args.timing_log:
+        append_entry(
+            args.timing_log,
+            compact_entry(
+                route=args.route_label,
+                status="pass" if summary["gate_verdict"] == "pass" else "fail",
+                elapsed_ms=summary["total_elapsed_ms"],
+                parsed=summary.get("parsed"),
+                gate_verdict=summary.get("gate_verdict"),
+                stage="live_ops_smoke",
+                source_ready=summary.get("source_ready"),
+            ),
+        )
 
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
