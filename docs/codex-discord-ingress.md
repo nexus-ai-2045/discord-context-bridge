@@ -12,6 +12,25 @@
 4. コデたんが「ここで開始してよさそう？」だけ確認する。
 5. ねくがOKしたら、Discord Context Bridge の13工程へ接続する。
 
+## Draft Before Understanding Gate
+
+返信下書きは、スレッド理解が人間に確認されるまで作らない。
+
+まず出すのは draft ではなく、理解サマリです。
+
+1. 観測範囲を確認する。
+2. 既存SSOT、サーバールール、チャンネルルール、スレッドルール、ピン留めを確認する。
+3. スレッド内容を3〜8個の要点でまとめる。
+4. 未確認点を出す。
+5. ねくに「この理解で合ってる？」と確認する。
+
+`understanding-ok` になるまで、reply draft、final candidate、copy block は作らない。
+
+この判断は [ADR 0001](adr/0001-understanding-before-draft.md) を正本にする。
+
+実地テストで見つかった補強項目は
+[Live Test Reinforcements](live-test-reinforcements.md) に残す。
+
 ## しないこと
 
 - ねくにDiscord本文コピーを要求しない。
@@ -73,4 +92,5 @@ python3 scripts/fixture_13_step_e2e.py \
 - ねくがChrome上で目的の場所へ移動済み。
 - コデたんが現在状態を観測済み。
 - ねくが「ここで開始してOK」と確認済み。
+- スレッド内容とルール照合の理解確認が済むまでは draft を作らない。
 - outbound actions は disabled のまま。
