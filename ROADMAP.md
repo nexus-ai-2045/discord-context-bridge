@@ -6,6 +6,10 @@ Discord をほぼ開かずに、こちら側でスレッド文脈・参加者・
 
 ## MVP 優先順位
 
+MVP の判断正本は `references/initial-thread-ruleset.md` の13工程です。
+CLI、MCP、plugin、ChatGPT connector、実機 capture は必要な時だけ使う任意
+adapter / developer verification であり、MVP の成立条件にはしません。
+
 ```mermaid
 flowchart TD
   p0["P0: public-safe 境界固定"] --> p1["P1: context card schema"]
@@ -56,7 +60,8 @@ flowchart TD
 
 ## B. 文脈カード / 返信前ゲート MVP
 
-- P1 MVP は context card schema、quick verdict、status dashboard command の 3 点を先に固定する。
+- P1 MVP は `references/initial-thread-ruleset.md` の 13 工程を先に固定する。
+- context card schema、quick verdict、status dashboard command は13工程を支える内部部品として扱う。
 - context card は thread 目的、直近話題、参加者ロール、暗黙/明示ルール、NG 寄り行動、入ってよい流れ、速度感を持つ。
 - context card には、サーバールール、チャンネルルール、スレッド固有ルール、元の話題からのズレ、参加者の温度感、見落とし前提、返信前に確認すべき一点を入れる。
 - context card は raw 本文や実参加者名を出さず、安全 label / role / 要約だけで作る。

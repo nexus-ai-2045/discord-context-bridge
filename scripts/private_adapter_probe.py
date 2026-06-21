@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib
 import json
 import os
@@ -21,6 +22,23 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from discord_context_bridge import parse_visible_text
 from read_visible_discord_text import audit_visible_text, normalize_visible_text, safe_probe_reason
+
+
+def split_local_command(command: str) -> list[str]:
+    if os.name == "nt":
+        ctypes.windll.shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        ctypes.windll.shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        ctypes.windll.kernel32.LocalFree.restype = ctypes.c_void_p
+        argc = ctypes.c_int()
+        argv = ctypes.windll.shell32.CommandLineToArgvW(command, ctypes.byref(argc))
+        if not argv:
+            raise RuntimeError("local command の解析に失敗しました。")
+        try:
+            return [argv[index] for index in range(argc.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(argv)
+    return shlex.split(command, posix=os.name != "nt")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,7 +140,7 @@ def read_private_adapter(args: argparse.Namespace) -> tuple[str | None, dict[str
     if command:
         try:
             completed = subprocess.run(
-                shlex.split(command),
+                split_local_command(command),
                 check=False,
                 capture_output=True,
                 text=True,
