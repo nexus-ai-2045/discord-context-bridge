@@ -232,6 +232,26 @@ artifact には `final candidate`、`human gate`、`copy block`、`safety bounda
 が入ります。`copy block` は `ready` ならそのままコピー候補、`split` なら2分割
 まで、`blocked` なら3分割以上になるため短く編集してから再レビューします。
 
+判断結果を次の作業へ渡す時は、safe metadata だけを review registry に保存できます。
+保存されるのは gate 状態、copy block 状態、read scope、next action で、返信本文や
+Discord raw 本文は保存しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  --review-store .local/discord-context-bridge/review-registry.json \
+  review-draft \
+  --thread-key safe-thread \
+  --save-review-state \
+  --draft "まず前提を確認してから返事します。"
+
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  --review-store .local/discord-context-bridge/review-registry.json \
+  handoff-packet \
+  --thread-key safe-thread
+```
+
 文脈パスポートは次を返します。
 
 - スレッドの目的
