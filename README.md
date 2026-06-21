@@ -29,6 +29,17 @@ flowchart LR
 | public package | 文脈処理 | passport、gate verdict | Discord 認証情報 |
 | outbound | disabled | copy/paste 前の確認結果 | send、reaction、delete |
 
+## MVP の正本
+
+MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initial-thread-ruleset.md)
+の13工程です。レビューしやすい補助表示として
+[`references/initial-thread-ruleset.html`](references/initial-thread-ruleset.html)
+を置きます。
+
+13工程からはみ出すものは MVP 外です。CLI、MCP、plugin、ChatGPT connector、
+実機 capture、Discord 自動操作は、既存実装があっても MVP の成立条件にはしません。
+これらは必要な時だけ使う任意 adapter / developer verification として扱います。
+
 ## 基本言語
 
 この package の基本言語は日本語です。
@@ -107,6 +118,10 @@ DCB_MCP_PYTHON=/path/to/mcp-enabled/python \
 ```
 
 ### 最小MVP: 文脈パスポート
+
+この節のコマンドは developer verification 用の例です。MVP の正本は
+`references/initial-thread-ruleset.md` の13工程であり、CLI を日常利用導線や
+MVP 成立条件にはしません。
 
 目標は copy / paste 運用ではなく、自動で Discord の見えている文脈を読み、会話に入る前の理解差を埋めることです。
 public package では Discord login、cookie、token、webhook を扱わず、画面観測や OCR などの private adapter は
@@ -658,7 +673,8 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ## MCP server として使う
 
-Codex / Claude から常用する場合は、CLI より MCP server を入口にします。
+MCP server は任意 adapter です。Codex / Claude から常用する場合は CLI より
+MCP server を入口にできますが、MVP の必須条件ではありません。
 
 ```bash
 python3 -m pip install ".[mcp]"
@@ -688,6 +704,7 @@ MCP tool は 9 つです。
 ### ChatGPT connector 用に HTTP で起動する
 
 ChatGPT Apps / Connector から試す場合は、streamable HTTP MCP server として `/mcp` を出します。
+これは任意 route であり、13工程MVPや返信前レビューの必須条件ではありません。
 
 ```bash
 python3 -m pip install ".[mcp]"

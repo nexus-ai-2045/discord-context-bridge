@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import shlex
 import subprocess
@@ -17,6 +18,23 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from read_visible_discord_text import audit_visible_text, normalize_visible_text
+
+
+def split_local_command(command: str) -> list[str]:
+    if os.name == "nt":
+        ctypes.windll.shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        ctypes.windll.shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        ctypes.windll.kernel32.LocalFree.restype = ctypes.c_void_p
+        argc = ctypes.c_int()
+        argv = ctypes.windll.shell32.CommandLineToArgvW(command, ctypes.byref(argc))
+        if not argv:
+            raise RuntimeError("local command の解析に失敗しました。")
+        try:
+            return [argv[index] for index in range(argc.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(argv)
+    return shlex.split(command, posix=os.name != "nt")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
 def format_command(command_template: str, *, image: Path) -> list[str]:
     if "{image}" not in command_template:
         raise RuntimeError("command template には {image} placeholder が必要です。")
-    command = shlex.split(command_template.format(image=str(image)))
+    command = split_local_command(command_template.format(image=str(image)))
     validate_capture_command(command)
     return command
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -69,6 +70,23 @@ class JapaneseArgumentParser(argparse.ArgumentParser):
 
 def _json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def split_local_command(command: str) -> list[str]:
+    if os.name == "nt":
+        ctypes.windll.shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        ctypes.windll.shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        ctypes.windll.kernel32.LocalFree.restype = ctypes.c_void_p
+        argc = ctypes.c_int()
+        argv = ctypes.windll.shell32.CommandLineToArgvW(command, ctypes.byref(argc))
+        if not argv:
+            raise SystemExit("local command の解析に失敗しました。")
+        try:
+            return [argv[index] for index in range(argc.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(argv)
+    return shlex.split(command, posix=os.name != "nt")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -327,7 +345,7 @@ def read_command_text(
     empty_message: str = "source command の出力が空です。",
     timeout: float | None = None,
 ) -> str:
-    tokens = shlex.split(command)
+    tokens = split_local_command(command)
     env = os.environ.copy()
     while tokens:
         key_value = tokens[0]

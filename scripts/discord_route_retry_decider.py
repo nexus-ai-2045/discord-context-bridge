@@ -37,7 +37,17 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, signal.SIGKILL)
+            elif platform.system() == "Windows":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                process.kill()
         except ProcessLookupError:
             pass
         stdout, stderr = process.communicate()
