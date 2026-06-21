@@ -78,6 +78,19 @@ MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initi
 python3 scripts/ops_check.py
 ```
 
+このチェックには、13工程MVPを合成fixtureだけで最後まで通す
+`scripts/fixture_13_step_e2e.py` が含まれます。Chrome/Discord実機操作、
+MCP、plugin、ChatGPT connector を使わずに、観測入口、SSOT確認、読む範囲、
+理解要約、下書き、risk review、Markdown review artifact、final candidate、
+human gate、copy block、follow-up state、review registry、handoff packet までを確認します。
+出力には raw Discord本文、参加者名、下書き本文、final candidate本文、ローカルpathを出しません。
+
+単独で確認する場合は次を使います。
+
+```bash
+python3 scripts/fixture_13_step_e2e.py --json
+```
+
 push / PR 前に GitHub account と remote owner の一致も確認する場合は、次を使います。
 
 ```bash
