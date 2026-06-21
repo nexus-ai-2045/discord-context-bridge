@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Context Bridge 初期スレッド ruleset</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18212f;
+      --muted: #5e697a;
+      --paper: #f7f8fb;
+      --surface: #ffffff;
+      --line: #d8dde7;
+      --entry: #22577a;
+      --context: #4c7c3f;
+      --draft: #8f5b2a;
+      --human: #8a3f6f;
+      --memory: #4b5f9e;
+      --stop: #9f3030;
+      --shadow: 0 14px 34px rgba(23, 31, 46, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 18px;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      max-width: 760px;
+      font-size: 14px;
+    }
+
+    .status {
+      display: grid;
+      gap: 6px;
+      min-width: 220px;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      font-size: 12px;
+    }
+
+    .status strong {
+      font-size: 13px;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 8px;
+      margin: 0 0 18px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 10px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      flex: 0 0 auto;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(13, minmax(150px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding: 4px 0 18px;
+      scrollbar-color: #aab4c4 transparent;
+    }
+
+    .step {
+      position: relative;
+      min-height: 255px;
+      padding: 13px 12px 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--accent);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .step::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -11px;
+      width: 11px;
+      border-top: 2px solid #aab4c4;
+    }
+
+    .step:last-child::after {
+      display: none;
+    }
+
+    .number {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 10px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent), white 82%);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .step h2 {
+      min-height: 48px;
+      margin: 0 0 8px;
+      font-size: 15px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .step p {
+      margin: 0 0 9px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tag {
+      display: inline-block;
+      margin: 0 5px 6px 0;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #eef1f6;
+      color: #455166;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .entry { --accent: var(--entry); }
+    .context { --accent: var(--context); }
+    .draft { --accent: var(--draft); }
+    .human { --accent: var(--human); }
+    .memory { --accent: var(--memory); }
+
+    .panel-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .panel {
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .interrupts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .interrupt {
+      min-height: 148px;
+      padding: 12px;
+      border: 1px dashed #aab4c4;
+      border-left: 5px solid #56717f;
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .interrupt h3,
+    .stoplines h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    .interrupt p,
+    .stoplines li,
+    .boundary li {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stoplines {
+      border-left: 5px solid var(--stop);
+    }
+
+    ul {
+      padding-left: 18px;
+      margin: 0;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .boundary {
+      display: grid;
+      gap: 8px;
+    }
+
+    .boundary-row {
+      display: grid;
+      grid-template-columns: 132px 1fr;
+      gap: 10px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .boundary-row:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .label {
+      color: var(--ink);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .note {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border: 1px solid #d7c9a7;
+      border-left: 5px solid #a67c2d;
+      border-radius: 8px;
+      background: #fffaf0;
+      color: #5f4b23;
+      font-size: 12px;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        width: min(100vw - 20px, 1180px);
+        padding-top: 18px;
+      }
+
+      header,
+      .panel-grid,
+      .interrupts {
+        grid-template-columns: 1fr;
+      }
+
+      .legend {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+        overflow-x: visible;
+      }
+
+      .step {
+        min-height: 0;
+      }
+
+      .step::after {
+        top: auto;
+        right: auto;
+        left: 24px;
+        bottom: -11px;
+        height: 11px;
+        border-top: 0;
+        border-left: 2px solid #aab4c4;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Discord Context Bridge 初期スレッド ruleset</h1>
+        <p class="subtitle">Chrome 観測から始めるが、bridge は local-first / review-first のまま、Discord へ送信しない。13工程の返信支援をサイドパネルで確認するための運用図。</p>
+      </div>
+      <aside class="status" aria-label="status">
+        <strong>スコープ: Discord bridge only</strong>
+        <span>正本: references/initial-thread-ruleset.md</span>
+        <span>モード: public-safe core + private adapter boundary</span>
+      </aside>
+    </header>
+
+    <section class="legend" aria-label="legend">
+      <div class="legend-item"><span class="swatch" style="background: var(--entry)"></span>入口と source readiness</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--context)"></span>文脈と evidence</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--draft)"></span>下書きと risk review</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--human)"></span>人間判断</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--memory)"></span>SSOT と handoff</div>
+    </section>
+
+    <section class="flow" aria-label="main flow">
+      <article class="step entry">
+        <span class="number">1</span>
+        <h2>Chrome 観測入口</h2>
+        <p>Chrome / 拡張で Discord を観測できるか確認し、人間が対象 thread へ移動する。</p>
+        <span class="tag">URL</span><span class="tag">title</span><span class="tag">source_ready</span>
+      </article>
+      <article class="step context">
+        <span class="number">2</span>
+        <h2>既存 SSOT registry 確認</h2>
+        <p>判断前に context record、rule note、evidence path、transcript、OneFile を探す。</p>
+        <span class="tag">thread_key</span><span class="tag">stale_context</span>
+      </article>
+      <article class="step context">
+        <span class="number">3</span>
+        <h2>観測・資料取得範囲</h2>
+        <p>必要に応じて rule、pin、直近会話、リンク概要、添付、画像、transcript を読む。</p>
+        <span class="tag">missing_context</span><span class="tag">OneFile</span>
+      </article>
+      <article class="step context">
+        <span class="number">4</span>
+        <h2>文脈理解チェック</h2>
+        <p>確定、推定、未確認を分けて、空気の読みを 3-9 点にまとめる。</p>
+        <span class="tag">server rule</span><span class="tag">thread rule</span>
+      </article>
+      <article class="step draft">
+        <span class="number">5</span>
+        <h2>仮下書きプローブ</h2>
+        <p>未確認前提、危ない言い回し、文脈誤読を見つけるためだけに仮下書きを作る。</p>
+        <span class="tag">投稿候補ではない</span>
+      </article>
+      <article class="step draft">
+        <span class="number">6</span>
+        <h2>下書きリスクレビュー</h2>
+        <p>文脈適合、rule、tone、timing、missing premise、誤読、相手負荷を見る。</p>
+        <span class="tag">go_candidate</span><span class="tag">revise</span><span class="tag">wait</span>
+      </article>
+      <article class="step human">
+        <span class="number">7</span>
+        <h2>Markdown レビュー artifact</h2>
+        <p>理解、下書き、risk、unknown、次の選択肢を編集可能な review file に保存する。</p>
+        <span class="tag">side panel</span><span class="tag">direct edit</span>
+      </article>
+      <article class="step draft">
+        <span class="number">8</span>
+        <h2>最終返信候補</h2>
+        <p>AI生成または人間編集済みの final candidate を作る。まだ送信しない。</p>
+        <span class="tag">候補のみ</span>
+      </article>
+      <article class="step human">
+        <span class="number">9</span>
+        <h2>人間判断 gate</h2>
+        <p>copy、修正、追加読み、待機、返信なしを人間が選ぶ。bridge は send を押さない。</p>
+        <span class="tag">continue</span><span class="tag">stop_no_reply</span>
+      </article>
+      <article class="step human">
+        <span class="number">10</span>
+        <h2>コピー可能な出力</h2>
+        <p>短い copy block を作る。まず短縮し、必要時だけ分割。3分割以上は別形式を提案。</p>
+        <span class="tag">copy_block</span><span class="tag">split_copy_blocks</span>
+      </article>
+      <article class="step entry">
+        <span class="number">11</span>
+        <h2>送信後観測</h2>
+        <p>人間が送った後、依頼があれば follow-up を観測する。自動追撃や reaction はしない。</p>
+        <span class="tag">観測のみ</span>
+      </article>
+      <article class="step memory">
+        <span class="number">12</span>
+        <h2>Context SSOT 更新</h2>
+        <p>safe metadata、rule summary、decision result、candidate status、未解決点を保存する。</p>
+        <span class="tag">safe metadata</span><span class="tag">no raw private text</span>
+      </article>
+      <article class="step memory">
+        <span class="number">13</span>
+        <h2>終了・handoff</h2>
+        <p>context が肥大化した時、停止時、次チャットへ渡す時に local handoff packet を作る。</p>
+        <span class="tag">handoff packet</span><span class="tag">local artifact</span>
+      </article>
+    </section>
+
+    <section class="panel-grid">
+      <div class="panel">
+        <h2>任意割り込み</h2>
+        <div class="interrupts">
+          <div class="interrupt">
+            <h3>壁打ち</h3>
+            <p>いつでも解釈を相談、反論、再構成できる。採用した変更と捨てた案を Markdown review artifact に戻す。</p>
+          </div>
+          <div class="interrupt">
+            <h3>追加文脈</h3>
+            <p>過去ログ、rule、link、attachment、image、transcript の取得へ戻り、理解と risk check を再実行する。</p>
+          </div>
+          <div class="interrupt">
+            <h3>直接編集</h3>
+            <p>人間が Markdown や返信候補を直接編集できる。編集済み本文を次の review の source of truth にする。</p>
+          </div>
+        </div>
+      </div>
+
+      <aside class="panel stoplines">
+        <h2>Stopline</h2>
+        <ul>
+          <li>Discord への送信、reaction、edit、delete、account action 自動化はしない。</li>
+          <li>全 server / channel を巡回しない。</li>
+          <li>token、cookie、browser profile、webhook URL を読まない、保存しない。</li>
+          <li>raw private Discord text や local evidence artifact を public package に入れない。</li>
+          <li>Note 記事作業や note-publishing-suite verifier 修復をこの scope に混ぜない。</li>
+        </ul>
+      </aside>
+    </section>
+
+    <section class="panel" style="margin-top: 14px;">
+      <h2>境界マップ</h2>
+      <div class="boundary">
+        <div class="boundary-row">
+          <div class="label">Public core</div>
+          <div>safe schema、件数、label、risk state、review metadata、context budget、handoff packet 構造。</div>
+        </div>
+        <div class="boundary-row">
+          <div class="label">Private adapter</div>
+          <div>Chrome 観測、download、文字起こし、OneFile capture、local evidence handling。public package の外で扱う。</div>
+        </div>
+        <div class="boundary-row">
+          <div class="label">Human role</div>
+          <div>thread を選ぶ。Markdown review を読む。必要なら直接編集する。copy、待機、修正、停止を判断する。</div>
+        </div>
+      </div>
+      <div class="note">この可視化は ruleset の review artifact です。Markdown SSOT は <code>references/initial-thread-ruleset.md</code> のままです。</div>
+    </section>
+  </main>
+</body>
+</html>

@@ -17,6 +17,10 @@
 
 ## P1
 
+- `references/initial-thread-ruleset.md` を MVP 正本として固定する。
+  - done when: 入口指定から handoff までの13工程が読め、任意割り込みと stopline が分かる。
+- CLI / MCP / plugin / ChatGPT connector / 実機 capture を MVP 条件から外す。
+  - done when: README / PROCESS_BOUNDARY / ROADMAP が任意 adapter / developer verification として説明し、MVP 必須経路にしない。
 - 文脈カードの最小 schema と fixture を作る。
   - fields: thread purpose, recent flow, participant roles, rules, drift, safe opening, NG tone, missing premise, one check before reply.
   - done when: raw 本文と実参加者名を出さず、safe label / role / 要約だけで `discord_context_card.v1` を返す。
