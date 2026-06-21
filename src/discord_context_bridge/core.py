@@ -871,6 +871,79 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
     }
 
 
+def redact_artifact_text(text: str) -> str:
+    redacted = DISCORD_WEBHOOK_RE.sub("[discord webhook omitted]", text)
+    redacted = DISCORD_TOKEN_RE.sub("[discord token omitted]", redacted)
+    redacted = LOCAL_ABSOLUTE_PATH_RE.sub("[local path omitted]", redacted)
+    redacted = DISCORD_SNOWFLAKE_RE.sub("[discord id omitted]", redacted)
+    redacted = re.sub(r"https?://\S+", "[url omitted]", redacted)
+    redacted = re.sub(r"\bmember-[A-Za-z0-9_-]+\b", "safe-member", redacted)
+    return redacted.strip()
+
+
+def build_review_artifact_markdown(
+    draft: str,
+    review: dict[str, Any],
+    *,
+    title: str = "Discord review artifact",
+) -> str:
+    safe_draft = redact_artifact_text(draft) or "未入力"
+    missing = review.get("missing_knowledge") or []
+    missing_label = "、".join(str(item) for item in missing) if missing else "なし"
+    suggested_check = redact_artifact_text(str(review.get("one_check_before_reply") or "送信前に人間が確認してください。"))
+    quick_verdict_label = redact_artifact_text(str(review.get("quick_verdict_label") or "未判定"))
+    ok_to_reply_label = redact_artifact_text(str(review.get("ok_to_reply_label") or "未判定"))
+    alignment_label = redact_artifact_text(str(review.get("alignment_label") or "未判定"))
+    topic_warning_label = redact_artifact_text(str(review.get("topic_warning_label") or "未判定"))
+
+    return "\n".join(
+        [
+            f"# {redact_artifact_text(title)}",
+            "",
+            "> do_not_post: この artifact は送信前レビュー用です。Discord へ自動送信しません。",
+            "",
+            "## 1. 文脈理解",
+            "",
+            f"- verdict: {quick_verdict_label}",
+            f"- context_fit: {alignment_label}",
+            f"- topic_check: {topic_warning_label}",
+            f"- missing_premise: {missing_label}",
+            "",
+            "## 2. provisional draft",
+            "",
+            safe_draft,
+            "",
+            "## 3. risk review",
+            "",
+            f"- reply_state: {ok_to_reply_label}",
+            f"- one_check_before_reply: {suggested_check}",
+            "- outbound_actions: disabled",
+            "",
+            "## 4. unknown / next checks",
+            "",
+            f"- {suggested_check}",
+            "- 追加読みが必要なら human gate で止める。",
+            "",
+            "## 5. human gate",
+            "",
+            "- decision: pending",
+            "- options: copy / edit / read-more / wait / no-reply",
+            "",
+            "## 6. copy block",
+            "",
+            safe_draft,
+            "",
+            "## safety boundary",
+            "",
+            "- raw_discord_text_output: omitted",
+            "- participant_names_output: omitted",
+            "- text_returned: false",
+            "- outbound_actions: disabled",
+            "",
+        ]
+    )
+
+
 def guide_reply_from_text(
     text: str,
     draft: str,

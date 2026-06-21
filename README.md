@@ -216,6 +216,18 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --draft "まず前提を確認してから返事します。"
 ```
 
+Markdown artifact として保存してから人間が直接編集する場合は、`--artifact-path`
+を指定します。保存先 path は CLI 出力に表示せず、artifact 本文にも Discord の raw
+本文や参加者名を入れません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  review-draft \
+  --draft "まず前提を確認してから返事します。" \
+  --artifact-path .local/discord-context-bridge/review.md
+```
+
 文脈パスポートは次を返します。
 
 - スレッドの目的
