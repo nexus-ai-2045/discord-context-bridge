@@ -851,6 +851,13 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
         if not missing_knowledge
         else "不足している前提: " + "、".join(missing_knowledge)
     )
+    final_candidate = build_final_candidate(draft, quick_verdict=quick_verdict)
+    copy_block = build_copy_block(final_candidate)
+    human_gate = build_human_gate(
+        quick_verdict=quick_verdict,
+        ok_to_reply=ok_to_reply,
+        copy_block_status=str(copy_block["status"]),
+    )
     return {
         "language": DEFAULT_LANGUAGE,
         "message": "返信前レビューが完了しました。",
@@ -866,8 +873,78 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
         "topic_warning_label": gap["topic_warning_label"],
         "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
         "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+        "final_candidate": final_candidate,
+        "human_gate": human_gate,
+        "copy_block": copy_block,
         "send_capability": "disabled",
         "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def build_final_candidate(draft: str, *, quick_verdict: str) -> str:
+    safe_draft = redact_artifact_text(draft) or "未入力"
+    if quick_verdict in {"risky", "wait"}:
+        return "送信前に人間が修正してください: " + safe_draft
+    return safe_draft
+
+
+def build_human_gate(*, quick_verdict: str, ok_to_reply: str, copy_block_status: str) -> dict[str, Any]:
+    decision_required = True
+    if quick_verdict in {"risky", "wait"}:
+        recommended = "wait"
+    elif ok_to_reply == "ask_first":
+        recommended = "read-more"
+    elif copy_block_status == "blocked":
+        recommended = "edit"
+    else:
+        recommended = "copy"
+    return {
+        "schema": "discord_human_gate.v1",
+        "human_decision_required": decision_required,
+        "decision": "pending",
+        "recommended_option": recommended,
+        "options": ["copy", "edit", "read-more", "wait", "no-reply"],
+        "outbound_actions": "disabled",
+    }
+
+
+def build_copy_block(candidate: str, *, max_chars: int = 2000, max_parts: int = 2) -> dict[str, Any]:
+    safe_candidate = redact_artifact_text(candidate) or "未入力"
+    if len(safe_candidate) <= max_chars:
+        return {
+            "schema": "discord_copy_block.v1",
+            "status": "ready",
+            "text": safe_candidate,
+            "parts": [safe_candidate],
+            "part_count": 1,
+            "max_chars": max_chars,
+            "split_required": False,
+            "stop_reason": "",
+            "outbound_actions": "disabled",
+        }
+    parts = [safe_candidate[index : index + max_chars] for index in range(0, len(safe_candidate), max_chars)]
+    if len(parts) > max_parts:
+        return {
+            "schema": "discord_copy_block.v1",
+            "status": "blocked",
+            "text": "",
+            "parts": [],
+            "part_count": len(parts),
+            "max_chars": max_chars,
+            "split_required": True,
+            "stop_reason": "copy block が3分割以上になるため、短く編集してから再レビューしてください。",
+            "outbound_actions": "disabled",
+        }
+    return {
+        "schema": "discord_copy_block.v1",
+        "status": "split",
+        "text": "",
+        "parts": parts,
+        "part_count": len(parts),
+        "max_chars": max_chars,
+        "split_required": True,
+        "stop_reason": "",
+        "outbound_actions": "disabled",
     }
 
 
@@ -888,6 +965,9 @@ def build_review_artifact_markdown(
     title: str = "Discord review artifact",
 ) -> str:
     safe_draft = redact_artifact_text(draft) or "未入力"
+    final_candidate = redact_artifact_text(str(review.get("final_candidate") or safe_draft))
+    human_gate = dict(review.get("human_gate") or {})
+    copy_block = dict(review.get("copy_block") or build_copy_block(final_candidate))
     missing = review.get("missing_knowledge") or []
     missing_label = "、".join(str(item) for item in missing) if missing else "なし"
     suggested_check = redact_artifact_text(str(review.get("one_check_before_reply") or "送信前に人間が確認してください。"))
@@ -926,12 +1006,18 @@ def build_review_artifact_markdown(
             "",
             "## 5. human gate",
             "",
-            "- decision: pending",
+            f"- human_decision_required: {str(human_gate.get('human_decision_required', True)).lower()}",
+            f"- decision: {redact_artifact_text(str(human_gate.get('decision') or 'pending'))}",
+            f"- recommended_option: {redact_artifact_text(str(human_gate.get('recommended_option') or 'copy'))}",
             "- options: copy / edit / read-more / wait / no-reply",
             "",
-            "## 6. copy block",
+            "## 6. final candidate",
             "",
-            safe_draft,
+            final_candidate,
+            "",
+            "## 7. copy block",
+            "",
+            *format_copy_block_markdown(copy_block),
             "",
             "## safety boundary",
             "",
@@ -942,6 +1028,28 @@ def build_review_artifact_markdown(
             "",
         ]
     )
+
+
+def format_copy_block_markdown(copy_block: dict[str, Any]) -> list[str]:
+    status = str(copy_block.get("status") or "blocked")
+    if status == "ready":
+        return [
+            "status: ready",
+            "",
+            "```text",
+            redact_artifact_text(str(copy_block.get("text") or "")),
+            "```",
+        ]
+    if status == "split":
+        lines = ["status: split", f"part_count: {copy_block.get('part_count', 0)}", ""]
+        for index, part in enumerate(copy_block.get("parts") or [], start=1):
+            lines.extend([f"### part {index}", "", "```text", redact_artifact_text(str(part)), "```", ""])
+        return lines
+    return [
+        "status: blocked",
+        f"part_count: {copy_block.get('part_count', 0)}",
+        redact_artifact_text(str(copy_block.get("stop_reason") or "copy block を短く編集してください。")),
+    ]
 
 
 def guide_reply_from_text(
