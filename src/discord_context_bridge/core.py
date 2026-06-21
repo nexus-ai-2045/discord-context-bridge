@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
+DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
@@ -270,6 +271,20 @@ def save_context_library(entries: list[dict[str, Any]], path: Path = DEFAULT_CON
     path.write_text(json.dumps(entries, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def load_review_registry(path: Path = DEFAULT_REVIEW_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, list):
+        raise ValueError("review registry の形式が不正です。list JSON が必要です。")
+    return [dict(item) for item in loaded]
+
+
+def save_review_registry(entries: list[dict[str, Any]], path: Path = DEFAULT_REVIEW_STORE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def context_entry_id(kind: str, key: str) -> str:
     return stable_event_id({"kind": kind, "key": key})
 
@@ -453,6 +468,135 @@ def audit_context_store(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
         "safe_for_tunnel": not issues,
         "safe_for_tunnel_label": "外部公開前の監査を通過しました。" if not issues else "外部公開前に確認が必要です。",
         "issues": issues,
+    }
+
+
+def review_state_id(thread_key: str) -> str:
+    return stable_event_id({"kind": "review_state", "thread_key": thread_key})
+
+
+def upsert_review_state(
+    thread_key: str,
+    review: dict[str, Any],
+    *,
+    path: Path = DEFAULT_REVIEW_STORE,
+    read_scope: Iterable[str] | None = None,
+    gate_decision: str = "pending",
+) -> dict[str, Any]:
+    if not thread_key.strip():
+        raise ValueError("thread_key は空にできません。")
+    safe_thread_key = redact_artifact_text(thread_key) or "manual-thread"
+    human_gate = dict(review.get("human_gate") or {})
+    copy_block = dict(review.get("copy_block") or {})
+    scope = [redact_artifact_text(str(item)) for item in (read_scope or ["visible_text", "review_draft"]) if str(item).strip()]
+    entry = {
+        "schema": "discord_review_state.v1",
+        "id": review_state_id(safe_thread_key),
+        "thread_key": safe_thread_key,
+        "updated_at": utc_now(),
+        "gate_decision": redact_artifact_text(gate_decision) or "pending",
+        "recommended_option": str(human_gate.get("recommended_option") or "copy"),
+        "copy_block_status": str(copy_block.get("status") or "unknown"),
+        "quick_verdict": str(review.get("quick_verdict") or "unknown"),
+        "ok_to_reply": str(review.get("ok_to_reply") or "unknown"),
+        "alignment": str(review.get("alignment") or "unknown"),
+        "missing_premise_count": len(review.get("missing_knowledge") or []),
+        "read_scope": scope,
+        "next_action": next_action_from_review_state(
+            recommended_option=str(human_gate.get("recommended_option") or "copy"),
+            copy_block_status=str(copy_block.get("status") or "unknown"),
+        ),
+        "stopline": [
+            "Discord send/reaction/edit/delete disabled",
+            "raw Discord text omitted",
+            "participant names omitted",
+        ],
+        "outbound_actions": "disabled",
+    }
+    entries = load_review_registry(path)
+    replaced = False
+    for index, existing in enumerate(entries):
+        if existing.get("id") == entry["id"]:
+            entries[index] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+    save_review_registry(entries, path)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "review registry を更新しました。",
+        "changed": True,
+        "created": not replaced,
+        "path_output": "omitted",
+        "entry": entry,
+    }
+
+
+def next_action_from_review_state(*, recommended_option: str, copy_block_status: str) -> str:
+    if copy_block_status == "blocked":
+        return "copy block を短く編集して再レビューしてください。"
+    if recommended_option == "copy":
+        return "copy block を人間が確認して Discord 側で貼り付けます。"
+    if recommended_option == "read-more":
+        return "追加文脈を読んでから再レビューしてください。"
+    if recommended_option == "wait":
+        return "今は送らず待機してください。"
+    if recommended_option == "no-reply":
+        return "返信しない判断を記録してください。"
+    return "人間が下書きを編集して再レビューしてください。"
+
+
+def get_review_state(thread_key: str, *, path: Path = DEFAULT_REVIEW_STORE) -> dict[str, Any] | None:
+    state_id = review_state_id(redact_artifact_text(thread_key) or "manual-thread")
+    for entry in load_review_registry(path):
+        if entry.get("id") == state_id:
+            return dict(entry)
+    return None
+
+
+def build_handoff_packet(
+    *,
+    thread_key: str = "manual-thread",
+    review_state: dict[str, Any] | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    status = status or {}
+    review_state = review_state or {}
+    read_scope = list(review_state.get("read_scope") or [])
+    next_action = str(review_state.get("next_action") or "review-draft で返信前レビューを作成してください。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_handoff_packet.v1",
+        "message": "handoff packet を作成しました。",
+        "thread_key": redact_artifact_text(thread_key) or "manual-thread",
+        "current_state": {
+            "review_state_available": bool(review_state),
+            "context_available": bool((status.get("now") or {}).get("context_available")),
+            "gate_decision": review_state.get("gate_decision", "not_recorded"),
+            "copy_block_status": review_state.get("copy_block_status", "not_recorded"),
+        },
+        "read_scope": read_scope,
+        "next_action": next_action,
+        "stopline": review_state.get(
+            "stopline",
+            [
+                "Discord send/reaction/edit/delete disabled",
+                "raw Discord text omitted",
+                "participant names omitted",
+            ],
+        ),
+        "residual": [
+            "実 Discord 本文取得はMVP外の任意 adapter です。",
+            "公開、告知、外部送信は現在会話の明示承認が必要です。",
+        ],
+        "path_output": "omitted",
+        "safety_boundary": {
+            "raw_discord_text_output": "omitted",
+            "participant_names_output": "omitted",
+            "local_paths_output": "omitted",
+            "outbound_actions": "disabled",
+        },
     }
 
 
