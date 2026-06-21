@@ -12,20 +12,24 @@ from discord_context_bridge import (
     audit_context_store,
     audit_event_store,
     build_copy_block,
+    build_handoff_packet,
     build_human_gate,
     build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
     get_context_document,
+    get_review_state,
     guide_reply_from_text,
     import_visible_text,
     list_context_documents,
+    load_review_registry,
     load_events,
     ops_view_summary,
     parse_visible_text,
     review_reply_intent,
     send_message,
     status_dashboard,
+    upsert_review_state,
     upsert_context_document,
 )
 from discord_context_bridge import cli as cli_module
@@ -458,6 +462,56 @@ def test_context_library_audit_flags_private_identifiers(tmp_path):
     assert "discord_webhook_url" in {issue["kind"] for issue in audit["issues"]}
 
 
+def test_review_state_saves_safe_metadata_without_draft_or_path(tmp_path):
+    store = tmp_path / "review-registry.json"
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent("member-a に公開時期の前提を確認して返信します。", events)
+
+    saved = upsert_review_state("C:\\Users\\yas\\thread member-a", review, path=store)
+    entries = load_review_registry(store)
+
+    assert saved["message"] == "review registry を更新しました。"
+    assert saved["path_output"] == "omitted"
+    assert saved["entry"]["schema"] == "discord_review_state.v1"
+    assert saved["entry"]["thread_key"] == "[local path omitted] safe-member"
+    assert saved["entry"]["gate_decision"] == "pending"
+    assert saved["entry"]["recommended_option"] == "copy"
+    assert saved["entry"]["copy_block_status"] == "ready"
+    assert saved["entry"]["outbound_actions"] == "disabled"
+    assert len(entries) == 1
+    serialized = json.dumps(entries, ensure_ascii=False)
+    assert "公開時期の前提" not in serialized
+    assert "member-a" not in serialized
+    assert "C:\\Users\\yas" not in serialized
+
+
+def test_handoff_packet_uses_review_state_without_private_text(tmp_path):
+    review_store = tmp_path / "review-registry.json"
+    event_store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=event_store, channel_label="safe-general")
+    review = review_reply_intent("公開時期の前提を確認して返信します。", load_events(event_store))
+    upsert_review_state("safe-thread", review, path=review_store, read_scope=["visible_text", "artifact"])
+
+    packet = build_handoff_packet(
+        thread_key="safe-thread",
+        review_state=get_review_state("safe-thread", path=review_store),
+        status=status_dashboard(event_store),
+    )
+
+    assert packet["schema"] == "discord_handoff_packet.v1"
+    assert packet["current_state"]["review_state_available"] is True
+    assert packet["current_state"]["context_available"] is True
+    assert packet["current_state"]["gate_decision"] == "pending"
+    assert packet["current_state"]["copy_block_status"] == "ready"
+    assert packet["read_scope"] == ["visible_text", "artifact"]
+    assert "Discord send/reaction/edit/delete disabled" in packet["stopline"]
+    assert packet["safety_boundary"]["outbound_actions"] == "disabled"
+    serialized = json.dumps(packet, ensure_ascii=False)
+    assert "Can you clarify" not in serialized
+    assert "member-a" not in serialized
+    assert str(tmp_path) not in serialized
+
+
 def test_send_message_is_disabled():
     with pytest.raises(DisabledCapability):
         send_message("hello")
@@ -591,6 +645,58 @@ def test_cli_review_draft_json_omits_raw_context_without_artifact(tmp_path, caps
     assert '"schema": "discord_copy_block.v1"' in output
     assert '"likely_counterparty_meaning": "omitted"' in output
     assert '"suggested_correction": "omitted"' in output
+    assert "Can you clarify" not in output
+    assert "member-a" not in output
+    assert str(tmp_path) not in output
+
+
+def test_cli_review_draft_saves_review_state_and_handoff_reads_it(tmp_path, capsys):
+    event_store = tmp_path / "events.ndjson"
+    review_store = tmp_path / "review-registry.json"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=event_store, channel_label="safe-general")
+
+    result = cli_main(
+        [
+            "--store",
+            str(event_store),
+            "--review-store",
+            str(review_store),
+            "review-draft",
+            "--thread-key",
+            "safe-thread",
+            "--save-review-state",
+            "--draft",
+            "公開時期の前提を確認して返信します。",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"review_state"' in output
+    assert '"path_output": "omitted"' in output
+    assert str(review_store) not in output
+    assert "Can you clarify" not in output
+    assert "member-a" not in output
+
+    result = cli_main(
+        [
+            "--store",
+            str(event_store),
+            "--review-store",
+            str(review_store),
+            "handoff-packet",
+            "--thread-key",
+            "safe-thread",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_handoff_packet.v1"' in output
+    assert '"review_state_available": true' in output
+    assert '"context_available": true' in output
+    assert '"outbound_actions": "disabled"' in output
     assert "Can you clarify" not in output
     assert "member-a" not in output
     assert str(tmp_path) not in output

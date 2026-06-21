@@ -14,12 +14,15 @@ from typing import Any
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
+    DEFAULT_REVIEW_STORE,
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
+    build_handoff_packet,
     build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
+    get_review_state,
     get_context_document,
     guide_reply_from_text,
     import_visible_text,
@@ -29,6 +32,7 @@ from .core import (
     review_reply_intent,
     resolve_context_bindings,
     status_dashboard,
+    upsert_review_state,
     upsert_context_document,
 )
 
@@ -94,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = JapaneseArgumentParser(description="Discord の可視会話テキストを扱うローカル文脈ブリッジ")
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE, help="取り込んだ可視テキストを保存するローカルファイル")
     parser.add_argument("--context-store", type=Path, default=DEFAULT_CONTEXT_STORE, help="サーバールールやスレッド目的を保存するローカル文脈庫")
+    parser.add_argument("--review-store", type=Path, default=DEFAULT_REVIEW_STORE, help="返信前レビューの安全な状態メタデータを保存する registry")
     sub = parser.add_subparsers(dest="command", required=True, title="コマンド", parser_class=JapaneseArgumentParser)
 
     visible = sub.add_parser("import-visible-text", help="可視テキストをローカル保存へ取り込む")
@@ -147,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--github-state", default="not_checked", help="GitHub 状態の短い安全ラベル")
     dashboard.set_defaults(handler=_cmd_status_dashboard)
 
+    handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
+    handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
+    handoff.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    handoff.add_argument("--github-state", default="not_checked", help="GitHub 状態の短い安全ラベル")
+    handoff.set_defaults(handler=_cmd_handoff_packet)
+
     context_upsert = sub.add_parser("context-upsert", help="サーバー/チャンネル/スレッドの文脈をローカル文脈庫へ保存する")
     context_upsert.add_argument("--kind", required=True, choices=["server", "channel", "thread"], help="保存する文脈の種類")
     context_upsert.add_argument("--key", required=True, help="文脈を再利用するためのローカルキー")
@@ -169,11 +180,15 @@ def build_parser() -> argparse.ArgumentParser:
     review = sub.add_parser("review-intent", help="返信意図を直近文脈と照合する")
     review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
     review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
+    review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
+    review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
     review.set_defaults(handler=_cmd_review_intent)
 
     draft_review = sub.add_parser("review-draft", help="返信下書きを保存済みの直近文脈と照合する")
     draft_review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
     draft_review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
+    draft_review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
+    draft_review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
     draft_review.set_defaults(handler=_cmd_review_intent)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
@@ -426,6 +441,22 @@ def _cmd_status_dashboard(args: argparse.Namespace) -> int:
     return 0 if not dashboard["broken"] else 2
 
 
+def _cmd_handoff_packet(args: argparse.Namespace) -> int:
+    dashboard = status_dashboard(args.store, github_state=args.github_state)
+    review_state = get_review_state(args.thread_key, path=args.review_store)
+    packet = build_handoff_packet(thread_key=args.thread_key, review_state=review_state, status=dashboard)
+    if args.json:
+        print(_json(packet))
+        return 0
+    print(packet["message"])
+    current = packet["current_state"]
+    print(f"current: review_state_available={str(current['review_state_available']).lower()} context_available={str(current['context_available']).lower()}")
+    print(f"gate: {current['gate_decision']} / copy_block: {current['copy_block_status']}")
+    print(f"next: {packet['next_action']}")
+    print("outbound: disabled")
+    return 0
+
+
 def _cmd_context_upsert(args: argparse.Namespace) -> int:
     print(
         _json(
@@ -471,6 +502,19 @@ def _cmd_review_intent(args: argparse.Namespace) -> int:
                 "path_output": "omitted",
                 "raw_discord_text_output": "omitted",
                 "participant_names_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
+    if args.save_review_state:
+        saved = upsert_review_state(args.thread_key, review, path=args.review_store)
+        review = {
+            **review,
+            "review_state": {
+                "schema": "discord_review_state.v1",
+                "saved": True,
+                "created": saved["created"],
+                "path_output": "omitted",
+                "thread_key": saved["entry"]["thread_key"],
                 "outbound_actions": "disabled",
             },
         }
