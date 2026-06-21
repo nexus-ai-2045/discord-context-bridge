@@ -1,0 +1,93 @@
+# Discord Context Bridge process boundary
+
+obsidian_check: checked
+scope_route: public-discord-context-bridge / process-boundary / no-private-data / no-discord-action
+
+この文書は、Discord Context Bridge の開発が遠回りしないように、目的、主経路、やらないこと、PR 境界を固定するための公開用メモです。
+
+## 目的
+
+Discord Context Bridge の目的は、Discord を自動操作することではありません。
+
+目的は、人間のユーザーが公開チャンネルやスレッドに入る前に、見えている文脈、温度感、ルール、暗黙前提を確認し、送信前の下書きを自分で調整できるようにすることです。
+
+## 主ユーザー行動
+
+1. ユーザーが Discord の見えている文脈を用意する。
+2. bridge が文脈パスポートや返信前レビューを作る。
+3. ユーザーが自分で読む。
+4. ユーザーが必要なら下書きを直す。
+5. 実際の送信は Discord 側でユーザーが行う。
+
+## 主経路
+
+public package の主経路は `--source-command` で local observer の stdout を読むことです。
+
+public package は Discord login、cookie、token、webhook、browser profile を持ちません。Accessibility、OCR、browser automation などの private adapter は public package の外に置き、stdout contract だけを渡します。
+
+## 保存単位
+
+保存してよいもの:
+
+- 合成 fixture
+- event store の schema
+- 文脈パスポートの public-safe な構造
+- private adapter から受け取る stdout contract
+- blocker の分類名
+
+保存しないもの:
+
+- 実 guild ID、channel ID、user ID
+- private message 本文
+- real handle
+- local absolute path
+- token、cookie、webhook、browser profile
+- 実会話のスクリーンショット
+
+## 最小E2E
+
+最小E2Eは、実 Discord 本文ではなく合成 fixture で確認します。
+
+```bash
+python3 scripts/ops_check.py
+python3 -m pytest tests -q
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  context-passport \
+  --input tests/fixtures/thread_context_passport.txt
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  review-draft \
+  --draft "前提を確認してから返信します。"
+```
+
+## やらないこと
+
+- Discord へ送信しない。
+- reaction / delete / edit を実装しない。
+- user token / selfbot を扱わない。
+- public repo に private adapter の credential や local profile を置かない。
+- 取得経路比較を目的化しない。
+
+## fallback
+
+| 状態 | fallback |
+|---|---|
+| Accessibility が空読み | OCR private adapter へ切る |
+| OCR が不安定 | copy / paste fixture または手動 visible text へ戻す |
+| browser automation が必要 | private adapter に隔離し、public package には stdout contract だけ渡す |
+| source command が失敗 | `adapter_failed` として人間語で原因を返す |
+
+## route drift stop 条件
+
+次が出たら、実装を止めてこの文書へ戻ります。
+
+- 文脈パスポートより adapter 比較が中心になる。
+- 送信や自動操作の話が主目的に戻っている。
+- public repo に private data を入れそうになる。
+- PR に FDE / Obsidian / 記事 draft が混ざる。
+- 最小E2Eなしで周辺機能が増える。
+
+## PR 境界
+
+この public repo の PR は、Discord Context Bridge の public-safe なコード、docs、tests だけを含めます。
+
+FDE 原則は `nexus-ai-2045/fractal-decision-ecosystem`、Nexus AI の私的運用や Obsidian/SSOT は `nexus-ai-2045/nexus_ai`、記事 draft は private draft 側に分けます。

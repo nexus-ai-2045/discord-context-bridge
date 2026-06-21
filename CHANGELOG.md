@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `PROCESS_BOUNDARY.md` を追加し、Discord Context Bridge を「公開チャンネルに入る前の文脈理解と下書き補助」に絞る開発境界を明文化しました。
+- FDE / Obsidian / 記事 draft をこの public package の PR に混ぜない repo routing を明記しました。
+
 ## 0.10.0 - 2026-06-19
 
 - `scripts/read_visible_discord_text.py` を追加し、Discord 可視本文取得 adapter の public-safe な入口を用意しました。
