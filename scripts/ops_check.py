@@ -69,11 +69,11 @@ def run_secret_scan() -> CheckResult:
         "./scripts/read_visible_discord_text.py:",
         "./tests/test_core.py:",
     )
-    unexpected = [
-        line
-        for line in result.output.splitlines()
-        if line.strip() and not line.startswith(allowed_prefixes)
-    ]
+    unexpected = []
+    for line in result.output.splitlines():
+        normalized = line.replace("\\", "/") if line.startswith(".\\") else line
+        if line.strip() and not normalized.startswith(allowed_prefixes):
+            unexpected.append(line)
     output = result.output
     ok = result.ok and not unexpected
     if unexpected:

@@ -455,13 +455,16 @@ def _cmd_audit_context_store(args: argparse.Namespace) -> int:
 
 def _cmd_review_intent(args: argparse.Namespace) -> int:
     review = review_reply_intent(args.draft, load_events(args.store))
+    review = {
+        **review,
+        "likely_counterparty_meaning": "omitted",
+        "suggested_correction": "omitted",
+    }
     if args.artifact_path:
         args.artifact_path.parent.mkdir(parents=True, exist_ok=True)
         args.artifact_path.write_text(build_review_artifact_markdown(args.draft, review), encoding="utf-8")
         review = {
             **review,
-            "likely_counterparty_meaning": "omitted",
-            "suggested_correction": "omitted",
             "artifact": {
                 "schema": "discord_review_artifact_markdown.v1",
                 "created": True,
