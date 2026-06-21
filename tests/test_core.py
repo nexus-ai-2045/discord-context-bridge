@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tomllib
 
 import pytest
@@ -10,6 +11,8 @@ from discord_context_bridge import (
     DisabledCapability,
     audit_context_store,
     audit_event_store,
+    build_copy_block,
+    build_human_gate,
     build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
@@ -44,6 +47,7 @@ def load_script_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -244,24 +248,71 @@ def test_review_reply_intent_quick_verdict_flags_risky_tone():
     assert review["quick_verdict"] == "risky"
     assert review["quick_verdict_label"].startswith("risky:")
     assert review["send_capability"] == "disabled"
+    assert review["human_gate"]["human_decision_required"] is True
+    assert review["human_gate"]["recommended_option"] == "wait"
+    assert review["copy_block"]["status"] == "ready"
+
+
+def test_review_reply_intent_returns_final_candidate_human_gate_and_copy_block():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent("公開時期の前提を確認して返信します。", events)
+
+    assert review["final_candidate"] == "公開時期の前提を確認して返信します。"
+    assert review["human_gate"]["schema"] == "discord_human_gate.v1"
+    assert review["human_gate"]["human_decision_required"] is True
+    assert review["human_gate"]["decision"] == "pending"
+    assert review["human_gate"]["recommended_option"] == "copy"
+    assert review["human_gate"]["outbound_actions"] == "disabled"
+    assert review["copy_block"]["schema"] == "discord_copy_block.v1"
+    assert review["copy_block"]["status"] == "ready"
+    assert review["copy_block"]["text"] == "公開時期の前提を確認して返信します。"
+    assert review["copy_block"]["part_count"] == 1
+    assert review["copy_block"]["outbound_actions"] == "disabled"
+
+
+def test_copy_block_splits_once_and_blocks_three_or_more_parts():
+    split = build_copy_block("あ" * 2100, max_chars=2000)
+    blocked = build_copy_block("あ" * 4100, max_chars=2000)
+
+    assert split["status"] == "split"
+    assert split["split_required"] is True
+    assert split["part_count"] == 2
+    assert all(len(part) <= 2000 for part in split["parts"])
+    assert blocked["status"] == "blocked"
+    assert blocked["parts"] == []
+    assert blocked["part_count"] == 3
+    assert "3分割以上" in blocked["stop_reason"]
+    assert blocked["outbound_actions"] == "disabled"
+
+
+def test_human_gate_recommends_wait_read_more_edit_or_copy():
+    assert build_human_gate(quick_verdict="wait", ok_to_reply="likely_ok", copy_block_status="ready")["recommended_option"] == "wait"
+    assert build_human_gate(quick_verdict="risky", ok_to_reply="likely_ok", copy_block_status="ready")["recommended_option"] == "wait"
+    assert build_human_gate(quick_verdict="ask-context", ok_to_reply="ask_first", copy_block_status="ready")["recommended_option"] == "read-more"
+    assert build_human_gate(quick_verdict="go", ok_to_reply="likely_ok", copy_block_status="blocked")["recommended_option"] == "edit"
+    assert build_human_gate(quick_verdict="go", ok_to_reply="likely_ok", copy_block_status="ready")["recommended_option"] == "copy"
 
 
 def test_build_review_artifact_markdown_is_public_safe():
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
     review = review_reply_intent(
-        "member-a には https://example.com を貼らず、公開時期の前提を確認します。",
+        "member-a には https://example.com を貼らず、公開時期の前提を確認して返信します。",
         events,
     )
 
     artifact = build_review_artifact_markdown(
-        "member-a には https://example.com を貼らず、公開時期の前提を確認します。",
+        "member-a には https://example.com を貼らず、公開時期の前提を確認して返信します。",
         review,
     )
 
     assert "# Discord review artifact" in artifact
     assert "do_not_post" in artifact
     assert "## 5. human gate" in artifact
-    assert "## 6. copy block" in artifact
+    assert "human_decision_required: true" in artifact
+    assert "recommended_option: copy" in artifact
+    assert "## 6. final candidate" in artifact
+    assert "## 7. copy block" in artifact
+    assert "status: ready" in artifact
     assert "raw_discord_text_output: omitted" in artifact
     assert "participant_names_output: omitted" in artifact
     assert "outbound_actions: disabled" in artifact
@@ -517,6 +568,51 @@ def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(t
     assert "member-a" not in artifact
     assert "safe-member に公開時期の前提を確認します。" in artifact
     assert "outbound_actions: disabled" in artifact
+
+
+def test_cli_review_draft_json_omits_raw_context_without_artifact(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "review-draft",
+            "--draft",
+            "公開時期の前提を確認します。",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"final_candidate": "公開時期の前提を確認します。"' in output
+    assert '"schema": "discord_human_gate.v1"' in output
+    assert '"schema": "discord_copy_block.v1"' in output
+    assert '"likely_counterparty_meaning": "omitted"' in output
+    assert '"suggested_correction": "omitted"' in output
+    assert "Can you clarify" not in output
+    assert "member-a" not in output
+    assert str(tmp_path) not in output
+
+
+def test_ops_check_secret_scan_allows_windows_style_fixture_paths(monkeypatch):
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    output = "\n".join(
+        [
+            r".\PUBLIC_RELEASE_CHECKLIST.md:69:rg -n fake",
+            r".\tests\test_core.py:115:https://discord.com/api/webhooks/123456789012345678/token",
+        ]
+    )
+
+    def fake_run_command(name, command, *, env=None):
+        return ops_check.CheckResult(name, True, 0.01, command, output)
+
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    result = ops_check.run_secret_scan()
+
+    assert result.ok is True
+    assert "想定外の一致" not in result.output
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):

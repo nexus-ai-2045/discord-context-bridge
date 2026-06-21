@@ -228,6 +228,10 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --artifact-path .local/discord-context-bridge/review.md
 ```
 
+artifact には `final candidate`、`human gate`、`copy block`、`safety boundary`
+が入ります。`copy block` は `ready` ならそのままコピー候補、`split` なら2分割
+まで、`blocked` なら3分割以上になるため短く編集してから再レビューします。
+
 文脈パスポートは次を返します。
 
 - スレッドの目的
