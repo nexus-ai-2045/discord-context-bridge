@@ -40,6 +40,18 @@ MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initi
 実機 capture、Discord 自動操作は、既存実装があっても MVP の成立条件にはしません。
 これらは必要な時だけ使う任意 adapter / developer verification として扱います。
 
+## Codex から始める Discord ingress
+
+本命の入口は、ねくが最初にスレッドURLやDiscord本文を渡す形ではありません。
+「Discordチェックしたい」と言ったら、コデたんが Chrome で Discord を開き、
+ねくが Chrome 上で目的の場所へ移動します。コデたんは現在の Chrome 状態を観測し、
+「ここで開始してよさそう？」を確認してから13工程へ接続します。
+
+この入口の運用境界は [docs/codex-discord-ingress.md](docs/codex-discord-ingress.md)
+にまとめています。bridge は Chrome を直接操作せず、Codex 側の Chrome 観測結果を
+safe metadata として受け取ります。Discord本文コピー、最初のURL指定、Discordアプリ操作、
+Discordへの送信は前提にしません。
+
 ## 基本言語
 
 この package の基本言語は日本語です。
@@ -89,6 +101,25 @@ human gate、copy block、follow-up state、review registry、handoff packet ま
 
 ```bash
 python3 scripts/fixture_13_step_e2e.py --json
+```
+
+Codex/Chrome ingress の契約だけを確認する場合は次を使います。
+
+```bash
+python3 scripts/codex_discord_ingress_smoke.py \
+  --chrome-opened \
+  --current-url "https://discord.com/channels/@me/111/222" \
+  --human-state ready \
+  --confirm-decision approved \
+  --json
+```
+
+13工程E2Eへ接続する場合は、Codex ingress の safe metadata を渡せます。
+
+```bash
+python3 scripts/fixture_13_step_e2e.py \
+  --entry-metadata tests/fixtures/codex_ingress_ready.json \
+  --json
 ```
 
 push / PR 前に GitHub account と remote owner の一致も確認する場合は、次を使います。
