@@ -37,6 +37,12 @@ def read_text(path: Path | None, default: str = "") -> str:
     return path.read_text(encoding="utf-8")
 
 
+def read_json(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def step(name: str, ok: bool, **data: Any) -> dict[str, Any]:
     return {"name": name, "ok": ok, **data}
 
@@ -50,6 +56,7 @@ def build_fixture_e2e_payload(
     draft: str,
     thread_key: str,
     work_dir: Path,
+    entry_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     event_store = work_dir / "events.ndjson"
     context_store = work_dir / "context-library.json"
@@ -93,12 +100,16 @@ def build_fixture_e2e_payload(
     )
     status = status_dashboard(event_store, github_state="local_fixture")
     handoff = build_handoff_packet(thread_key=thread_key, review_state=review_state["entry"], status=status)
+    ingress = entry_metadata or {}
+    ingress_ready = bool(ingress.get("ok")) if ingress else None
 
     steps = [
         step(
             "01_observation_entry",
-            bool(imported.get("parsed", 0) >= 1),
+            bool(imported.get("parsed", 0) >= 1 and (ingress_ready is not False)),
             parsed=int(imported.get("parsed", 0)),
+            codex_ingress_ready=ingress_ready,
+            entry_surface="discord_web" if ingress_ready else "fixture",
             text_output="omitted",
             participant_names_output="omitted",
         ),
@@ -218,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thread-context", type=Path, default=ROOT / "tests/fixtures/thread_context_rules.txt")
     parser.add_argument("--draft", default="公開時期の前提を確認してから返信します。")
     parser.add_argument("--thread-key", default="fixture-thread")
+    parser.add_argument("--entry-metadata", type=Path, help="Codex/Chrome ingress のsafe metadata JSON。出力にはraw URL等を出しません。")
     parser.add_argument("--work-dir", type=Path, help="検証用の一時storeを置くlocal directory。出力にはpathを出しません。")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -248,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             draft=args.draft,
             thread_key=args.thread_key,
             work_dir=args.work_dir,
+            entry_metadata=read_json(args.entry_metadata),
         )
     else:
         with tempfile.TemporaryDirectory(prefix="dcb-13-step-") as tmp:
@@ -259,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                 draft=args.draft,
                 thread_key=args.thread_key,
                 work_dir=Path(tmp),
+                entry_metadata=read_json(args.entry_metadata),
             )
     if args.json:
         print(_json(payload))
