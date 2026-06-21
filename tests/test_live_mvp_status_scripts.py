@@ -22,6 +22,7 @@ import live_ops_smoke
 import live_mvp_status
 import ops_preflight
 import route_timing_log
+import fixture_13_step_e2e
 from discord_context_bridge.cli import safe_command_failure_reason
 
 
@@ -339,6 +340,44 @@ def test_e2e_discord_route_check_uses_channel_event_when_requested(tmp_path: Pat
     assert "公開時期の前提" not in rendered
     assert "synthetic-secret" not in rendered
     assert "123456789012345678" not in rendered
+
+
+def test_fixture_13_step_e2e_passes_without_private_output(tmp_path: Path):
+    payload = fixture_13_step_e2e.build_fixture_e2e_payload(
+        "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n",
+        server_context="サーバールール: 個人情報の共有は禁止です。",
+        channel_context="チャンネル目的: 公開前の企画相談です。",
+        thread_context="スレッドルール: 未確認の断定は禁止です。",
+        draft="公開時期の前提を確認してから返信します。",
+        thread_key="fixture-thread",
+        work_dir=tmp_path,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema"] == "discord_13_step_fixture_e2e.v1"
+    assert payload["ok"] is True
+    assert payload["step_count"] == 13
+    assert payload["passed"] == 13
+    assert [item["name"] for item in payload["steps"]] == [
+        "01_observation_entry",
+        "02_ssot_registry_lookup",
+        "03_read_scope_decision",
+        "04_understanding_summary",
+        "05_provisional_draft",
+        "06_risk_review",
+        "07_markdown_review_artifact",
+        "08_final_candidate",
+        "09_human_gate",
+        "10_copy_block",
+        "11_follow_up_state",
+        "12_review_state_registry",
+        "13_handoff_packet",
+    ]
+    assert payload["safety_boundary"]["raw_discord_text_output"] == "omitted"
+    assert payload["safety_boundary"]["outbound_actions"] == "disabled"
+    assert "member-a" not in rendered
+    assert "公開時期の前提を確認" not in rendered
+    assert str(tmp_path) not in rendered
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):

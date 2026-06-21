@@ -98,6 +98,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
         "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
         "秘密情報スキャン": run_secret_scan,
+        "13工程fixture E2E": lambda: run_command(
+            "13工程fixture E2E",
+            [sys.executable, "scripts/fixture_13_step_e2e.py", "--json"],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.gh:
