@@ -10,6 +10,7 @@ from discord_context_bridge import (
     DisabledCapability,
     audit_context_store,
     audit_event_store,
+    build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
     get_context_document,
@@ -245,6 +246,44 @@ def test_review_reply_intent_quick_verdict_flags_risky_tone():
     assert review["send_capability"] == "disabled"
 
 
+def test_build_review_artifact_markdown_is_public_safe():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent(
+        "member-a には https://example.com を貼らず、公開時期の前提を確認します。",
+        events,
+    )
+
+    artifact = build_review_artifact_markdown(
+        "member-a には https://example.com を貼らず、公開時期の前提を確認します。",
+        review,
+    )
+
+    assert "# Discord review artifact" in artifact
+    assert "do_not_post" in artifact
+    assert "## 5. human gate" in artifact
+    assert "## 6. copy block" in artifact
+    assert "raw_discord_text_output: omitted" in artifact
+    assert "participant_names_output: omitted" in artifact
+    assert "outbound_actions: disabled" in artifact
+    assert "Can you clarify" not in artifact
+    assert "member-a" not in artifact
+    assert "https://example.com" not in artifact
+    assert "[url omitted]" in artifact
+
+
+def test_build_review_artifact_redacts_private_values():
+    review = review_reply_intent("前提を確認してから返します。", [])
+    artifact = build_review_artifact_markdown(
+        "Webhook: https://discord.com/api/webhooks/123456789012345678/token at C:\\Users\\yas\\secret",
+        review,
+    )
+
+    assert "webhooks/123456789012345678" not in artifact
+    assert "C:\\Users\\yas" not in artifact
+    assert "[discord webhook omitted]" in artifact
+    assert "[local path omitted]" in artifact
+
+
 def test_context_passport_from_text_summarizes_thread_context():
     passport = context_passport_from_text(PASSPORT_FIXTURE.read_text(encoding="utf-8"))
 
@@ -446,6 +485,38 @@ def test_cli_status_dashboard_outputs_safe_json(tmp_path, capsys):
     assert "Can you clarify" not in output
     assert "member-a" not in output
     assert str(tmp_path) not in output
+
+
+def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    artifact_path = tmp_path / "review.md"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "review-draft",
+            "--draft",
+            "member-a に公開時期の前提を確認します。",
+            "--artifact-path",
+            str(artifact_path),
+        ]
+    )
+    output = capsys.readouterr().out
+    artifact = artifact_path.read_text(encoding="utf-8")
+
+    assert result == 0
+    assert artifact_path.exists()
+    assert '"schema": "discord_review_artifact_markdown.v1"' in output
+    assert '"path_output": "omitted"' in output
+    assert str(artifact_path) not in output
+    assert "Can you clarify" not in output
+    assert "member-a" not in output
+    assert "Can you clarify" not in artifact
+    assert "member-a" not in artifact
+    assert "safe-member に公開時期の前提を確認します。" in artifact
+    assert "outbound_actions: disabled" in artifact
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):

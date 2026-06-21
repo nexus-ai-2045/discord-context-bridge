@@ -17,6 +17,7 @@ from .core import (
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
+    build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
     get_context_document,
@@ -167,10 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser("review-intent", help="返信意図を直近文脈と照合する")
     review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
     review.set_defaults(handler=_cmd_review_intent)
 
     draft_review = sub.add_parser("review-draft", help="返信下書きを保存済みの直近文脈と照合する")
     draft_review.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    draft_review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
     draft_review.set_defaults(handler=_cmd_review_intent)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
@@ -451,7 +454,24 @@ def _cmd_audit_context_store(args: argparse.Namespace) -> int:
 
 
 def _cmd_review_intent(args: argparse.Namespace) -> int:
-    print(_json(review_reply_intent(args.draft, load_events(args.store))))
+    review = review_reply_intent(args.draft, load_events(args.store))
+    if args.artifact_path:
+        args.artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        args.artifact_path.write_text(build_review_artifact_markdown(args.draft, review), encoding="utf-8")
+        review = {
+            **review,
+            "likely_counterparty_meaning": "omitted",
+            "suggested_correction": "omitted",
+            "artifact": {
+                "schema": "discord_review_artifact_markdown.v1",
+                "created": True,
+                "path_output": "omitted",
+                "raw_discord_text_output": "omitted",
+                "participant_names_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
+    print(_json(review))
     return 0
 
 
