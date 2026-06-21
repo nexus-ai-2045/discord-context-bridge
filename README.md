@@ -59,6 +59,8 @@ flowchart LR
 
 ## 使い方
 
+開発と PR の境界は [PROCESS_BOUNDARY.md](PROCESS_BOUNDARY.md) を見てください。
+
 実装後の最短チェックを並列で実行します。
 
 ```bash
