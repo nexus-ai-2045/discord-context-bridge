@@ -1,0 +1,23 @@
+{
+  "schema": "codex_discord_ingress_smoke.v1",
+  "ok": true,
+  "stage": "ready_for_bridge",
+  "steps": [
+    {
+      "name": "04_observe_current_chrome_state",
+      "ok": true,
+      "host_label": "discord",
+      "is_discord": true,
+      "url_output": "omitted",
+      "title_output": "omitted"
+    }
+  ],
+  "safety_boundary": {
+    "manual_text_copy_required": false,
+    "discord_app_required": false,
+    "raw_url_output": "omitted",
+    "raw_title_output": "omitted",
+    "raw_discord_text_output": "omitted",
+    "outbound_actions": "disabled"
+  }
+}

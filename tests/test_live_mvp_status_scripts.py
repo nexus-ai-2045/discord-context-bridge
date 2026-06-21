@@ -18,6 +18,7 @@ import discord_live_text_source
 import discord_route_retry_decider
 import e2e_discord_route_check
 import e2e_private_adapter_check
+import codex_discord_ingress_smoke
 import live_ops_smoke
 import live_mvp_status
 import ops_preflight
@@ -378,6 +379,77 @@ def test_fixture_13_step_e2e_passes_without_private_output(tmp_path: Path):
     assert "member-a" not in rendered
     assert "公開時期の前提を確認" not in rendered
     assert str(tmp_path) not in rendered
+
+
+def test_fixture_13_step_e2e_accepts_codex_ingress_metadata(tmp_path: Path):
+    payload = fixture_13_step_e2e.build_fixture_e2e_payload(
+        "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n",
+        server_context="サーバールール: 個人情報の共有は禁止です。",
+        channel_context="チャンネル目的: 公開前の企画相談です。",
+        thread_context="スレッドルール: 未確認の断定は禁止です。",
+        draft="公開時期の前提を確認してから返信します。",
+        thread_key="fixture-thread",
+        work_dir=tmp_path,
+        entry_metadata={"schema": "codex_discord_ingress_smoke.v1", "ok": True, "stage": "ready_for_bridge"},
+    )
+    observation = payload["steps"][0]
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is True
+    assert observation["codex_ingress_ready"] is True
+    assert observation["entry_surface"] == "discord_web"
+    assert "member-a" not in rendered
+    assert str(tmp_path) not in rendered
+
+
+def test_codex_discord_ingress_ready_state_is_safe():
+    payload = codex_discord_ingress_smoke.build_ingress_payload(
+        chrome_opened=True,
+        current_url="https://discord.com/channels/@me/111111111111111111/222222222222222222",
+        current_title="private thread title",
+        human_state="ready",
+        confirm_decision="approved",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema"] == "codex_discord_ingress_smoke.v1"
+    assert payload["ok"] is True
+    assert payload["stage"] == "ready_for_bridge"
+    assert payload["safety_boundary"]["manual_text_copy_required"] is False
+    assert payload["safety_boundary"]["discord_app_required"] is False
+    assert payload["safety_boundary"]["outbound_actions"] == "disabled"
+    assert "111111111111111111" not in rendered
+    assert "222222222222222222" not in rendered
+    assert "private thread title" not in rendered
+
+
+def test_codex_discord_ingress_waits_for_human_navigation_without_copying_text():
+    payload = codex_discord_ingress_smoke.build_ingress_payload(
+        chrome_opened=True,
+        current_url="https://discord.com/channels/@me",
+        current_title="Discord",
+        human_state="navigating",
+        confirm_decision="pending",
+    )
+
+    assert payload["ok"] is False
+    assert payload["blocked_stage"] == "human_navigation_pending"
+    assert payload["next_action"] == "人間が Chrome 上で目的のサーバー、チャンネル、スレッドへ移動するまで待ちます。"
+    assert payload["safety_boundary"]["manual_text_copy_required"] is False
+
+
+def test_codex_discord_ingress_blocks_non_discord_tab():
+    payload = codex_discord_ingress_smoke.build_ingress_payload(
+        chrome_opened=True,
+        current_url="https://example.com/channels/@me/111",
+        current_title="not discord",
+        human_state="ready",
+        confirm_decision="approved",
+    )
+
+    assert payload["ok"] is False
+    assert payload["blocked_stage"] == "discord_not_open"
+    assert payload["steps"][3]["host_label"] == "other"
 
 
 def test_ops_preflight_reports_system_events_timeout(monkeypatch):
