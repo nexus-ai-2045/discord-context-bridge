@@ -102,7 +102,32 @@ def latest_git_tag_version(root: Path) -> str | None:
     return format_semver(max(versions))
 
 
-def check_version_consistency(root: Path) -> list[str]:
+def git_tag_exists(root: Path, version: str) -> bool:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/v{version}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0
+
+
+def create_git_tag(root: Path, version: str) -> None:
+    if git_tag_exists(root, version):
+        raise ValueError(f"git tag v{version} は既に存在します。")
+    completed = subprocess.run(
+        ["git", "tag", f"v{version}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise ValueError("git tag の作成に失敗しました: " + completed.stderr.strip())
+
+
+def check_version_consistency(root: Path, *, require_current_tag: bool = False) -> list[str]:
     pyproject_path = root / "pyproject.toml"
     changelog_path = root / "CHANGELOG.md"
     issues: list[str] = []
@@ -115,6 +140,8 @@ def check_version_consistency(root: Path) -> list[str]:
     latest_tag = latest_git_tag_version(root)
     if latest_tag and parse_semver(current) < parse_semver(latest_tag):
         issues.append(f"pyproject.toml version {current} が最新 git tag v{latest_tag} より古いです。")
+    if require_current_tag and not git_tag_exists(root, current):
+        issues.append(f"current version {current} に対応する git tag v{current} がありません。")
     return issues
 
 
@@ -124,14 +151,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", help="自動計算ではなく、この X.Y.Z を使う")
     parser.add_argument("--date", default=date.today().isoformat(), help="CHANGELOG に書く release date")
     parser.add_argument("--write", action="store_true", help="pyproject.toml と CHANGELOG.md を更新する")
+    parser.add_argument("--tag", action="store_true", help="--write と同時に vX.Y.Z git tag を作成する")
     parser.add_argument("--check", action="store_true", help="version と CHANGELOG の整合性だけ確認する")
+    parser.add_argument(
+        "--require-current-tag",
+        action="store_true",
+        help="--check 時に current version と同じ vX.Y.Z tag があることも要求する",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.check:
-        issues = check_version_consistency(ROOT)
+        issues = check_version_consistency(ROOT, require_current_tag=args.require_current_tag)
         if issues:
             for issue in issues:
                 print(f"NG: {issue}")
@@ -149,10 +182,15 @@ def main() -> int:
         "part": args.part if not args.version else "explicit",
         "date": args.date,
         "write": args.write,
+        "tag": args.tag,
     }
+    if args.tag and not args.write:
+        raise ValueError("--tag は --write と一緒に使ってください。")
     if args.write:
         write_project_version(pyproject_path, next_version)
         update_changelog(ROOT / "CHANGELOG.md", next_version, args.date)
+        if args.tag:
+            create_git_tag(ROOT, next_version)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
