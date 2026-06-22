@@ -621,6 +621,25 @@ def append_events(events: Iterable[DiscordEvent], path: Path = DEFAULT_STORE) ->
     return {"appended": appended, "duplicate": duplicate}
 
 
+def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+    author_aliases: dict[str, str] = {}
+    safe_events: list[DiscordEvent] = []
+    for event in events:
+        if event.author_label not in author_aliases:
+            author_aliases[event.author_label] = f"participant-{len(author_aliases) + 1:03d}"
+        safe_events.append(
+            DiscordEvent.from_dict(
+                {
+                    **event.to_dict(),
+                    "author_label": author_aliases[event.author_label],
+                    "text_snippet": "omitted",
+                    "event_id": event.event_id,
+                }
+            )
+        )
+    return safe_events
+
+
 def looks_like_author_line(line: str) -> bool:
     if len(line) > 40:
         return False
@@ -704,7 +723,8 @@ def import_visible_text(
         channel_label=channel_label,
         observed_at=observed_at,
     )
-    result = {"appended": 0, "duplicate": 0} if dry_run else append_events(events, path)
+    safe_events = public_safe_events(events)
+    result = {"appended": 0, "duplicate": 0} if dry_run else append_events(safe_events, path)
     loaded_events = events if dry_run else load_events(path)
     return {
         **result,

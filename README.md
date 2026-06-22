@@ -63,7 +63,7 @@ Discordへの送信は前提にしません。
 
 ## できること
 
-- 見えている、またはコピーした Discord テキストを local append-only event store に取り込みます。
+- 見えている、またはコピーした Discord テキストを一時的に解析し、本文なしの local append-only event store に取り込みます。
 - 直近メッセージから短い briefing を作ります。
 - スレッドの目的、流れ、前提、ルール注意、温度感を文脈パスポートとして確認します。
 - local command で取得した可視テキストを監視し、文脈パスポートを自動更新します。
@@ -821,8 +821,10 @@ ChatGPT の connector URL に `https://.../mcp` を登録します。
 
 ## データ契約
 
-event store は newline-delimited JSON です。local-only で扱い、実会話データを含む場合は
-commit しません。
+event store は newline-delimited JSON です。public core の既定保存では、
+raw Discord 本文と実参加者名を残しません。raw text は import 中の一時入力として
+扱い、永続化前に `participant-001` 形式の alias と `text_snippet="omitted"` へ
+落とします。
 
 各 event は意図的に小さく保ちます。
 
@@ -830,13 +832,13 @@ commit しません。
 - `source`
 - `guild_label`
 - `channel_label`
-- `author_label`
-- `text_snippet`
+- `author_label` (`participant-001` 形式の safe alias)
+- `text_snippet` (`omitted`)
 - `actions_allowed`
 - `private_surface`
 
 label は human-safe な alias にしてください。その境界を明示的に選んだ場合を除き、
-実 private identifier は保存しません。
+実 private identifier と raw message text は保存しません。
 
 context store の `labels` も同じく human-safe な alias だけを入れます。
 `example-community/safe-planning` のような guild/channel label は自動紐付けのための公開安全な名前であり、
