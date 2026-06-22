@@ -79,6 +79,7 @@ def build_e2e_payload(
     draft: str,
     min_parsed: int,
     require_channel_event: bool,
+    understanding_confirmed: bool = False,
     source_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     route_status = discord_plugin_route_status.build_status(channel_dir)
@@ -89,6 +90,7 @@ def build_e2e_payload(
         channel=channel,
         draft=draft,
         min_parsed=min_parsed,
+        understanding_confirmed=understanding_confirmed,
     )
     channel_probe = discord_channel_event_probe.build_probe(channel_dir)
     fixture_path_ready = bool(main_smoke["ok"])
@@ -209,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel", default="e2e-route-check", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--draft", default="前提を確認します。")
+    parser.add_argument("--understanding-confirmed", action="store_true", help="理解サマリを人間確認済みとして返信reviewへ進む")
     parser.add_argument("--min-parsed", type=int, default=1)
     parser.add_argument("--require-channel-event", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -248,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         draft=args.draft,
         min_parsed=args.min_parsed,
         require_channel_event=args.require_channel_event,
+        understanding_confirmed=args.understanding_confirmed,
         source_payload=source_payload,
     )
     if args.json:

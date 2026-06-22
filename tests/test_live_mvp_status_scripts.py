@@ -78,6 +78,7 @@ def test_bot_private_ingest_returns_context_without_text(tmp_path: Path):
         channel="safe-channel",
         draft="公開時期の前提を確認します。",
         min_parsed=1,
+        understanding_confirmed=True,
     )
 
     rendered = discord_bot_private_ingest._json(payload)
@@ -159,6 +160,7 @@ def test_discord_main_route_smoke_reaches_gate_without_text(tmp_path: Path):
         channel="safe-channel",
         draft="公開時期の前提を確認します。",
         min_parsed=1,
+        understanding_confirmed=True,
     )
     rendered = discord_main_route_smoke._json(payload)
 
@@ -276,6 +278,7 @@ def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: 
         draft="公開時期の前提を確認します。",
         min_parsed=1,
         require_channel_event=False,
+        understanding_confirmed=True,
         source_payload={"mode": "input", "write": None, "latest": None},
     )
     rendered = e2e_discord_route_check._json(payload)
@@ -352,6 +355,7 @@ def test_fixture_13_step_e2e_passes_without_private_output(tmp_path: Path):
         draft="公開時期の前提を確認してから返信します。",
         thread_key="fixture-thread",
         work_dir=tmp_path,
+        understanding_confirmed=True,
     )
     rendered = json.dumps(payload, ensure_ascii=False)
 
@@ -364,13 +368,13 @@ def test_fixture_13_step_e2e_passes_without_private_output(tmp_path: Path):
         "02_ssot_registry_lookup",
         "03_read_scope_decision",
         "04_understanding_summary",
-        "05_provisional_draft",
-        "06_risk_review",
-        "07_markdown_review_artifact",
-        "08_final_candidate",
-        "09_human_gate",
-        "10_copy_block",
-        "11_follow_up_state",
+        "05_understanding_gate",
+        "06_provisional_draft",
+        "07_risk_review",
+        "08_markdown_review_artifact",
+        "09_final_candidate",
+        "10_human_gate",
+        "11_copy_block",
         "12_review_state_registry",
         "13_handoff_packet",
     ]
@@ -390,6 +394,7 @@ def test_fixture_13_step_e2e_accepts_codex_ingress_metadata(tmp_path: Path):
         draft="公開時期の前提を確認してから返信します。",
         thread_key="fixture-thread",
         work_dir=tmp_path,
+        understanding_confirmed=True,
         entry_metadata={"schema": "codex_discord_ingress_smoke.v1", "ok": True, "stage": "ready_for_bridge"},
     )
     observation = payload["steps"][0]
@@ -400,6 +405,26 @@ def test_fixture_13_step_e2e_accepts_codex_ingress_metadata(tmp_path: Path):
     assert observation["entry_surface"] == "discord_web"
     assert "member-a" not in rendered
     assert str(tmp_path) not in rendered
+
+
+def test_fixture_13_step_e2e_blocks_without_understanding_confirmation(tmp_path: Path):
+    payload = fixture_13_step_e2e.build_fixture_e2e_payload(
+        "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n",
+        server_context="サーバールール: 個人情報の共有は禁止です。",
+        channel_context="チャンネル目的: 公開前の企画相談です。",
+        thread_context="スレッドルール: 未確認の断定は禁止です。",
+        draft="公開時期の前提を確認してから返信します。",
+        thread_key="fixture-thread",
+        work_dir=tmp_path,
+    )
+    steps = {item["name"]: item for item in payload["steps"]}
+
+    assert payload["ok"] is False
+    assert payload["stage"] == "blocked"
+    assert steps["05_understanding_gate"]["ok"] is False
+    assert steps["05_understanding_gate"]["status"] == "blocked"
+    assert steps["09_final_candidate"]["ok"] is False
+    assert steps["11_copy_block"]["status"] == "blocked"
 
 
 def test_codex_discord_ingress_ready_state_is_safe():
