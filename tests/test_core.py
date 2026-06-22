@@ -2698,6 +2698,50 @@ def test_gh_guard_rejects_wrong_repository_and_unexpected_identity(monkeypatch):
     assert report["git_author_matches"] is False
 
 
+def test_gh_guard_rejects_configured_forbidden_identity_without_echoing_value(monkeypatch):
+    gh_guard = load_script_module("gh_guard_forbidden_identity_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/discord-context-bridge.git")
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("nexus-ai-2045", True, ""))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {
+            "user.name": "nexus-ai-2045",
+            "user.email": "273569186+nexus-ai-2045@users.noreply.github.com",
+        }.get(key, ""),
+    )
+    monkeypatch.setattr(
+        gh_guard,
+        "collect_history_text",
+        lambda refs: "abc123\nAuthor: old-operator <old-operator@example.com>\nCo-authored-by: old-operator <old-operator@example.com>\n",
+    )
+
+    report = gh_guard.build_report(
+        "origin",
+        switch=False,
+        forbidden_identities=["old-operator@example.com"],
+        history_refs=["HEAD"],
+    )
+
+    assert report["ok"] is False
+    assert report["forbidden_identity_count"] == 1
+    assert report["forbidden_identity_match_count"] == 1
+    assert report["forbidden_identity_matches"] == [
+        {"source": "git_history", "identity_label": "configured-forbidden-identity"}
+    ]
+    assert "old-operator@example.com" not in json.dumps(report, ensure_ascii=False)
+
+
+def test_gh_guard_parses_forbidden_identities_from_args_and_env():
+    gh_guard = load_script_module("gh_guard_forbidden_parse_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    assert gh_guard.parse_forbidden_identities(
+        ["old-operator; legacy-user"],
+        "someone@example.com\nlegacy-user",
+    ) == ["legacy-user", "old-operator", "someone@example.com"]
+
+
 def test_pr_language_gate_rejects_english_default_template():
     gate = load_script_module("check_pr_language_for_test", ROOT / "scripts" / "check_pr_language.py")
     title = "[codex] Harden Discord bridge store safety"
