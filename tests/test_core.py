@@ -2678,25 +2678,24 @@ def test_gh_guard_reports_account_drift_and_switch(monkeypatch):
     assert switched == ["nexus-ai-2045"]
 
 
-def test_gh_guard_rejects_wrong_repository_and_personal_identity(monkeypatch):
+def test_gh_guard_rejects_wrong_repository_and_unexpected_identity(monkeypatch):
     gh_guard = load_script_module("gh_guard_wrong_repo_for_test", ROOT / "scripts" / "gh_guard.py")
 
     monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/nexus_ai.git")
-    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("lm93TRQN5WSL", True, ""))
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("unexpected-account", True, ""))
     monkeypatch.setattr(
         gh_guard,
         "get_git_config",
-        lambda key: {"user.name": "say_yas", "user.email": "tamagoe@gmail.com"}.get(key, ""),
+        lambda key: {"user.name": "unexpected-user", "user.email": "unexpected@example.com"}.get(key, ""),
     )
 
     report = gh_guard.build_report("origin", switch=False)
 
     assert report["ok"] is False
     assert report["actual_repository"] == "nexus_ai"
+    assert report["account_matches"] is False
     assert report["repository_matches"] is False
     assert report["git_author_matches"] is False
-    assert "lm93TRQN5WSL" in report["disallowed_identities"]
-    assert "tamagoe@gmail.com" in report["disallowed_identities"]
 
 
 def test_pr_language_gate_rejects_english_default_template():
