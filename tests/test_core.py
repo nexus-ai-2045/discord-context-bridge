@@ -9,6 +9,8 @@ import pytest
 
 from discord_context_bridge import (
     DisabledCapability,
+    DiscordEvent,
+    append_event,
     audit_context_store,
     audit_event_store,
     build_copy_block,
@@ -88,6 +90,8 @@ def test_import_visible_text_appends_and_deduplicates(tmp_path):
 
     first = import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store)
     second = import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store)
+    stored_text = store.read_text(encoding="utf-8")
+    stored_events = load_events(store)
 
     assert first["parsed"] == 3
     assert first["appended"] == 3
@@ -96,7 +100,15 @@ def test_import_visible_text_appends_and_deduplicates(tmp_path):
     assert first["preview"][0]["source_label"] == "Discord の可視テキスト"
     assert first["preview"][0]["actions_allowed_label"] == "読み取りのみ"
     assert second["duplicate"] == 3
-    assert len(load_events(store)) == 3
+    assert len(stored_events) == 3
+    assert [event.author_label for event in stored_events] == [
+        "participant-001",
+        "participant-002",
+        "participant-003",
+    ]
+    assert {event.text_snippet for event in stored_events} == {"omitted"}
+    assert "Can you clarify" not in stored_text
+    assert "member-a" not in stored_text
 
 
 def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
@@ -124,15 +136,38 @@ def test_audit_event_store_reports_safe_empty_store(tmp_path):
 
 def test_audit_event_store_flags_private_identifiers(tmp_path):
     store = tmp_path / "events.ndjson"
-    import_visible_text(
-        "\n".join(
-            [
-                "member-a: webhook is https://discord.com/api/webhooks/123456789012345678/token",
-                "member-b: user id 987654321098765432 should not be stored",
-                "member-c: local path /Users/example/Library/Application Support/Discord",
-            ]
+    append_event(
+        DiscordEvent(
+            observed_at="2026-01-01T00:00:00+00:00",
+            source="test",
+            guild_label="example-community",
+            channel_label="general",
+            author_label="member-a",
+            text_snippet="webhook is https://discord.com/api/webhooks/123456789012345678/token",
         ),
-        path=store,
+        store,
+    )
+    append_event(
+        DiscordEvent(
+            observed_at="2026-01-01T00:00:01+00:00",
+            source="test",
+            guild_label="example-community",
+            channel_label="general",
+            author_label="member-b",
+            text_snippet="user id 987654321098765432 should not be stored",
+        ),
+        store,
+    )
+    append_event(
+        DiscordEvent(
+            observed_at="2026-01-01T00:00:02+00:00",
+            source="test",
+            guild_label="example-community",
+            channel_label="general",
+            author_label="member-c",
+            text_snippet="local path /Users/example/Library/Application Support/Discord",
+        ),
+        store,
     )
 
     report = audit_event_store(store)
@@ -2634,7 +2669,17 @@ def test_gh_guard_reports_account_drift_and_switch(monkeypatch):
 
 def test_cli_audit_store_returns_nonzero_when_unsafe(tmp_path, capsys):
     store = tmp_path / "events.ndjson"
-    import_visible_text("member-a: https://discord.com/api/webhooks/123456789012345678/token", path=store)
+    append_event(
+        DiscordEvent(
+            observed_at="2026-01-01T00:00:00+00:00",
+            source="test",
+            guild_label="example-community",
+            channel_label="general",
+            author_label="member-a",
+            text_snippet="https://discord.com/api/webhooks/123456789012345678/token",
+        ),
+        store,
+    )
 
     result = cli_main(["--store", str(store), "audit-store"])
     output = capsys.readouterr().out
@@ -2848,7 +2893,17 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
 
 def test_http_mcp_require_safe_store_blocks_unsafe_store(monkeypatch, tmp_path):
     store = tmp_path / "events.ndjson"
-    import_visible_text("member-a: https://discord.com/api/webhooks/123456789012345678/token", path=store)
+    append_event(
+        DiscordEvent(
+            observed_at="2026-01-01T00:00:00+00:00",
+            source="test",
+            guild_label="example-community",
+            channel_label="general",
+            author_label="member-a",
+            text_snippet="https://discord.com/api/webhooks/123456789012345678/token",
+        ),
+        store,
+    )
     calls = []
 
     class FakeFastMCP:
