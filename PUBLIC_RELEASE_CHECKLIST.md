@@ -6,7 +6,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 
 - remote が `nexus-ai-2045/discord-context-bridge` を指している。
 - `python3 scripts/gh_guard.py --json` で repository、GitHub account、git author、禁止名義が正しいことを確認している。
-- `lm93TRQN5WSL`、`say_yas`、`tamagoe@gmail.com` など個人名義が remote、active account、git author に混ざっていない。
+- 期待する repository / owner / git author と一致しない個人名義が remote、active account、git author に混ざっていない。
 - git author name / email が `nexus-ai-2045` の public repository 名義になっている。
 - release commit が、この public package と必要 metadata だけを含んでいる。
 

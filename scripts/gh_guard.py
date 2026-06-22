@@ -13,7 +13,6 @@ EXPECTED_OWNER = "nexus-ai-2045"
 EXPECTED_REPOSITORY = "discord-context-bridge"
 EXPECTED_GIT_USER_NAME = "nexus-ai-2045"
 EXPECTED_GIT_USER_EMAIL = "273569186+nexus-ai-2045@users.noreply.github.com"
-DISALLOWED_IDENTITIES = ("lm93TRQN5WSL", "say_yas", "sayyas", "tamagoe@gmail.com")
 
 
 def parse_github_owner(remote_url: str) -> str | None:
@@ -83,11 +82,6 @@ def switch_gh_account(owner: str) -> None:
         raise SystemExit("gh account の切り替えに失敗しました: " + completed.stderr.strip())
 
 
-def contains_disallowed_identity(*values: str) -> list[str]:
-    joined = "\n".join(values).casefold()
-    return [identity for identity in DISALLOWED_IDENTITIES if identity.casefold() in joined]
-
-
 def build_report(
     remote: str,
     *,
@@ -113,8 +107,7 @@ def build_report(
     owner_matches = owner == expected_owner
     repository_matches = repository == expected_repository
     git_author_matches = git_user_name == EXPECTED_GIT_USER_NAME and git_user_email == EXPECTED_GIT_USER_EMAIL
-    disallowed = contains_disallowed_identity(remote_url, before, after, git_user_name, git_user_email)
-    ok = account_matches and owner_matches and repository_matches and not disallowed
+    ok = account_matches and owner_matches and repository_matches
     if not account_only:
         ok = ok and auth_status_ok_after and git_author_matches
     return {
@@ -131,10 +124,10 @@ def build_report(
         "git_user_email": git_user_email,
         "auth_status_ok_before": auth_status_ok_before,
         "auth_status_ok_after": auth_status_ok_after,
+        "account_matches": account_matches,
         "owner_matches": owner_matches,
         "repository_matches": repository_matches,
         "git_author_matches": git_author_matches,
-        "disallowed_identities": disallowed,
         "switched": switched,
         "ok": ok,
         "message": "GitHub / git 名義は Discord Context Bridge の公開先と一致しています。" if ok else "GitHub / git 名義または repository が Discord Context Bridge の公開先と一致していません。",
@@ -171,8 +164,6 @@ def main() -> int:
         print(f"repository: {report['actual_repository']}")
         print(f"active account: {report['active_account_after']}")
         print(f"git author: {report['git_user_name']} <{report['git_user_email']}>")
-        if report["disallowed_identities"]:
-            print("禁止名義が見つかりました: " + ", ".join(report["disallowed_identities"]))
         if report["switched"]:
             print("gh active account を切り替えました。")
     return 0 if report["ok"] else 2

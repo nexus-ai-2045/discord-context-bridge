@@ -136,7 +136,7 @@ python3 scripts/fixture_13_step_e2e.py \
 
 push / PR 前には、repository、GitHub account、git author、禁止名義を確認します。
 この repository の正しい公開先は `nexus-ai-2045/discord-context-bridge` です。
-`lm93TRQN5WSL`、`say_yas`、`tamagoe@gmail.com` などの個人名義が混ざる場合は止めます。
+期待する repository / owner / git author と一致しない名義が混ざる場合は止めます。
 
 ```bash
 python3 scripts/gh_guard.py --json
