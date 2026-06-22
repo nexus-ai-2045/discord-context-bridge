@@ -52,7 +52,8 @@ MVP done は、次をすべて満たす状態です。
 - final candidate と copy block は作るが、Discord send / reaction / edit / delete はしない。
 - Context SSOT update と handoff packet まで到達する。
 - CLI / MCP / plugin / ChatGPT connector / live capture は任意 adapter のまま、MVP必須経路にしない。
-- `python -m pytest tests -q`、`python -m compileall src tests scripts`、public-safe grep が green。
+- `python -m pytest tests -q`、`python -m compileall src tests scripts`、`scripts/bump_version.py --check`、public-safe grep が green。
+- release 前の version は `scripts/bump_version.py --part patch|minor|major --write` で採番し、`pyproject.toml` と `CHANGELOG.md` を同時更新する。
 
 ## 13工程の受け入れマトリクス
 
