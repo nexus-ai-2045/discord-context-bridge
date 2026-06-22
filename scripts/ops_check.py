@@ -97,6 +97,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env),
         "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
         "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
+        "version整合性": lambda: run_command("version整合性", [sys.executable, "scripts/bump_version.py", "--check"]),
         "秘密情報スキャン": run_secret_scan,
         "Codex ingress smoke": lambda: run_command(
             "Codex ingress smoke",

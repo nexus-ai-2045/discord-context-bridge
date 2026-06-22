@@ -27,6 +27,8 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Package Boundary
 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
+- release version は `python3 scripts/bump_version.py --part patch|minor|major --write` で採番し、`pyproject.toml` と `CHANGELOG.md` を同時更新している。
+- `python3 scripts/bump_version.py --check` が成功している。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
@@ -60,12 +62,7 @@ discord-context-bridge-mcp-http --help
 discord-context-bridge-mcp-http --store /tmp/discord-context-events.ndjson --require-safe-store --help
 discord-context-bridge --store /tmp/discord-context-events.ndjson audit-store
 discord-context-bridge --context-store /tmp/discord-context-library.json audit-context-store
-python3 - <<'PY'
-import tomllib
-from pathlib import Path
-version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-assert version
-PY
+python3 scripts/bump_version.py --check
 rg -n "(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|discord(app)?\\.com/api/webhooks|Authorization|Bearer |mfa\\.|[A-Za-z0-9_-]{24}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27})" .
 ```
 

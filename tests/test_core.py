@@ -47,6 +47,15 @@ THREAD_CONTEXT_FIXTURE = Path(__file__).parent / "fixtures" / "thread_context_ru
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_bump_version_module():
+    spec = importlib.util.spec_from_file_location("bump_version", ROOT / "scripts" / "bump_version.py")
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_script_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
@@ -551,10 +560,40 @@ def test_user_facing_docs_declare_japanese_default():
 def test_package_version_tracks_current_release():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    version = metadata["project"]["version"]
 
-    assert metadata["project"]["version"] == "0.10.0"
-    assert "## 0.10.0 - 2026-06-19" in changelog
-    assert "read_visible_discord_text.py" in changelog
+    assert version
+    assert f"## {version} -" in changelog
+    assert "## Unreleased" in changelog
+    assert load_bump_version_module().check_version_consistency(ROOT) == []
+
+
+def test_bump_version_computes_next_semver():
+    bump_version = load_bump_version_module()
+
+    assert bump_version.bump_semver("0.10.0", "patch") == "0.10.1"
+    assert bump_version.bump_semver("0.10.0", "minor") == "0.11.0"
+    assert bump_version.bump_semver("0.10.0", "major") == "1.0.0"
+
+
+def test_bump_version_updates_pyproject_and_changelog(tmp_path):
+    bump_version = load_bump_version_module()
+    pyproject = tmp_path / "pyproject.toml"
+    changelog = tmp_path / "CHANGELOG.md"
+    pyproject.write_text('[project]\nname = "demo"\nversion = "0.10.0"\n', encoding="utf-8")
+    changelog.write_text(
+        "# Changelog\n\n## Unreleased\n\n- 新しい公開機能。\n\n## 0.10.0 - 2026-06-19\n\n- 以前の機能。\n",
+        encoding="utf-8",
+    )
+
+    bump_version.write_project_version(pyproject, "0.10.1")
+    bump_version.update_changelog(changelog, "0.10.1", "2026-06-22")
+
+    assert bump_version.read_project_version(pyproject) == "0.10.1"
+    updated = changelog.read_text(encoding="utf-8")
+    assert "## Unreleased\n\n- 次の変更をここに記録します。" in updated
+    assert "## 0.10.1 - 2026-06-22\n\n- 新しい公開機能。" in updated
+    assert "## 0.10.0 - 2026-06-19" in updated
 
 
 def test_user_facing_runtime_messages_are_japanese():

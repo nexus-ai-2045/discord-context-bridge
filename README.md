@@ -90,6 +90,18 @@ Discordへの送信は前提にしません。
 python3 scripts/ops_check.py
 ```
 
+このチェックには `scripts/bump_version.py --check` も含まれます。
+`pyproject.toml` の version、`CHANGELOG.md` の release 見出し、git tag の基本整合性が
+ずれている場合は失敗します。
+
+release 用に version を採番する場合は、現在の `pyproject.toml` version から
+patch / minor / major を自動計算して、`pyproject.toml` と `CHANGELOG.md` を同時更新します。
+
+```bash
+python3 scripts/bump_version.py --part patch --write
+python3 scripts/bump_version.py --check
+```
+
 このチェックには、13工程MVPを合成fixtureだけで最後まで通す
 `scripts/fixture_13_step_e2e.py` が含まれます。Chrome/Discord実機操作、
 MCP、plugin、ChatGPT connector を使わずに、観測入口、SSOT確認、読む範囲、
