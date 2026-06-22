@@ -139,9 +139,13 @@ push / PR 前には、repository、GitHub account、git author、禁止名義を
 期待する repository / owner / git author と一致しない名義が混ざる場合は止めます。
 
 ```bash
-python3 scripts/gh_guard.py --json
+python3 scripts/gh_guard.py --json --history-ref HEAD
 python3 scripts/ops_check.py --gh
 ```
+
+禁止名義は `DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES` または
+`--forbidden-identity` で外から渡します。具体的な個人名義は repository
+本文に書かず、運用環境だけで保持します。
 
 sandbox などで token 利用確認だけが通らない場合は、active account の一致だけを確認できます。
 
