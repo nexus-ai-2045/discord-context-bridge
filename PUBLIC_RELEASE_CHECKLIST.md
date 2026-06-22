@@ -5,7 +5,8 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Repository Target
 
 - remote が `nexus-ai-2045/discord-context-bridge` を指している。
-- `python3 scripts/gh_guard.py --json` で repository、GitHub account、git author、禁止名義が正しいことを確認している。
+- `python3 scripts/gh_guard.py --json --history-ref HEAD` で repository、GitHub account、git author、禁止名義が正しいことを確認している。
+- 禁止名義は `DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES` または `--forbidden-identity` で外から渡し、リポジトリ本文には具体値を書かない。
 - 期待する repository / owner / git author と一致しない個人名義が remote、active account、git author に混ざっていない。
 - git author name / email が `nexus-ai-2045` の public repository 名義になっている。
 - release commit が、この public package と必要 metadata だけを含んでいる。
@@ -53,6 +54,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ```bash
 python3 scripts/ops_check.py
 python3 scripts/ops_check.py --gh --gh-switch
+python3 scripts/gh_guard.py --json --history-ref HEAD
 python3 -m pytest tests -q
 python3 -m compileall src tests
 python3 -m pip install ".[mcp]"
