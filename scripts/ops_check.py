@@ -121,6 +121,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "scripts/fixture_13_step_e2e.py",
                 "--entry-metadata",
                 "tests/fixtures/codex_ingress_ready.json",
+                "--understanding-confirmed",
                 "--json",
             ],
             env=env,

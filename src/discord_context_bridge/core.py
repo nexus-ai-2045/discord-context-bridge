@@ -964,13 +964,91 @@ def context_passport_from_text(
     )
 
 
-def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str, Any]:
+UNDERSTANDING_GATE_OPTIONS = ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
+
+
+def build_understanding_gate(
+    *,
+    understanding_confirmed: bool,
+    context_ready: bool,
+) -> dict[str, Any]:
+    confirmed = bool(understanding_confirmed and context_ready)
+    return {
+        "schema": "discord_understanding_gate.v1",
+        "understanding_confirmed": confirmed,
+        "status": "confirmed" if confirmed else "blocked",
+        "decision": "confirmed" if confirmed else "pending",
+        "recommended_option": "understanding-ok" if confirmed else "read-more",
+        "options": UNDERSTANDING_GATE_OPTIONS,
+        "reason": ""
+        if confirmed
+        else "文脈理解が人間に確認されるまで、下書き・final candidate・copy block は生成しません。",
+        "outbound_actions": "disabled",
+    }
+
+
+def build_blocked_copy_block(reason: str, *, max_chars: int = 2000) -> dict[str, Any]:
+    return {
+        "schema": "discord_copy_block.v1",
+        "status": "blocked",
+        "text": "",
+        "parts": [],
+        "part_count": 0,
+        "max_chars": max_chars,
+        "split_required": False,
+        "stop_reason": reason,
+        "outbound_actions": "disabled",
+    }
+
+
+def review_reply_intent(
+    draft: str,
+    events: Iterable[DiscordEvent],
+    *,
+    understanding_confirmed: bool = False,
+) -> dict[str, Any]:
     loaded = list(events)
     gap = check_knowledge_gap(draft, loaded)
     draft_folded = draft.casefold()
     risky_tone = any(keyword in draft_folded for keyword in ("バカ", "黙れ", "最悪", "ふざけ", "攻撃", "怒"))
     no_context = not loaded
     needs_check = bool(gap["knowledge_gap"] or gap["topic_mismatch"])
+    understanding_gate = build_understanding_gate(
+        understanding_confirmed=understanding_confirmed,
+        context_ready=not no_context,
+    )
+    if understanding_gate["status"] != "confirmed":
+        copy_block = build_blocked_copy_block(str(understanding_gate["reason"]))
+        human_gate = {
+            "schema": "discord_human_gate.v1",
+            "human_decision_required": True,
+            "decision": "pending",
+            "recommended_option": "read-more",
+            "options": UNDERSTANDING_GATE_OPTIONS,
+            "outbound_actions": "disabled",
+        }
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": "文脈理解の確認待ちです。下書きと copy block は生成しません。",
+            "ok_to_reply": "ask_first",
+            "ok_to_reply_label": "先に文脈理解を確認してください。",
+            "quick_verdict": "understanding-blocked",
+            "quick_verdict_label": "read-more: 文脈理解の確認前なので下書きへ進めません。",
+            "one_check_before_reply": "3〜8点の理解サマリを人間が確認してから下書きへ進んでください。",
+            "alignment": "not_checked",
+            "alignment_label": "文脈理解の確認前です。",
+            "missing_knowledge": gap["knowledge_gap"],
+            "missing_knowledge_label": "理解確認gateで停止中です。",
+            "topic_warning_label": gap["topic_warning_label"],
+            "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
+            "suggested_correction": gap["recommended_briefing"],
+            "understanding_gate": understanding_gate,
+            "final_candidate": "",
+            "human_gate": human_gate,
+            "copy_block": copy_block,
+            "send_capability": "disabled",
+            "send_capability_label": "このツールから Discord へ送信しません。",
+        }
     if risky_tone:
         quick_verdict = "risky"
         quick_verdict_label = "risky: そのまま出す前にトーンを落としてください。"
@@ -1017,6 +1095,7 @@ def review_reply_intent(draft: str, events: Iterable[DiscordEvent]) -> dict[str,
         "topic_warning_label": gap["topic_warning_label"],
         "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
         "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+        "understanding_gate": understanding_gate,
         "final_candidate": final_candidate,
         "human_gate": human_gate,
         "copy_block": copy_block,
@@ -1109,6 +1188,8 @@ def build_review_artifact_markdown(
     title: str = "Discord review artifact",
 ) -> str:
     safe_draft = redact_artifact_text(draft) or "未入力"
+    understanding_gate = dict(review.get("understanding_gate") or {})
+    understanding_confirmed = understanding_gate.get("status") == "confirmed"
     final_candidate = redact_artifact_text(str(review.get("final_candidate") or safe_draft))
     human_gate = dict(review.get("human_gate") or {})
     copy_block = dict(review.get("copy_block") or build_copy_block(final_candidate))
@@ -1119,6 +1200,8 @@ def build_review_artifact_markdown(
     ok_to_reply_label = redact_artifact_text(str(review.get("ok_to_reply_label") or "未判定"))
     alignment_label = redact_artifact_text(str(review.get("alignment_label") or "未判定"))
     topic_warning_label = redact_artifact_text(str(review.get("topic_warning_label") or "未判定"))
+    draft_section = safe_draft if understanding_confirmed else "blocked: understanding_confirmed=false"
+    final_candidate_section = final_candidate if understanding_confirmed else "blocked: understanding_confirmed=false"
 
     return "\n".join(
         [
@@ -1132,10 +1215,11 @@ def build_review_artifact_markdown(
             f"- context_fit: {alignment_label}",
             f"- topic_check: {topic_warning_label}",
             f"- missing_premise: {missing_label}",
+            f"- understanding_gate: {redact_artifact_text(str(understanding_gate.get('status') or 'not_recorded'))}",
             "",
             "## 2. provisional draft",
             "",
-            safe_draft,
+            draft_section,
             "",
             "## 3. risk review",
             "",
@@ -1157,7 +1241,7 @@ def build_review_artifact_markdown(
             "",
             "## 6. final candidate",
             "",
-            final_candidate,
+            final_candidate_section,
             "",
             "## 7. copy block",
             "",
@@ -1202,10 +1286,11 @@ def guide_reply_from_text(
     *,
     guild_label: str = "example-community",
     channel_label: str = "general",
+    understanding_confirmed: bool = False,
 ) -> dict[str, Any]:
     events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
     briefing = fast_briefing(events)
-    review = review_reply_intent(draft, events)
+    review = review_reply_intent(draft, events, understanding_confirmed=understanding_confirmed)
     next_actions = ["そのまま送らず、Discord 側で人間が確認してから返信してください。"]
     if review["missing_knowledge"]:
         next_actions.insert(0, "不足している前提を相手に確認してください。")

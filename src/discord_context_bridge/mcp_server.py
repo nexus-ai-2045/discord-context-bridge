@@ -97,9 +97,9 @@ def build_server(
         return audit_context_store(context_store)
 
     @server.tool()
-    def review_reply_before_send(draft: str) -> dict[str, Any]:
+    def review_reply_before_send(draft: str, understanding_confirmed: bool = False) -> dict[str, Any]:
         """送信前の返信 draft を直近文脈と照合します。"""
-        return review_reply_intent(draft, load_events(store))
+        return review_reply_intent(draft, load_events(store), understanding_confirmed=understanding_confirmed)
 
     @server.tool()
     def guide_reply_from_visible_text(
@@ -107,6 +107,7 @@ def build_server(
         draft: str,
         guild_label: str = "example-community",
         channel_label: str = "general",
+        understanding_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Discord の可視テキストと返信 draft から会話ガイドを返します。"""
         return guide_reply_from_text(
@@ -114,6 +115,7 @@ def build_server(
             draft,
             guild_label=guild_label,
             channel_label=channel_label,
+            understanding_confirmed=understanding_confirmed,
         )
 
     @server.tool()

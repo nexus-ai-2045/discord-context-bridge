@@ -56,6 +56,7 @@ def build_fixture_e2e_payload(
     draft: str,
     thread_key: str,
     work_dir: Path,
+    understanding_confirmed: bool = False,
     entry_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     event_store = work_dir / "events.ndjson"
@@ -83,7 +84,7 @@ def build_fixture_e2e_payload(
         channel_context=channel_context,
         thread_context=thread_context,
     )
-    review = review_reply_intent(draft, events)
+    review = review_reply_intent(draft, events, understanding_confirmed=understanding_confirmed)
     artifact = build_review_artifact_markdown(draft, review, title="Discord review artifact")
     review_state = upsert_review_state(
         thread_key,
@@ -137,63 +138,68 @@ def build_fixture_e2e_payload(
             point_count=3,
         ),
         step(
-            "05_provisional_draft",
-            bool(draft.strip()),
+            "05_understanding_gate",
+            bool((review.get("understanding_gate") or {}).get("status") == "confirmed"),
+            status=(review.get("understanding_gate") or {}).get("status"),
+            recommended_option=(review.get("understanding_gate") or {}).get("recommended_option"),
+        ),
+        step(
+            "06_provisional_draft",
+            bool(draft.strip() and (review.get("understanding_gate") or {}).get("status") == "confirmed"),
             draft_chars=len(draft),
             draft_output="omitted",
         ),
         step(
-            "06_risk_review",
+            "07_risk_review",
             bool(review.get("quick_verdict")),
             quick_verdict=review.get("quick_verdict"),
             missing_premise_count=len(review.get("missing_knowledge") or []),
             outbound_actions="disabled",
         ),
         step(
-            "07_markdown_review_artifact",
+            "08_markdown_review_artifact",
             "## 5. human gate" in artifact and "raw_discord_text_output: omitted" in artifact,
             artifact_sections=7,
             artifact_output="omitted",
             local_path_output="omitted",
         ),
         step(
-            "08_final_candidate",
+            "09_final_candidate",
             bool(review.get("final_candidate")),
             final_candidate_chars=len(str(review.get("final_candidate") or "")),
             final_candidate_output="omitted",
         ),
         step(
-            "09_human_gate",
+            "10_human_gate",
             bool((review.get("human_gate") or {}).get("human_decision_required")),
             decision=(review.get("human_gate") or {}).get("decision"),
             recommended_option=(review.get("human_gate") or {}).get("recommended_option"),
         ),
         step(
-            "10_copy_block",
+            "11_copy_block",
             bool((review.get("copy_block") or {}).get("status") in {"ready", "split", "blocked"}),
             status=(review.get("copy_block") or {}).get("status"),
             part_count=(review.get("copy_block") or {}).get("part_count"),
             text_output="omitted",
         ),
         step(
-            "11_follow_up_state",
+            "12_review_state_registry",
             bool(review_state["entry"].get("next_action")),
             next_action=review_state["entry"].get("next_action"),
             gate_decision=review_state["entry"].get("gate_decision"),
         ),
         step(
-            "12_review_state_registry",
-            bool(review_state.get("changed") and review_state["entry"].get("schema") == "discord_review_state.v1"),
-            schema=review_state["entry"].get("schema"),
-            path_output="omitted",
-            raw_text_output="omitted",
-        ),
-        step(
             "13_handoff_packet",
-            bool(handoff.get("schema") == "discord_handoff_packet.v1" and handoff.get("current_state", {}).get("review_state_available")),
+            bool(
+                review_state.get("changed")
+                and review_state["entry"].get("schema") == "discord_review_state.v1"
+                and handoff.get("schema") == "discord_handoff_packet.v1"
+                and handoff.get("current_state", {}).get("review_state_available")
+            ),
             schema=handoff.get("schema"),
             next_action=handoff.get("next_action"),
             path_output="omitted",
+            raw_text_output="omitted",
         ),
     ]
     ok = all(item["ok"] for item in steps)
@@ -229,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thread-context", type=Path, default=ROOT / "tests/fixtures/thread_context_rules.txt")
     parser.add_argument("--draft", default="公開時期の前提を確認してから返信します。")
     parser.add_argument("--thread-key", default="fixture-thread")
+    parser.add_argument("--understanding-confirmed", action="store_true", help="理解サマリを人間確認済みとして下書き工程へ進む")
     parser.add_argument("--entry-metadata", type=Path, help="Codex/Chrome ingress のsafe metadata JSON。出力にはraw URL等を出しません。")
     parser.add_argument("--work-dir", type=Path, help="検証用の一時storeを置くlocal directory。出力にはpathを出しません。")
     parser.add_argument("--json", action="store_true")
@@ -260,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             draft=args.draft,
             thread_key=args.thread_key,
             work_dir=args.work_dir,
+            understanding_confirmed=args.understanding_confirmed,
             entry_metadata=read_json(args.entry_metadata),
         )
     else:
@@ -272,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
                 draft=args.draft,
                 thread_key=args.thread_key,
                 work_dir=Path(tmp),
+                understanding_confirmed=args.understanding_confirmed,
                 entry_metadata=read_json(args.entry_metadata),
             )
     if args.json:

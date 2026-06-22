@@ -263,10 +263,10 @@ def main() -> int:
         print("NG: 文脈庫が安全ではないため HTTP MCP smoke を止めます。", file=sys.stderr)
         return 2
 
-    review = review_reply_intent(args.draft, load_events(args.store))
+    review = review_reply_intent(args.draft, load_events(args.store), understanding_confirmed=True)
     print_result("review", review, json_output=args.json_output)
 
-    guide = guide_reply_from_text(text, args.draft, guild_label=args.guild, channel_label=args.channel)
+    guide = guide_reply_from_text(text, args.draft, guild_label=args.guild, channel_label=args.channel, understanding_confirmed=True)
     print_result("guide", guide, json_output=args.json_output)
 
     passport = context_passport_from_text(

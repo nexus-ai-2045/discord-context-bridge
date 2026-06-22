@@ -191,6 +191,7 @@ def test_fast_briefing_and_reply_review(tmp_path):
     review = review_reply_intent(
         "I understand this is about launch timing and my reply will ask for the premise.",
         load_events(store),
+        understanding_confirmed=True,
     )
 
     assert briefing["event_count"] == 3
@@ -210,6 +211,7 @@ def test_guide_reply_from_text_returns_conversation_guide():
     guide = guide_reply_from_text(
         RICH_COPY_FIXTURE.read_text(encoding="utf-8"),
         "公開時期の前提を確認してから返信します。",
+        understanding_confirmed=True,
     )
 
     assert guide["language"] == "ja"
@@ -227,6 +229,7 @@ def test_guide_reply_warns_about_topic_mismatch():
     guide = guide_reply_from_text(
         RICH_COPY_FIXTURE.read_text(encoding="utf-8"),
         "価格について返信します。",
+        understanding_confirmed=True,
     )
 
     assert guide["reply_review"]["ok_to_reply"] == "ask_first"
@@ -238,16 +241,16 @@ def test_guide_reply_warns_about_topic_mismatch():
 
 
 def test_review_reply_intent_quick_verdict_waits_without_context():
-    review = review_reply_intent("前提を確認してから返します。", [])
+    review = review_reply_intent("前提を確認してから返します。", [], understanding_confirmed=True)
 
-    assert review["quick_verdict"] == "wait"
-    assert review["quick_verdict_label"].startswith("wait:")
+    assert review["quick_verdict"] == "understanding-blocked"
+    assert review["quick_verdict_label"].startswith("read-more:")
     assert review["send_capability"] == "disabled"
 
 
 def test_review_reply_intent_quick_verdict_flags_risky_tone():
     events = parse_visible_text(PASSPORT_FIXTURE.read_text(encoding="utf-8"))
-    review = review_reply_intent("それは最悪です。ふざけないでください。", events)
+    review = review_reply_intent("それは最悪です。ふざけないでください。", events, understanding_confirmed=True)
 
     assert review["quick_verdict"] == "risky"
     assert review["quick_verdict_label"].startswith("risky:")
@@ -259,7 +262,7 @@ def test_review_reply_intent_quick_verdict_flags_risky_tone():
 
 def test_review_reply_intent_returns_final_candidate_human_gate_and_copy_block():
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
-    review = review_reply_intent("公開時期の前提を確認して返信します。", events)
+    review = review_reply_intent("公開時期の前提を確認して返信します。", events, understanding_confirmed=True)
 
     assert review["final_candidate"] == "公開時期の前提を確認して返信します。"
     assert review["human_gate"]["schema"] == "discord_human_gate.v1"
@@ -272,6 +275,23 @@ def test_review_reply_intent_returns_final_candidate_human_gate_and_copy_block()
     assert review["copy_block"]["text"] == "公開時期の前提を確認して返信します。"
     assert review["copy_block"]["part_count"] == 1
     assert review["copy_block"]["outbound_actions"] == "disabled"
+
+
+def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent("公開時期の前提を確認して返信します。", events)
+
+    assert review["message"] == "文脈理解の確認待ちです。下書きと copy block は生成しません。"
+    assert review["understanding_gate"]["schema"] == "discord_understanding_gate.v1"
+    assert review["understanding_gate"]["status"] == "blocked"
+    assert review["quick_verdict"] == "understanding-blocked"
+    assert review["human_gate"]["recommended_option"] == "read-more"
+    assert review["human_gate"]["options"] == ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
+    assert review["final_candidate"] == ""
+    assert review["copy_block"]["status"] == "blocked"
+    assert review["copy_block"]["text"] == ""
+    assert review["copy_block"]["parts"] == []
+    assert review["send_capability"] == "disabled"
 
 
 def test_copy_block_splits_once_and_blocks_three_or_more_parts():
@@ -302,6 +322,7 @@ def test_build_review_artifact_markdown_is_public_safe():
     review = review_reply_intent(
         "member-a には https://example.com を貼らず、公開時期の前提を確認して返信します。",
         events,
+        understanding_confirmed=True,
     )
 
     artifact = build_review_artifact_markdown(
@@ -327,7 +348,8 @@ def test_build_review_artifact_markdown_is_public_safe():
 
 
 def test_build_review_artifact_redacts_private_values():
-    review = review_reply_intent("前提を確認してから返します。", [])
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    review = review_reply_intent("前提を確認してから返します。", events, understanding_confirmed=True)
     artifact = build_review_artifact_markdown(
         "Webhook: https://discord.com/api/webhooks/123456789012345678/token at C:\\Users\\yas\\secret",
         review,
@@ -465,7 +487,7 @@ def test_context_library_audit_flags_private_identifiers(tmp_path):
 def test_review_state_saves_safe_metadata_without_draft_or_path(tmp_path):
     store = tmp_path / "review-registry.json"
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
-    review = review_reply_intent("member-a に公開時期の前提を確認して返信します。", events)
+    review = review_reply_intent("member-a に公開時期の前提を確認して返信します。", events, understanding_confirmed=True)
 
     saved = upsert_review_state("C:\\Users\\yas\\thread member-a", review, path=store)
     entries = load_review_registry(store)
@@ -489,7 +511,7 @@ def test_handoff_packet_uses_review_state_without_private_text(tmp_path):
     review_store = tmp_path / "review-registry.json"
     event_store = tmp_path / "events.ndjson"
     import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=event_store, channel_label="safe-general")
-    review = review_reply_intent("公開時期の前提を確認して返信します。", load_events(event_store))
+    review = review_reply_intent("公開時期の前提を確認して返信します。", load_events(event_store), understanding_confirmed=True)
     upsert_review_state("safe-thread", review, path=review_store, read_scope=["visible_text", "artifact"])
 
     packet = build_handoff_packet(
@@ -536,13 +558,13 @@ def test_package_version_tracks_current_release():
 
 
 def test_user_facing_runtime_messages_are_japanese():
-    gap = review_reply_intent("", [])
+    gap = review_reply_intent("", [], understanding_confirmed=True)
 
     assert gap["language"] == "ja"
     assert gap["missing_knowledge"] == ["共有前提", "返信対象"]
-    assert gap["ok_to_reply_label"] == "先に確認した方がよさそうです。"
-    assert gap["alignment_label"] == "文脈に不足があります。"
-    assert gap["missing_knowledge_label"] == "不足している前提: 共有前提、返信対象"
+    assert gap["ok_to_reply_label"] == "先に文脈理解を確認してください。"
+    assert gap["alignment_label"] == "文脈理解の確認前です。"
+    assert gap["missing_knowledge_label"] == "理解確認gateで停止中です。"
     assert gap["suggested_correction"] == "直近の文脈はまだ取り込まれていません。"
 
     with pytest.raises(DisabledCapability, match="Discord への送信機能"):
@@ -604,6 +626,7 @@ def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(t
             "review-draft",
             "--draft",
             "member-a に公開時期の前提を確認します。",
+            "--understanding-confirmed",
             "--artifact-path",
             str(artifact_path),
         ]
@@ -635,6 +658,7 @@ def test_cli_review_draft_json_omits_raw_context_without_artifact(tmp_path, caps
             "review-draft",
             "--draft",
             "公開時期の前提を確認します。",
+            "--understanding-confirmed",
         ]
     )
     output = capsys.readouterr().out
@@ -647,6 +671,31 @@ def test_cli_review_draft_json_omits_raw_context_without_artifact(tmp_path, caps
     assert '"suggested_correction": "omitted"' in output
     assert "Can you clarify" not in output
     assert "member-a" not in output
+    assert str(tmp_path) not in output
+
+
+def test_cli_review_draft_without_understanding_confirmation_blocks_copy_block(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store, channel_label="safe-general")
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "review-draft",
+            "--draft",
+            "公開時期の前提を確認します。",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_understanding_gate.v1"' in output
+    assert '"status": "blocked"' in output
+    assert '"quick_verdict": "understanding-blocked"' in output
+    assert '"final_candidate": ""' in output
+    assert '"text": ""' in output
+    assert '"recommended_option": "copy"' not in output
     assert str(tmp_path) not in output
 
 
@@ -667,6 +716,7 @@ def test_cli_review_draft_saves_review_state_and_handoff_reads_it(tmp_path, caps
             "--save-review-state",
             "--draft",
             "公開時期の前提を確認して返信します。",
+            "--understanding-confirmed",
         ]
     )
     output = capsys.readouterr().out
@@ -729,6 +779,7 @@ def test_cli_guide_reply_outputs_human_readable_guide(capsys):
             str(RICH_COPY_FIXTURE),
             "--draft",
             "公開時期の前提を確認してから返信します。",
+            "--understanding-confirmed",
         ]
     )
     output = capsys.readouterr().out
@@ -756,6 +807,7 @@ def test_cli_guide_reply_reads_clipboard_command(tmp_path, capsys, monkeypatch):
             "pbpaste",
             "--draft",
             "公開時期の前提を確認してから返信します。",
+            "--understanding-confirmed",
             "--json",
         ]
     )
@@ -787,6 +839,7 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
             "discord-visible-text",
             "--draft",
             "公開時期の前提を確認してから返信します。",
+            "--understanding-confirmed",
             "--json",
         ]
     )
@@ -1087,6 +1140,7 @@ def test_cli_watch_guide_polls_source_command_and_outputs_updates(capsys, monkey
             "discord-visible-text",
             "--draft",
             "公開時期の前提を確認してから返信します。",
+            "--understanding-confirmed",
             "--max-polls",
             "3",
             "--interval",
@@ -1288,6 +1342,7 @@ def test_cli_review_draft_alias_uses_stored_context(tmp_path, capsys):
             "review-draft",
             "--draft",
             "Before I reply, I will ask for the premise.",
+            "--understanding-confirmed",
         ]
     )
     output = capsys.readouterr().out
@@ -2689,6 +2744,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     guide = server.tools["guide_reply_from_visible_text"](
         RICH_COPY_FIXTURE.read_text(encoding="utf-8"),
         "公開時期の前提を確認してから返信します。",
+        understanding_confirmed=True,
     )
     passport = server.tools["get_context_passport_from_visible_text"](
         PASSPORT_FIXTURE.read_text(encoding="utf-8"),
@@ -2702,6 +2758,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert context_list["count"] == 1
     assert context_audit["safe_for_tunnel"] is True
     assert review["language"] == "ja"
+    assert review["quick_verdict"] == "understanding-blocked"
     assert guide["message"] == "Discord 返信ガイドを作成しました。"
     assert passport["message"] == "スレッド文脈カードを作成しました。"
     assert passport["people_temperature"] == "serious"
