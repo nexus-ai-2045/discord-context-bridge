@@ -182,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
     review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
     review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
+    review.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     review.set_defaults(handler=_cmd_review_intent)
 
     draft_review = sub.add_parser("review-draft", help="返信下書きを保存済みの直近文脈と照合する")
@@ -189,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--artifact-path", type=Path, help="送信前レビュー用の Markdown artifact を保存する")
     draft_review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
     draft_review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
+    draft_review.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     draft_review.set_defaults(handler=_cmd_review_intent)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
@@ -199,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     guide.add_argument("--guild", default="example-community", help="サーバー名または仮ラベル")
     guide.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
     guide.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    guide.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     guide.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     guide.set_defaults(handler=_cmd_guide_reply)
 
@@ -250,6 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_guide = sub.add_parser("watch-guide", help="ローカルコマンドを監視し、変化した Discord 可視テキストから会話ガイドを作る")
     watch_guide.add_argument("--source-command", required=True, help="Discord 可視テキストを出力するローカルコマンド")
     watch_guide.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    watch_guide.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     watch_guide.add_argument("--guild", default="example-community", help="サーバー名または仮ラベル")
     watch_guide.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
     watch_guide.add_argument("--interval", type=float, default=1.0, help="入力元コマンドを確認する間隔秒")
@@ -485,7 +489,7 @@ def _cmd_audit_context_store(args: argparse.Namespace) -> int:
 
 
 def _cmd_review_intent(args: argparse.Namespace) -> int:
-    review = review_reply_intent(args.draft, load_events(args.store))
+    review = review_reply_intent(args.draft, load_events(args.store), understanding_confirmed=args.understanding_confirmed)
     review = {
         **review,
         "likely_counterparty_meaning": "omitted",
@@ -529,6 +533,7 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
         args.draft,
         guild_label=args.guild,
         channel_label=args.channel,
+        understanding_confirmed=args.understanding_confirmed,
     )
     if args.json:
         print(_json(guide))
@@ -725,6 +730,7 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
                 args.draft,
                 guild_label=args.guild,
                 channel_label=args.channel,
+                understanding_confirmed=args.understanding_confirmed,
             )
             payload = {
                 **guide,

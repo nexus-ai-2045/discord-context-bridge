@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--channel", default="private-ingest", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--draft", default="", help="任意。返信前 gate にかける下書き。")
+    parser.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     parser.add_argument("--min-parsed", type=int, default=1)
     parser.add_argument("--json", action="store_true")
     return parser
@@ -58,6 +59,7 @@ def build_ingest_payload(
     channel: str,
     draft: str,
     min_parsed: int,
+    understanding_confirmed: bool = False,
 ) -> dict[str, Any]:
     preflight = discord_bot_route_preflight.build_preflight(channel_dir)
     if not text.strip():
@@ -79,7 +81,17 @@ def build_ingest_payload(
         imported = import_visible_text(text, path=store, guild_label=guild, channel_label=channel)
 
     passport = context_passport_from_text(text, guild_label=guild, channel_label=channel)
-    reply_gate = guide_reply_from_text(text, draft, guild_label=guild, channel_label=channel) if draft else None
+    reply_gate = (
+        guide_reply_from_text(
+            text,
+            draft,
+            guild_label=guild,
+            channel_label=channel,
+            understanding_confirmed=understanding_confirmed,
+        )
+        if draft
+        else None
+    )
     parsed = int(imported["parsed"])
     context_ready = bool(passport.get("context_ready"))
     ok = bool(preflight["ok"]) and parsed >= min_parsed and context_ready
@@ -126,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         channel=args.channel,
         draft=args.draft,
         min_parsed=args.min_parsed,
+        understanding_confirmed=args.understanding_confirmed,
     )
     if args.json:
         print(_json(payload))

@@ -52,52 +52,56 @@ public package に混ぜません。
    確定、推定、未確認を分けます。これは bridge が空気を読めているかを
    人間が素早く確認するための checkpoint です。
 
-5. **仮下書きプローブ**
+5. **理解確認 gate**
 
-   理解確認のためだけに provisional draft を作ります。これは投稿候補ではありません。
+   ここで人間が `understanding-ok`、`read-more`、`wrong-thread`、`missing-rules`、
+   `stop` のいずれかを選びます。`understanding-ok` になるまで、bridge は
+   provisional draft、final reply candidate、`copy_block`、推奨投稿文を作りません。
+
+6. **仮下書きプローブ**
+
+   理解確認後にだけ provisional draft を作ります。これはまだ投稿候補ではありません。
    未確認前提、危ない言い回し、トーンのズレ、スレッド理解の誤りを見つけるための
    probe として使います。
 
-6. **下書きリスクレビュー**
+7. **下書きリスクレビュー**
 
    provisional draft を、文脈適合、server rule 適合、thread rule 適合、tone、
    misread risk、missing premise、返信タイミング、参加者への負荷で確認します。
    返す状態は `go_candidate`、`revise`、`ask_context`、`wait`、`do_not_post`
    などの短い state にします。bridge は判断材料を出すだけで、投稿判断はしません。
 
-7. **Markdown レビュー artifact**
+8. **Markdown レビュー artifact**
 
-   文脈理解、provisional draft、risk review、unknown、次の選択肢を Markdown
-   作業ファイルに保存します。サイドパネルや preview で読める形にします。
+   文脈理解、理解確認 gate、provisional draft、risk review、unknown、
+   次の選択肢を Markdown 作業ファイルに保存します。サイドパネルや preview
+   で読める形にします。
    人間はこの Markdown を直接編集してよく、編集後は bridge が再読込して
    focused diff / risk review を行えます。
 
-8. **最終返信候補**
+9. **最終返信候補**
 
    review 後に final reply candidate を作ります。AI 生成でも、人間が Markdown
    内で直接編集したものでもよいです。人間が編集した場合は、その編集済み本文を
    source of truth とします。ここでもまだ投稿済みではありません。
 
-9. **人間判断 gate**
+10. **人間判断 gate**
 
    人間が次を選びます。copy に進む、修正する、追加文脈を読む、待って観測する、
    返信しない、のいずれかです。bridge は Discord の send button を押しません。
 
-10. **コピー可能な出力**
+11. **コピー可能な出力**
 
    Discord に普通の返信として貼れる短さの `copy_block` を作ります。
    長すぎる場合はまず短縮します。それでも必要な場合だけ `split_copy_blocks`
    を作ります。3分割以上が必要な場合は、Discord 返信として投稿せず、
    別形式を提案します。clipboard insertion は任意で、人間の明示操作が必要です。
 
-11. **送信後観測**
+12. **送信後観測 / Context SSOT 更新**
 
    人間が送信した後、依頼があれば follow-up context を観測します。
    自動追撃返信、reaction、delete、edit は行いません。新しい返信支援は同じ
    context / review path から始めます。
-
-12. **Context SSOT 更新**
-
    safe entry metadata、registry key、observed scope、rule summary、
    understanding points、final candidate、decision result、unresolved items を
    local context SSOT に更新します。実 ID、private raw message body、token、
