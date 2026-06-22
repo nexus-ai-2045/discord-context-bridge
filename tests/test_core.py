@@ -631,6 +631,46 @@ def test_bump_version_updates_pyproject_and_changelog(tmp_path):
     assert "## 0.10.0 - 2026-06-19" in updated
 
 
+def test_bump_version_can_require_current_git_tag(monkeypatch):
+    bump_version = load_bump_version_module()
+
+    monkeypatch.setattr(bump_version, "read_project_version", lambda path: "0.10.0")
+    monkeypatch.setattr(bump_version, "release_versions_from_changelog", lambda path: ["0.10.0"])
+    monkeypatch.setattr(bump_version, "latest_git_tag_version", lambda root: "0.10.0")
+    monkeypatch.setattr(
+        bump_version.Path,
+        "read_text",
+        lambda self, encoding=None: "# Changelog\n\n## Unreleased\n\n## 0.10.0 - 2026-06-19\n",
+    )
+    monkeypatch.setattr(bump_version, "git_tag_exists", lambda root, version: False)
+
+    issues = bump_version.check_version_consistency(ROOT, require_current_tag=True)
+
+    assert "current version 0.10.0 に対応する git tag v0.10.0 がありません。" in issues
+
+
+def test_bump_version_creates_release_tag(monkeypatch):
+    bump_version = load_bump_version_module()
+    calls = []
+
+    monkeypatch.setattr(bump_version, "git_tag_exists", lambda root, version: False)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(bump_version.subprocess, "run", fake_run)
+
+    bump_version.create_git_tag(ROOT, "0.10.1")
+
+    assert calls == [["git", "tag", "v0.10.1"]]
+
+
 def test_user_facing_runtime_messages_are_japanese():
     gap = review_reply_intent("", [], understanding_confirmed=True)
 
