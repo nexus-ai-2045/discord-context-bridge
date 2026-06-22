@@ -95,11 +95,13 @@ python3 scripts/ops_check.py
 ずれている場合は失敗します。
 
 release 用に version を採番する場合は、現在の `pyproject.toml` version から
-patch / minor / major を自動計算して、`pyproject.toml` と `CHANGELOG.md` を同時更新します。
+patch / minor / major を自動計算して、`pyproject.toml`、`CHANGELOG.md`、`vX.Y.Z`
+tag を同時更新できます。
 
 ```bash
-python3 scripts/bump_version.py --part patch --write
+python3 scripts/bump_version.py --part patch --write --tag
 python3 scripts/bump_version.py --check
+python3 scripts/bump_version.py --check --require-current-tag
 ```
 
 このチェックには、13工程MVPを合成fixtureだけで最後まで通す

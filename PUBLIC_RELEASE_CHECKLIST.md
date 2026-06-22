@@ -31,8 +31,8 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Package Boundary
 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
-- release version は `python3 scripts/bump_version.py --part patch|minor|major --write` で採番し、`pyproject.toml` と `CHANGELOG.md` を同時更新している。
-- `python3 scripts/bump_version.py --check` が成功している。
+- release version は `python3 scripts/bump_version.py --part patch|minor|major --write --tag` で採番し、`pyproject.toml`、`CHANGELOG.md`、`vX.Y.Z` tag を同時更新している。
+- `python3 scripts/bump_version.py --check --require-current-tag` が release 前に成功している。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
