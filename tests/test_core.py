@@ -2655,16 +2655,68 @@ def test_gh_guard_reports_account_drift_and_switch(monkeypatch):
     monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/discord-context-bridge.git")
     monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: (accounts.pop(0), True, ""))
     monkeypatch.setattr(gh_guard, "switch_gh_account", lambda owner: switched.append(owner))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {
+            "user.name": "nexus-ai-2045",
+            "user.email": "273569186+nexus-ai-2045@users.noreply.github.com",
+        }.get(key, ""),
+    )
 
     report = gh_guard.build_report("origin", switch=True)
 
     assert report["ok"] is True
     assert report["expected_owner"] == "nexus-ai-2045"
+    assert report["expected_repository"] == "discord-context-bridge"
+    assert report["actual_repository"] == "discord-context-bridge"
     assert report["active_account_before"] == "old-account"
     assert report["active_account_after"] == "nexus-ai-2045"
     assert report["auth_status_ok_after"] is True
+    assert report["git_author_matches"] is True
     assert report["switched"] is True
     assert switched == ["nexus-ai-2045"]
+
+
+def test_gh_guard_rejects_wrong_repository_and_personal_identity(monkeypatch):
+    gh_guard = load_script_module("gh_guard_wrong_repo_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/nexus_ai.git")
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("lm93TRQN5WSL", True, ""))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {"user.name": "say_yas", "user.email": "tamagoe@gmail.com"}.get(key, ""),
+    )
+
+    report = gh_guard.build_report("origin", switch=False)
+
+    assert report["ok"] is False
+    assert report["actual_repository"] == "nexus_ai"
+    assert report["repository_matches"] is False
+    assert report["git_author_matches"] is False
+    assert "lm93TRQN5WSL" in report["disallowed_identities"]
+    assert "tamagoe@gmail.com" in report["disallowed_identities"]
+
+
+def test_pr_language_gate_rejects_english_default_template():
+    gate = load_script_module("check_pr_language_for_test", ROOT / "scripts" / "check_pr_language.py")
+    title = "[codex] Harden Discord bridge store safety"
+    body = "## Summary\n- change\n\n## Validation\n- tests\n\n## Notes\n- none\n"
+
+    issues = gate.validate_pr_language(title, body)
+
+    assert "title_has_no_japanese" in issues
+    assert "missing_heading:## 概要" in issues
+    assert "english_default_heading:## Summary" in issues
+
+
+def test_pr_language_gate_accepts_japanese_pr_metadata():
+    gate = load_script_module("check_pr_language_ok_for_test", ROOT / "scripts" / "check_pr_language.py")
+    title = "[codex] Discord bridge の公開前ガードを強化"
+    body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n"
+
+    assert gate.validate_pr_language(title, body) == []
 
 
 def test_cli_audit_store_returns_nonzero_when_unsafe(tmp_path, capsys):
