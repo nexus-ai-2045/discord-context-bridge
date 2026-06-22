@@ -95,11 +95,13 @@ python3 scripts/ops_check.py
 ずれている場合は失敗します。
 
 release 用に version を採番する場合は、現在の `pyproject.toml` version から
-patch / minor / major を自動計算して、`pyproject.toml` と `CHANGELOG.md` を同時更新します。
+patch / minor / major を自動計算して、`pyproject.toml`、`CHANGELOG.md`、`vX.Y.Z`
+tag を同時更新できます。
 
 ```bash
-python3 scripts/bump_version.py --part patch --write
+python3 scripts/bump_version.py --part patch --write --tag
 python3 scripts/bump_version.py --check
+python3 scripts/bump_version.py --check --require-current-tag
 ```
 
 このチェックには、13工程MVPを合成fixtureだけで最後まで通す
@@ -134,16 +136,29 @@ python3 scripts/fixture_13_step_e2e.py \
   --json
 ```
 
-push / PR 前に GitHub account と remote owner の一致も確認する場合は、次を使います。
+push / PR 前には、repository、GitHub account、git author、禁止名義を確認します。
+この repository の正しい公開先は `nexus-ai-2045/discord-context-bridge` です。
+期待する repository / owner / git author と一致しない名義が混ざる場合は止めます。
 
 ```bash
-python3 scripts/ops_check.py --gh --gh-switch
+python3 scripts/gh_guard.py --json --history-ref HEAD
+python3 scripts/ops_check.py --gh
 ```
+
+禁止名義は `DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES` または
+`--forbidden-identity` で外から渡します。具体的な個人名義は repository
+本文に書かず、運用環境だけで保持します。
 
 sandbox などで token 利用確認だけが通らない場合は、active account の一致だけを確認できます。
 
 ```bash
 python3 scripts/ops_check.py --gh --gh-account-only
+```
+
+PR 作成前には、title / body が日本語既定に沿っていることも確認します。
+
+```bash
+python3 scripts/check_pr_language.py --title "<PR title>" --body-file .github/pull_request_template.md
 ```
 
 HTTP MCP 起動スモークまで含める場合は、MCP 依存を入れた Python を指定して実行します。

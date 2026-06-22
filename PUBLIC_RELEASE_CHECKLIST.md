@@ -4,9 +4,11 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 
 ## Repository Target
 
-- remote が意図した public Nexus repository を指している。
-- `python3 scripts/gh_guard.py --switch` で GitHub account と remote owner の一致を確認している。
-- git author name / email が public repository に適した名義になっている。
+- remote が `nexus-ai-2045/discord-context-bridge` を指している。
+- `python3 scripts/gh_guard.py --json --history-ref HEAD` で repository、GitHub account、git author、禁止名義が正しいことを確認している。
+- 禁止名義は `DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES` または `--forbidden-identity` で外から渡し、リポジトリ本文には具体値を書かない。
+- 期待する repository / owner / git author と一致しない個人名義が remote、active account、git author に混ざっていない。
+- git author name / email が `nexus-ai-2045` の public repository 名義になっている。
 - release commit が、この public package と必要 metadata だけを含んでいる。
 
 ## Privacy And Secrets
@@ -21,14 +23,16 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 
 - 利用者向け文書の基本言語が日本語になっている。
 - CLI / API のユーザー向けメッセージが日本語を既定にしている。
+- PR title / body は日本語を既定にし、`## 概要`、`## 検証`、`## 境界` を含める。
+- `python3 scripts/check_pr_language.py --title "<PR title>" --body-file <PR body file>` が成功している。
 - JSON key、Python identifier、package name、command name は英語のままでよい。
 - 英語だけの説明が増えた場合、対応する日本語説明がある。
 
 ## Package Boundary
 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
-- release version は `python3 scripts/bump_version.py --part patch|minor|major --write` で採番し、`pyproject.toml` と `CHANGELOG.md` を同時更新している。
-- `python3 scripts/bump_version.py --check` が成功している。
+- release version は `python3 scripts/bump_version.py --part patch|minor|major --write --tag` で採番し、`pyproject.toml`、`CHANGELOG.md`、`vX.Y.Z` tag を同時更新している。
+- `python3 scripts/bump_version.py --check --require-current-tag` が release 前に成功している。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
@@ -50,6 +54,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ```bash
 python3 scripts/ops_check.py
 python3 scripts/ops_check.py --gh --gh-switch
+python3 scripts/gh_guard.py --json --history-ref HEAD
 python3 -m pytest tests -q
 python3 -m compileall src tests
 python3 -m pip install ".[mcp]"

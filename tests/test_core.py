@@ -631,6 +631,46 @@ def test_bump_version_updates_pyproject_and_changelog(tmp_path):
     assert "## 0.10.0 - 2026-06-19" in updated
 
 
+def test_bump_version_can_require_current_git_tag(monkeypatch):
+    bump_version = load_bump_version_module()
+
+    monkeypatch.setattr(bump_version, "read_project_version", lambda path: "0.10.0")
+    monkeypatch.setattr(bump_version, "release_versions_from_changelog", lambda path: ["0.10.0"])
+    monkeypatch.setattr(bump_version, "latest_git_tag_version", lambda root: "0.10.0")
+    monkeypatch.setattr(
+        bump_version.Path,
+        "read_text",
+        lambda self, encoding=None: "# Changelog\n\n## Unreleased\n\n## 0.10.0 - 2026-06-19\n",
+    )
+    monkeypatch.setattr(bump_version, "git_tag_exists", lambda root, version: False)
+
+    issues = bump_version.check_version_consistency(ROOT, require_current_tag=True)
+
+    assert "current version 0.10.0 に対応する git tag v0.10.0 がありません。" in issues
+
+
+def test_bump_version_creates_release_tag(monkeypatch):
+    bump_version = load_bump_version_module()
+    calls = []
+
+    monkeypatch.setattr(bump_version, "git_tag_exists", lambda root, version: False)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(bump_version.subprocess, "run", fake_run)
+
+    bump_version.create_git_tag(ROOT, "0.10.1")
+
+    assert calls == [["git", "tag", "v0.10.1"]]
+
+
 def test_user_facing_runtime_messages_are_japanese():
     gap = review_reply_intent("", [], understanding_confirmed=True)
 
@@ -2655,16 +2695,111 @@ def test_gh_guard_reports_account_drift_and_switch(monkeypatch):
     monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/discord-context-bridge.git")
     monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: (accounts.pop(0), True, ""))
     monkeypatch.setattr(gh_guard, "switch_gh_account", lambda owner: switched.append(owner))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {
+            "user.name": "nexus-ai-2045",
+            "user.email": "273569186+nexus-ai-2045@users.noreply.github.com",
+        }.get(key, ""),
+    )
 
     report = gh_guard.build_report("origin", switch=True)
 
     assert report["ok"] is True
     assert report["expected_owner"] == "nexus-ai-2045"
+    assert report["expected_repository"] == "discord-context-bridge"
+    assert report["actual_repository"] == "discord-context-bridge"
     assert report["active_account_before"] == "old-account"
     assert report["active_account_after"] == "nexus-ai-2045"
     assert report["auth_status_ok_after"] is True
+    assert report["git_author_matches"] is True
     assert report["switched"] is True
     assert switched == ["nexus-ai-2045"]
+
+
+def test_gh_guard_rejects_wrong_repository_and_unexpected_identity(monkeypatch):
+    gh_guard = load_script_module("gh_guard_wrong_repo_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/nexus_ai.git")
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("unexpected-account", True, ""))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {"user.name": "unexpected-user", "user.email": "unexpected@example.com"}.get(key, ""),
+    )
+
+    report = gh_guard.build_report("origin", switch=False)
+
+    assert report["ok"] is False
+    assert report["actual_repository"] == "nexus_ai"
+    assert report["account_matches"] is False
+    assert report["repository_matches"] is False
+    assert report["git_author_matches"] is False
+
+
+def test_gh_guard_rejects_configured_forbidden_identity_without_echoing_value(monkeypatch):
+    gh_guard = load_script_module("gh_guard_forbidden_identity_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/discord-context-bridge.git")
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("nexus-ai-2045", True, ""))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {
+            "user.name": "nexus-ai-2045",
+            "user.email": "273569186+nexus-ai-2045@users.noreply.github.com",
+        }.get(key, ""),
+    )
+    monkeypatch.setattr(
+        gh_guard,
+        "collect_history_text",
+        lambda refs: "abc123\nAuthor: old-operator <old-operator@example.com>\nCo-authored-by: old-operator <old-operator@example.com>\n",
+    )
+
+    report = gh_guard.build_report(
+        "origin",
+        switch=False,
+        forbidden_identities=["old-operator@example.com"],
+        history_refs=["HEAD"],
+    )
+
+    assert report["ok"] is False
+    assert report["forbidden_identity_count"] == 1
+    assert report["forbidden_identity_match_count"] == 1
+    assert report["forbidden_identity_matches"] == [
+        {"source": "git_history", "identity_label": "configured-forbidden-identity"}
+    ]
+    assert "old-operator@example.com" not in json.dumps(report, ensure_ascii=False)
+
+
+def test_gh_guard_parses_forbidden_identities_from_args_and_env():
+    gh_guard = load_script_module("gh_guard_forbidden_parse_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    assert gh_guard.parse_forbidden_identities(
+        ["old-operator; legacy-user"],
+        "someone@example.com\nlegacy-user",
+    ) == ["legacy-user", "old-operator", "someone@example.com"]
+
+
+def test_pr_language_gate_rejects_english_default_template():
+    gate = load_script_module("check_pr_language_for_test", ROOT / "scripts" / "check_pr_language.py")
+    title = "[codex] Harden Discord bridge store safety"
+    body = "## Summary\n- change\n\n## Validation\n- tests\n\n## Notes\n- none\n"
+
+    issues = gate.validate_pr_language(title, body)
+
+    assert "title_has_no_japanese" in issues
+    assert "missing_heading:## 概要" in issues
+    assert "english_default_heading:## Summary" in issues
+
+
+def test_pr_language_gate_accepts_japanese_pr_metadata():
+    gate = load_script_module("check_pr_language_ok_for_test", ROOT / "scripts" / "check_pr_language.py")
+    title = "[codex] Discord bridge の公開前ガードを強化"
+    body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n"
+
+    assert gate.validate_pr_language(title, body) == []
 
 
 def test_cli_audit_store_returns_nonzero_when_unsafe(tmp_path, capsys):
