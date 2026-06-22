@@ -15,6 +15,8 @@
 
 ## P1
 
+- release version 採番を運用チェックへ入れる。
+  - done when: `scripts/bump_version.py --part patch|minor|major --write` で `pyproject.toml` と `CHANGELOG.md` を同時更新でき、`scripts/bump_version.py --check` が `ops_check.py` に含まれる。
 - human gate と copy block を作る。
   - done when: `final_candidate` を作っても自動送信せず、`copy_block` と `human_decision_required=true` が残る。
 - Context SSOT update と handoff packet を作る。
