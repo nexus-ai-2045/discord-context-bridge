@@ -134,16 +134,25 @@ python3 scripts/fixture_13_step_e2e.py \
   --json
 ```
 
-push / PR 前に GitHub account と remote owner の一致も確認する場合は、次を使います。
+push / PR 前には、repository、GitHub account、git author、禁止名義を確認します。
+この repository の正しい公開先は `nexus-ai-2045/discord-context-bridge` です。
+`lm93TRQN5WSL`、`say_yas`、`tamagoe@gmail.com` などの個人名義が混ざる場合は止めます。
 
 ```bash
-python3 scripts/ops_check.py --gh --gh-switch
+python3 scripts/gh_guard.py --json
+python3 scripts/ops_check.py --gh
 ```
 
 sandbox などで token 利用確認だけが通らない場合は、active account の一致だけを確認できます。
 
 ```bash
 python3 scripts/ops_check.py --gh --gh-account-only
+```
+
+PR 作成前には、title / body が日本語既定に沿っていることも確認します。
+
+```bash
+python3 scripts/check_pr_language.py --title "<PR title>" --body-file .github/pull_request_template.md
 ```
 
 HTTP MCP 起動スモークまで含める場合は、MCP 依存を入れた Python を指定して実行します。
