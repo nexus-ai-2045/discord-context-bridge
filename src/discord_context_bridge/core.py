@@ -12,6 +12,7 @@ from typing import Any, Iterable
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
+DEFAULT_TEXT_SNAPSHOT_STORE = Path(".local/discord-context-bridge/text-snapshots.ndjson")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
@@ -120,6 +121,10 @@ def utc_now() -> str:
 def stable_event_id(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def stable_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
@@ -597,6 +602,123 @@ def build_handoff_packet(
             "local_paths_output": "omitted",
             "outbound_actions": "disabled",
         },
+    }
+
+
+def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    snapshots: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            snapshots.append(dict(json.loads(line)))
+    return snapshots
+
+
+def append_text_snapshot(snapshot: dict[str, Any], path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(snapshot, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> dict[str, Any] | None:
+    for snapshot in reversed(load_text_snapshots(path)):
+        if snapshot.get("target_key") == target_key:
+            return snapshot
+    return None
+
+
+def normalize_message_text(messages: Iterable[Any]) -> str:
+    lines: list[str] = []
+    for message in messages:
+        if isinstance(message, dict):
+            author = str(message.get("author") or message.get("author_label") or "").strip()
+            text = str(message.get("text") or message.get("content") or message.get("text_snippet") or "").strip()
+            timestamp = str(message.get("timestamp") or message.get("observed_at") or "").strip()
+            prefix = " ".join(part for part in [author, timestamp] if part)
+            lines.append(f"{prefix}: {text}" if prefix and text else text or prefix)
+        else:
+            lines.append(str(message).strip())
+    return "\n".join(line for line in lines if line)
+
+
+def plan_discord_url_read(url: str) -> dict[str, Any]:
+    match = re.match(r"^https://discord\.com/channels/([^/]+)/([^/]+)(?:/([^/?#]+))?", url.strip())
+    if not match:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": "Discord URL として読めませんでした。",
+            "ok_to_open": False,
+            "reason": "discord_channel_url_required",
+            "outbound_actions": "disabled",
+        }
+    guild_id, channel_id, message_or_thread_id = match.groups()
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord URL の読み取り計画を作成しました。",
+        "ok_to_open": True,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_or_thread_id": message_or_thread_id or "",
+        "read_method": "browser_visible_text",
+        "save_target": str(DEFAULT_TEXT_SNAPSHOT_STORE),
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def snapshot_visible_text(
+    *,
+    text: str = "",
+    messages: Iterable[Any] | None = None,
+    url: str = "",
+    title: str = "",
+    source: str = "visible_text",
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+) -> dict[str, Any]:
+    message_list = list(messages or [])
+    content = text.strip() or normalize_message_text(message_list)
+    if not content:
+        raise ValueError("snapshot する text または messages が必要です。")
+    target_identity = url.strip() or title.strip() or content[:120]
+    target_key = stable_text_hash(target_identity)
+    content_hash = stable_text_hash(content)
+    previous = latest_snapshot_for_target(target_key, path)
+    previous_hash = str(previous.get("content_hash") or "") if previous else None
+    changed = previous_hash != content_hash
+    snapshot = {
+        "captured_at": utc_now(),
+        "source": source,
+        "url": url.strip(),
+        "title": title.strip(),
+        "target_key": target_key,
+        "content_hash": content_hash,
+        "text": content,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    if changed:
+        append_text_snapshot(snapshot, path)
+    snapshot_count = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 可視テキスト snapshot を保存しました。" if changed else "同一内容の snapshot は保存済みです。",
+        "saved": changed,
+        "changed": changed,
+        "snapshot_store": str(path),
+        "target_key": target_key,
+        "content_hash": content_hash,
+        "previous_content_hash": previous_hash,
+        "snapshot_count_for_target": snapshot_count,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+        "source": source,
+        "message_count": len(message_list),
+        "context_ready": True,
+        "visible_text_saved": True,
     }
 
 

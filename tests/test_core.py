@@ -23,13 +23,16 @@ from discord_context_bridge import (
     get_review_state,
     guide_reply_from_text,
     import_visible_text,
+    load_text_snapshots,
     list_context_documents,
     load_review_registry,
     load_events,
     ops_view_summary,
     parse_visible_text,
+    plan_discord_url_read,
     review_reply_intent,
     send_message,
+    snapshot_visible_text,
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
@@ -123,6 +126,36 @@ def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
     assert result["preview"][0]["author_label"] == "member-a"
     assert result["briefing"]["event_count"] == 3
     assert not store.exists()
+
+
+def test_plan_discord_url_read_keeps_browser_visible_boundary():
+    plan = plan_discord_url_read("https://discord.com/channels/1464854485779218535/1515372533442937013")
+
+    assert plan["ok_to_open"] is True
+    assert plan["read_method"] == "browser_visible_text"
+    assert plan["private_local_only"] is True
+    assert plan["external_share_allowed"] is False
+    assert plan["outbound_actions"] == "disabled"
+
+
+def test_snapshot_visible_text_saves_changed_content_only(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+
+    first = snapshot_visible_text(
+        text="member-a: visible hello",
+        url="https://discord.com/channels/1/2/3",
+        path=snapshot_store,
+    )
+    second = snapshot_visible_text(
+        text="member-a: visible hello",
+        url="https://discord.com/channels/1/2/3",
+        path=snapshot_store,
+    )
+
+    assert first["saved"] is True
+    assert second["saved"] is False
+    assert second["snapshot_count_for_target"] == 1
+    assert load_text_snapshots(snapshot_store)[0]["private_local_only"] is True
 
 
 def test_audit_event_store_reports_safe_empty_store(tmp_path):
@@ -2931,7 +2964,11 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
 
-    server = mcp_server.build_server(store=tmp_path / "events.ndjson", context_store=tmp_path / "context-library.json")
+    server = mcp_server.build_server(
+        store=tmp_path / "events.ndjson",
+        context_store=tmp_path / "context-library.json",
+        snapshot_store=tmp_path / "text-snapshots.ndjson",
+    )
 
     assert server.name == "discord-context-bridge"
     assert server.settings["host"] == "127.0.0.1"
@@ -2940,12 +2977,16 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert sorted(server.tools) == [
         "audit_context_library_before_tunnel",
         "audit_event_store_before_tunnel",
+        "get_context_passport_from_discord_url",
         "get_context_passport_from_visible_text",
         "get_fast_briefing",
         "guide_reply_from_visible_text",
         "import_visible_discord_text",
         "list_context_library_entries",
+        "plan_discord_url_read",
         "review_reply_before_send",
+        "snapshot_chrome_extension_visible_text",
+        "snapshot_discord_url_text",
         "upsert_context_library_entry",
     ]
 
@@ -2969,6 +3010,15 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         PASSPORT_FIXTURE.read_text(encoding="utf-8"),
         server_context_key="nexus",
     )
+    plan = server.tools["plan_discord_url_read"]("https://discord.com/channels/1/2/3")
+    snapshot = server.tools["snapshot_chrome_extension_visible_text"](
+        messages=[{"author": "member-a", "text": "見えている本文"}],
+        url="https://discord.com/channels/1/2/3",
+    )
+    url_passport = server.tools["get_context_passport_from_discord_url"](
+        "https://discord.com/channels/1/2/3",
+        text=PASSPORT_FIXTURE.read_text(encoding="utf-8"),
+    )
 
     assert imported["language"] == "ja"
     assert imported["dry_run"] is True
@@ -2982,6 +3032,10 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert passport["message"] == "スレッド文脈カードを作成しました。"
     assert passport["people_temperature"] == "serious"
     assert passport["external_context_used"] is True
+    assert plan["ok_to_open"] is True
+    assert snapshot["source"] == "chrome_extension_dom"
+    assert snapshot["visible_text_saved"] is True
+    assert url_passport["snapshot"]["visible_text_saved"] is True
     assert any("個人情報の共有は禁止" in note for note in passport["rule_notes"])
 
 
