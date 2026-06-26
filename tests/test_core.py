@@ -2827,10 +2827,20 @@ def test_pr_language_gate_rejects_english_default_template():
     assert "english_default_heading:## Summary" in issues
 
 
+def test_pr_language_gate_requires_human_japanese_approval_marker():
+    gate = load_script_module("check_pr_language_approval_for_test", ROOT / "scripts" / "check_pr_language.py")
+    title = "[codex] Discord bridge の公開前ガードを強化"
+    body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n\n## 日本語レビュー\n- 確認待ちです。\n\njapanese_pr_ok: no\n"
+
+    issues = gate.validate_pr_language(title, body)
+
+    assert "missing_human_japanese_approval:japanese_pr_ok_yes" in issues
+
+
 def test_pr_language_gate_accepts_japanese_pr_metadata():
     gate = load_script_module("check_pr_language_ok_for_test", ROOT / "scripts" / "check_pr_language.py")
     title = "[codex] Discord bridge の公開前ガードを強化"
-    body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n"
+    body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n\n## 日本語レビュー\n- やすさんが日本語を確認しました。\n\njapanese_pr_ok: yes\n"
 
     assert gate.validate_pr_language(title, body) == []
 
