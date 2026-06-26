@@ -16,7 +16,9 @@ from .core import (
     import_visible_text,
     list_context_documents,
     load_events,
+    plan_discord_url_read as plan_discord_url_read_core,
     review_reply_intent,
+    snapshot_visible_text,
     upsert_context_document,
 )
 
@@ -38,6 +40,7 @@ def build_server(
     *,
     store: Path = DEFAULT_STORE,
     context_store: Path = DEFAULT_CONTEXT_STORE,
+    snapshot_store: Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
     http_path: str = "/mcp",
@@ -160,6 +163,85 @@ def build_server(
                 if part.strip()
             ),
         )
+
+    @server.tool()
+    def plan_discord_url_read(url: str) -> dict[str, Any]:
+        """Discord URL をブラウザ可視テキストで読むための local-first 計画を返します。"""
+        return plan_discord_url_read_core(url)
+
+    @server.tool()
+    def snapshot_discord_url_text(
+        url: str,
+        text: str = "",
+        title: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Discord URL で開いた画面の可視テキストをローカル snapshot として保存します。"""
+        return snapshot_visible_text(
+            text=text,
+            messages=messages or [],
+            url=url,
+            title=title,
+            source="discord_url_visible_text",
+            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+        )
+
+    @server.tool()
+    def snapshot_chrome_extension_visible_text(
+        text: str = "",
+        title: str = "",
+        url: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Chrome 拡張や DOM 抽出で見えている Discord テキストをローカル snapshot として保存します。"""
+        return snapshot_visible_text(
+            text=text,
+            messages=messages or [],
+            url=url,
+            title=title,
+            source="chrome_extension_dom",
+            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+        )
+
+    @server.tool()
+    def get_context_passport_from_discord_url(
+        url: str,
+        text: str = "",
+        title: str = "",
+        messages: list[dict[str, Any]] | None = None,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+    ) -> dict[str, Any]:
+        """Discord URL の可視テキストから、保存と文脈カード作成をまとめて行います。"""
+        message_list = messages or []
+        content = text or "\n".join(
+            str(message.get("text") or message.get("content") or message.get("text_snippet") or "")
+            for message in message_list
+        )
+        snapshot = snapshot_visible_text(
+            text=content,
+            messages=message_list,
+            url=url,
+            title=title,
+            source="discord_url_visible_text",
+            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+        )
+        passport = context_passport_from_text(
+            content,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        )
+        return {
+            **passport,
+            "snapshot": snapshot,
+            "url_read_plan": plan_discord_url_read_core(url),
+        }
 
     return server
 
