@@ -32,6 +32,40 @@ CLI、MCP、plugin、ChatGPT connector、実機 capture は任意 adapter / deve
 verification です。13工程MVPの成立条件にはしません。MVP 判断は
 `references/initial-thread-ruleset.md` に戻します。
 
+## Notification metadata probe gate
+
+Discord Desktop の通知実測は、before / after の metadata-only probe として扱う。
+public core に本文取得 route を戻さない。
+
+読んでよいもの:
+
+- `bundle_id`
+- safe label
+- file list
+- mtime / size
+- count
+- `changed_paths`
+- `delta_bytes`
+- `first_changed_at` / `last_changed_at`
+- `confidence`
+
+読まないもの:
+
+- notification title / subtitle / body
+- Unified Log `eventMessage`
+- SQLite BLOB payload
+- raw Discord text
+- 実 guild / channel / user / message ID
+
+有効な終端状態:
+
+- `discord_notification_delta.v1`
+- `no_notification_observed`
+- `insufficient_metadata`
+
+この probe は human が実際に通知を発生させた時だけ測る。bridge / agent は送信、
+返信、reaction、delete、外部投稿を行わない。
+
 ## 保存単位
 
 保存してよいもの:
