@@ -366,6 +366,51 @@ public package は引き続き token、cookie、webhook、browser profile を受
 
 public package 側は、取得そのものを抱え込まず、private adapter の stdout contract と安全監査に集中します。
 
+### Discord Desktop 通知 metadata probe
+
+Discord Desktop の新着検知を扱う場合も、public package が受け取るのは本文なしの
+`discord_notification_delta.v1` だけです。通知本文、実ユーザー名、実 channel 名、
+raw payload は取得・表示・保存しません。
+
+Trigger condition:
+
+- human が Discord 通知を 1 件発生させます。bridge / agent は送信、返信、
+  reaction、delete、外部投稿を行いません。
+- probe 前に safe label で `surface_label`、`discord_foreground_state`、
+  macOS Focus / notification settings state、`probe_started_at`、
+  `probe_ended_at` を記録します。
+- 通知が観測されなければ `no_notification_observed` として閉じます。本文取得や
+  private cache 読み取りへ fallback しません。
+
+Fallback order:
+
+1. Notification Center `db2`: file list、mtime、size だけを見る。
+2. Unified Log: Discord / UserNotifications predicate の count だけを見る。
+   `eventMessage` は出力しない。
+3. Discord `discord_notifications/cache/Cache.db*`: mtime / size だけを見る。
+   SQLite BLOB payload は読まない。
+4. stable diff がなければ `insufficient_metadata` を返して止める。
+
+`discord_notification_delta.v1` fields:
+
+- `schema`
+- `generated_at`
+- `bundle_id`
+- `probe_window`
+- `trigger_condition`
+- `notification_center_db2`
+- `unified_log`
+- `discord_notification_cache`
+- `changed_paths`
+- `delta_bytes`
+- `delta_event_count`
+- `first_changed_at`
+- `last_changed_at`
+- `confidence`
+- `text_output="omitted"`
+- `raw_payload_read=false`
+- `outbound_actions="disabled"`
+
 最初の skeleton は、現在見えている Discord 本文を stdout に出すだけの小さな command です。
 
 ```text
