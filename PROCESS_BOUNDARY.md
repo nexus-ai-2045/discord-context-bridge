@@ -147,3 +147,11 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 この public repo の PR は、Discord Context Bridge の public-safe なコード、docs、tests だけを含めます。
 
 FDE 原則は `nexus-ai-2045/fractal-decision-ecosystem`、Nexus AI の私的運用や Obsidian/SSOT は `nexus-ai-2045/nexus_ai`、記事 draft は private draft 側に分けます。
+
+PR を作る前に `python3 scripts/pr_readiness_preflight.py --fetch --json` を実行し、
+PR 元ブランチが現在の `origin/main` を含むこと、対象 repo が
+`nexus-ai-2045/discord-context-bridge` であること、GitHub account が一致することを確認します。
+
+merge 後は `python3 scripts/post_merge_closeout_report.py --pr <PR番号> --fetch --json`
+で、PR が merged、merge commit が存在、local `main` と `origin/main` が同期、working tree が clean
+であることを確認します。
