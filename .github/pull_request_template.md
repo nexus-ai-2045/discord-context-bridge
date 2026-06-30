@@ -16,5 +16,6 @@ japanese_pr_ok: no
 
 ## 公開前ガード
 - [ ] `python3 scripts/gh_guard.py --json`
+- [ ] `python3 scripts/pr_readiness_preflight.py --fetch --json`
 - [ ] `python3 scripts/check_pr_language.py --title "<PR title>" --body-file .github/pull_request_template.md`
 - [ ] `python3 scripts/ops_check.py --gh`
