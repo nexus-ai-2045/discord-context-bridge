@@ -10,8 +10,9 @@ from typing import Any
 
 
 JAPANESE_RE = re.compile(r"[一-龥ぁ-んァ-ン]")
-REQUIRED_BODY_HEADINGS = ("## 概要", "## 検証", "## 境界")
+REQUIRED_BODY_HEADINGS = ("## 概要", "## 検証", "## 境界", "## 日本語レビュー")
 ENGLISH_DEFAULT_HEADINGS = ("## Summary", "## Validation", "## Notes")
+HUMAN_JAPANESE_APPROVAL_RE = re.compile(r"(?im)^\s*japanese_pr_ok:\s*yes\s*$")
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -54,6 +55,8 @@ def validate_pr_language(title: str, body: str) -> list[str]:
     for heading in ENGLISH_DEFAULT_HEADINGS:
         if heading in body:
             issues.append(f"english_default_heading:{heading}")
+    if not HUMAN_JAPANESE_APPROVAL_RE.search(body):
+        issues.append("missing_human_japanese_approval:japanese_pr_ok_yes")
     if japanese_ratio(visible) < 0.15:
         issues.append("japanese_ratio_too_low")
     return issues
@@ -90,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
                 "issue_count": len(issues),
                 "issues": issues,
                 "title_has_japanese": bool(JAPANESE_RE.search(title)),
+                "human_japanese_approved": bool(HUMAN_JAPANESE_APPROVAL_RE.search(body)),
                 "body_japanese_ratio": round(japanese_ratio(body), 3),
             }
         )
