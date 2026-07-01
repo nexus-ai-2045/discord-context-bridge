@@ -70,5 +70,8 @@ jobs:
           python -m pip install -e .
           python -m pip install pytest
 
+      - name: Install operational check tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Run repository operational checks
         run: python scripts/ops_check.py --skip-http
