@@ -16,10 +16,12 @@ from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
     DEFAULT_STORE,
+    DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
     audit_event_store,
     build_discord_send_staging_packet,
     build_handoff_packet,
+    build_latest_snapshot_report,
     build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
@@ -152,6 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     dashboard.add_argument("--github-state", default="not_checked", help="GitHub 状態の短い安全ラベル")
     dashboard.set_defaults(handler=_cmd_status_dashboard)
+
+    report_latest = sub.add_parser("report-latest", help="保存済み snapshot から metadata-only の最新 report を作る")
+    report_latest.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    report_latest.add_argument("--target-key", default="", help="特定 target_key の最新 snapshot だけを見る")
+    report_latest.add_argument("--url", default="", help="特定 URL に一致する保存済み snapshot だけを見る。出力には URL を含めません")
+    report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
+    report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    report_latest.set_defaults(handler=_cmd_report_latest)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -453,6 +463,35 @@ def _cmd_status_dashboard(args: argparse.Namespace) -> int:
     print(f"github: {dashboard['github']['state']}")
     print("outbound: disabled")
     return 0 if not dashboard["broken"] else 2
+
+
+def _cmd_report_latest(args: argparse.Namespace) -> int:
+    report = build_latest_snapshot_report(
+        path=args.snapshot_store,
+        target_key=args.target_key,
+        url=args.url,
+        include_preview=args.include_preview,
+    )
+    if args.json:
+        print(_json(report))
+        return 0 if report["ok"] else 2
+    print(report["message"])
+    print(f"ok: {str(report['ok']).lower()}")
+    print(f"raw_text_returned: {str(report['raw_text_returned']).lower()}")
+    print("path_output: omitted")
+    if report["ok"]:
+        source = report["source_summary"]
+        report_context = source["report_acquisition_context"]
+        print(f"target_key: {report['target']['target_key']}")
+        print(f"source_kind: {source['source_kind']}")
+        print(f"report_mode: {report_context['mode']}")
+        print(f"live_browser_access: {str(report_context['live_browser_access']).lower()}")
+        print(f"new_capture: {str(report_context['new_capture']).lower()}")
+        print(f"uncaptured_after_latest: {report['uncaptured_range']['after_latest_saved_snapshot']}")
+    else:
+        print(f"reason: {report['reason']}")
+    print("outbound: disabled")
+    return 0 if report["ok"] else 2
 
 
 def _cmd_handoff_packet(args: argparse.Namespace) -> int:

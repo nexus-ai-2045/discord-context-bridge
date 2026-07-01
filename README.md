@@ -52,6 +52,25 @@ MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initi
 safe metadata として受け取ります。Discord本文コピー、最初のURL指定、Discordアプリ操作、
 Discordへの送信は前提にしません。
 
+### 最新 snapshot report
+
+`report-latest` は保存済み `.local/discord-context-bridge/text-snapshots.ndjson`
+だけを読み、Chrome 接続、DOM 再取得、新規 capture は行いません。
+`source_kind` が `Chrome DOM` の場合でも、それは snapshot 保存時の由来です。
+今回の report 作成方法は `report_acquisition_context.mode=existing_saved_snapshot`
+として別枠で出します。
+
+既定では raw 本文、発言者名、URL、local path を出しません。本文全体は常に
+`raw_text_returned=false` で、必要な developer verification の時だけ
+`--include-preview` で短い preview を明示的に出せます。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  report-latest \
+  --snapshot-store .local/discord-context-bridge/text-snapshots.ndjson \
+  --json
+```
+
 ## 基本言語
 
 この package の基本言語は日本語です。
@@ -70,6 +89,7 @@ Discordへの送信は前提にしません。
 - 返信を書く前に、足りない前提や文脈ズレを検出します。
 - ユーザーの返信意図を直近会話と照合します。
 - local command で取得した可視テキストを監視し、会話ガイドを自動更新します。
+- 保存済み snapshot から、本文なしの最新 metadata report を作ります。
 - Discord への送信は既定で禁止します。
 
 ## しないこと

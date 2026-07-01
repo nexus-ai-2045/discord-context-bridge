@@ -628,6 +628,185 @@ def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSH
     return None
 
 
+def source_kind_from_source(source: str) -> str:
+    lowered = source.casefold()
+    if "chrome" in lowered or "dom" in lowered or "browser" in lowered:
+        return "Chrome DOM"
+    if "cache" in lowered:
+        return "cache"
+    if "clipboard" in lowered:
+        return "clipboard"
+    if "source-command" in lowered or "source_command" in lowered or "adapter" in lowered:
+        return "source-command"
+    if "visible" in lowered or "snapshot" in lowered:
+        return "visible_text"
+    return "unknown"
+
+
+def acquisition_context_for_source(source: str) -> dict[str, Any]:
+    source_kind = source_kind_from_source(source)
+    base = {
+        "schema": "discord_bridge_acquisition_context.v1",
+        "source_kind": source_kind,
+        "source_route": source or "unknown",
+        "record_origin": "local_visible_text_snapshot",
+        "token_or_cookie_read": False,
+        "outbound_actions": "disabled",
+    }
+    if source_kind == "Chrome DOM":
+        return {
+            **base,
+            "capture_method": "chrome_dom_visible_range",
+            "live_browser_access_required_for_capture": True,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "cache":
+        return {
+            **base,
+            "capture_method": "local_cache_snapshot",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": False,
+        }
+    if source_kind == "source-command":
+        return {
+            **base,
+            "capture_method": "local_source_command_stdout",
+            "live_browser_access_required_for_capture": None,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "clipboard":
+        return {
+            **base,
+            "capture_method": "local_clipboard_visible_text",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": False,
+        }
+    return {
+        **base,
+        "capture_method": "manual_or_visible_text_snapshot",
+        "live_browser_access_required_for_capture": False,
+        "private_adapter_required_for_capture": False,
+    }
+
+
+def compact_snapshot_body_evidence(text: str, *, include_preview: bool = False, max_preview_chars: int = 24) -> dict[str, Any]:
+    stripped = " ".join(text.split())
+    preview = stripped[:max_preview_chars] if include_preview and stripped else "omitted"
+    return {
+        "schema": "discord_bridge_snapshot_body_evidence.v1",
+        "raw_text_returned": False,
+        "full_content_returned": False,
+        "preview_returned": bool(include_preview and stripped),
+        "preview": preview,
+        "preview_char_count": len(preview) if include_preview and stripped else 0,
+        "char_count": len(text),
+        "line_count": len([line for line in text.splitlines() if line.strip()]),
+        "content_hash": stable_text_hash(text) if text else "",
+    }
+
+
+def select_latest_snapshot(
+    *,
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    url: str = "",
+) -> dict[str, Any] | None:
+    snapshots = load_text_snapshots(path)
+    if target_key:
+        for snapshot in reversed(snapshots):
+            if snapshot.get("target_key") == target_key:
+                return snapshot
+        return None
+    if url:
+        for snapshot in reversed(snapshots):
+            if snapshot.get("url") == url:
+                return snapshot
+        return None
+    return snapshots[-1] if snapshots else None
+
+
+def build_latest_snapshot_report(
+    *,
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    url: str = "",
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    snapshot = select_latest_snapshot(path=path, target_key=target_key, url=url)
+    requested_filter = "target_key" if target_key else "url" if url else "latest"
+    report_acquisition_context = {
+        "schema": "discord_bridge_report_acquisition_context.v1",
+        "mode": "existing_saved_snapshot",
+        "description": "この report は保存済み snapshot store だけを読みます。Chrome 接続、DOM 再取得、新規 capture は行いません。",
+        "live_browser_access": False,
+        "new_capture": False,
+        "snapshot_store_read": True,
+    }
+    if not snapshot:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_bridge_latest_snapshot_report.v1",
+            "ok": False,
+            "message": "該当する保存済み snapshot がありません。",
+            "reason": "snapshot_missing",
+            "requested_filter": requested_filter,
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "path_output": "omitted",
+            "report_acquisition_context": report_acquisition_context,
+            "outbound_actions": "disabled",
+        }
+
+    text = str(snapshot.get("text") or "")
+    source = str(snapshot.get("source") or "unknown")
+    stored_acquisition_context = dict(snapshot.get("acquisition_context") or acquisition_context_for_source(source))
+    events = parse_visible_text(text)
+    latest_event = events[-1].to_dict() if events else {}
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_latest_snapshot_report.v1",
+        "ok": True,
+        "message": "保存済み snapshot から最新 report を作成しました。",
+        "requested_filter": requested_filter,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "target": {
+            "target_key": str(snapshot.get("target_key") or ""),
+            "url_present": bool(snapshot.get("url")),
+            "url_output": "omitted",
+            "title_present": bool(snapshot.get("title")),
+            "title_output": "omitted",
+        },
+        "latest_saved_or_visible_message": {
+            "observed_at": str(snapshot.get("captured_at") or ""),
+            "speaker": "omitted",
+            "speaker_returned": False,
+            "parsed_message_available": bool(events),
+            "parsed_observed_at": str(latest_event.get("observed_at") or "") if latest_event else "",
+            "body_evidence": compact_snapshot_body_evidence(text, include_preview=include_preview),
+        },
+        "input_state": {
+            "state": "not_applicable",
+            "reason": "保存済み snapshot store の metadata-only report のため、Discord 入力欄は観測しません。",
+        },
+        "source_summary": {
+            "source_kind": stored_acquisition_context.get("source_kind", source_kind_from_source(source)),
+            "source_route": source,
+            "stored_acquisition_context": stored_acquisition_context,
+            "report_acquisition_context": report_acquisition_context,
+        },
+        "uncaptured_range": {
+            "before_first_saved_snapshot": "unknown",
+            "after_latest_saved_snapshot": "unknown",
+            "reason": "保存済み snapshot 以外の Discord 画面範囲はこの report では取得しません。",
+        },
+        "outbound_actions": "disabled",
+    }
+
+
 def normalize_message_text(messages: Iterable[Any]) -> str:
     lines: list[str] = []
     for message in messages:
@@ -694,6 +873,7 @@ def snapshot_visible_text(
         "title": title.strip(),
         "target_key": target_key,
         "content_hash": content_hash,
+        "acquisition_context": acquisition_context_for_source(source),
         "text": content,
         "private_local_only": True,
         "external_share_allowed": False,
