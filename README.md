@@ -47,6 +47,11 @@ MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initi
 ねくが Chrome 上で目的の場所へ移動します。コデたんは現在の Chrome 状態を観測し、
 「ここで開始してよさそう？」を確認してから13工程へ接続します。
 
+Codex skill としての発火条件は、`https://discord.com/channels/...` の Discord link、
+「Discordチェックしたい」、Discord返信案、Discord会話要約、review gate / task /
+handoff packet / safe metadata への接続依頼です。リンクだけが貼られた場合も、
+汎用URL調査ではなく read-only の `discord-context-bridge` ingress として扱います。
+
 この入口の運用境界は [docs/codex-discord-ingress.md](docs/codex-discord-ingress.md)
 にまとめています。bridge は Chrome を直接操作せず、Codex 側の Chrome 観測結果を
 safe metadata として受け取ります。Discord本文コピー、最初のURL指定、Discordアプリ操作、
