@@ -307,6 +307,9 @@ Chrome 拡張で Discord の入力欄へ入れる前には、送信準備 packet
 この packet は **下書き入力まで** を許可し、`Enter` 送信、送信ボタン click、
 reaction、edit、delete は禁止 action として返します。reply は message URL、
 mention は Discord URL と `@safe-label` を要求し、URL は出力しません。
+Chrome 拡張でできることと停止線の棚卸しは
+[`docs/codex-chrome-extension-capability-inventory.md`](docs/codex-chrome-extension-capability-inventory.md)
+を見ます。
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
