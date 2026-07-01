@@ -14,6 +14,7 @@ from discord_context_bridge import (
     audit_context_store,
     audit_event_store,
     build_copy_block,
+    build_discord_send_staging_packet,
     build_handoff_packet,
     build_human_gate,
     build_review_artifact_markdown,
@@ -352,6 +353,57 @@ def test_review_reply_intent_returns_final_candidate_human_gate_and_copy_block()
     assert review["copy_block"]["text"] == "公開時期の前提を確認して返信します。"
     assert review["copy_block"]["part_count"] == 1
     assert review["copy_block"]["outbound_actions"] == "disabled"
+
+
+def test_build_discord_send_staging_packet_prepares_reply_without_send():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+
+    assert packet["schema"] == "discord_send_staging_packet.v1"
+    assert packet["staging_status"] == "ready_to_fill"
+    assert packet["blockers"] == []
+    assert packet["browser_action"]["capability"] == "chrome_extension_fill_only"
+    assert "stop_before_send_button" in packet["browser_action"]["allowed_actions"]
+    assert "click_send_button" in packet["browser_action"]["forbidden_actions"]
+    assert packet["send_capability"] == "disabled"
+    assert packet["target_url_output"] == "omitted"
+    serialized = json.dumps(packet, ensure_ascii=False)
+    assert "123456789012345678" not in serialized
+
+
+def test_build_discord_send_staging_packet_blocks_missing_reply_target():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678",
+        understanding_confirmed=True,
+    )
+
+    assert packet["staging_status"] == "blocked"
+    assert "reply_target_message_url_required" in packet["blockers"]
+    assert packet["human_gate"]["recommended_option"] == "fix-blockers"
+
+
+def test_build_discord_send_staging_packet_blocks_unverified_mention():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="mention",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+
+    assert packet["staging_status"] == "blocked"
+    assert "mention_label_required" in packet["blockers"]
 
 
 def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
@@ -1497,6 +1549,35 @@ def test_cli_review_draft_alias_uses_stored_context(tmp_path, capsys):
     assert result == 0
     assert '"message": "返信前レビューが完了しました。"' in output
     assert '"send_capability": "disabled"' in output
+
+
+def test_cli_stage_discord_send_outputs_fill_only_packet(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    import_visible_text(FIXTURE.read_text(encoding="utf-8"), path=store)
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "stage-discord-send",
+            "--draft",
+            "公開時期の前提を確認して返信します。",
+            "--mode",
+            "reply",
+            "--target-url",
+            "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+            "--understanding-confirmed",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_send_staging_packet.v1"' in output
+    assert '"staging_status": "ready_to_fill"' in output
+    assert '"target_url_output": "omitted"' in output
+    assert "123456789012345678" not in output
+    assert '"outbound_actions": "disabled"' in output
 
 
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
@@ -2997,6 +3078,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "review_reply_before_send",
         "snapshot_chrome_extension_visible_text",
         "snapshot_discord_url_text",
+        "stage_discord_send_before_human_action",
         "upsert_context_library_entry",
     ]
 

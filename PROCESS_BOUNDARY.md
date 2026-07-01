@@ -115,6 +115,12 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --draft "前提を確認してから返信します。"
 ```
 
+送信テスト運用では `stage-discord-send` を使い、Chrome 拡張が実行してよい範囲を
+`fill-only` packet として固定します。packet は socket preflight、対象 URL 照合、
+reply UI / message box への下書き入力、pre-send ping、`stop_before_send_button`
+までを許可します。`Enter` 送信、送信ボタン click、reaction、edit、delete は
+常に禁止です。実際に Discord 通知を発生させる最後の操作は human の責任範囲です。
+
 ## やらないこと
 
 - Discord へ送信しない。

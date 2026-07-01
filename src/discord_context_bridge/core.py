@@ -1452,5 +1452,102 @@ def guide_reply_from_text(
     }
 
 
+DISCORD_MESSAGE_URL_RE = re.compile(
+    r"^https://discord(?:app)?\.com/channels/(?P<guild>\d{17,20})/(?P<channel>\d{17,20})/(?P<message>\d{17,20})(?:\?.*)?$"
+)
+DISCORD_CHANNEL_URL_RE = re.compile(
+    r"^https://discord(?:app)?\.com/channels/(?P<guild>\d{17,20})/(?P<channel>\d{17,20})(?:\?.*)?$"
+)
+
+
+def build_discord_send_staging_packet(
+    draft: str,
+    events: Iterable[DiscordEvent],
+    *,
+    mode: str = "reply",
+    target_url: str = "",
+    mention_label: str = "",
+    understanding_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Build a fill-only browser action packet for a Discord reply/mention.
+
+    This deliberately does not send. It only tells a Chrome-extension runner how
+    far it may go before the human performs the final Discord action.
+    """
+    normalized_mode = mode.strip().casefold() or "reply"
+    if normalized_mode not in {"reply", "mention"}:
+        normalized_mode = "unsupported"
+    loaded = list(events)
+    review = review_reply_intent(draft, loaded, understanding_confirmed=understanding_confirmed)
+    copy_block = dict(review.get("copy_block") or {})
+    blockers: list[str] = []
+    target_kind = "unknown"
+    if normalized_mode == "unsupported":
+        blockers.append("unsupported_mode")
+    if not understanding_confirmed:
+        blockers.append("understanding_not_confirmed")
+    if copy_block.get("status") not in {"ready", "split"}:
+        blockers.append("copy_block_not_ready")
+    if normalized_mode == "reply":
+        if DISCORD_MESSAGE_URL_RE.match(target_url):
+            target_kind = "message"
+        else:
+            blockers.append("reply_target_message_url_required")
+    elif normalized_mode == "mention":
+        if DISCORD_CHANNEL_URL_RE.match(target_url) or DISCORD_MESSAGE_URL_RE.match(target_url):
+            target_kind = "channel_or_message"
+        else:
+            blockers.append("mention_target_discord_url_required")
+        if not mention_label.strip().startswith("@"):
+            blockers.append("mention_label_required")
+    staging_status = "ready_to_fill" if not blockers else "blocked"
+    browser_steps = [
+        "socket_preflight",
+        "claim_existing_discord_tab_or_open_target",
+        "verify_visible_url_matches_target",
+    ]
+    if normalized_mode == "reply":
+        browser_steps.extend(["open_message_reply_ui", "fill_reply_box"])
+    elif normalized_mode == "mention":
+        browser_steps.extend(["focus_message_box", "insert_human_verified_mention_then_draft"])
+    browser_steps.extend(["socket_pre_send_ping", "stop_before_send_button"])
+    return {
+        "schema": "discord_send_staging_packet.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 送信準備パケットを作成しました。" if staging_status == "ready_to_fill" else "Discord 送信準備は gate で停止しました。",
+        "mode": normalized_mode,
+        "staging_status": staging_status,
+        "blockers": blockers,
+        "target_kind": target_kind,
+        "target_url_output": "omitted",
+        "mention_label_output": redact_artifact_text(mention_label) if mention_label else "",
+        "review": {
+            "quick_verdict": review.get("quick_verdict"),
+            "ok_to_reply": review.get("ok_to_reply"),
+            "human_gate": review.get("human_gate"),
+        },
+        "copy_block": copy_block,
+        "browser_action": {
+            "capability": "chrome_extension_fill_only",
+            "allowed_actions": browser_steps,
+            "forbidden_actions": ["press_enter_to_send", "click_send_button", "send_message", "react", "edit", "delete"],
+            "socket_checks": ["preflight", "after_navigation", "pre_send"],
+            "double_submit_guard": "stop_before_send_button",
+        },
+        "human_gate": {
+            "schema": "discord_send_human_gate.v1",
+            "human_decision_required": True,
+            "decision": "pending",
+            "recommended_option": "fill-draft" if staging_status == "ready_to_fill" else "fix-blockers",
+            "options": ["fill-draft", "edit", "read-more", "stop"],
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "この packet は下書き入力までです。Discord 送信は人間が最後に実行してください。",
+        "outbound_actions": "disabled",
+        "raw_discord_text_output": "omitted",
+    }
+
+
 def send_message(*_: Any, **__: Any) -> None:
     raise DisabledCapability("Discord への送信機能は、この public nucleus では意図的に無効です。")

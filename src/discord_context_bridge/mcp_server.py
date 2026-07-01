@@ -9,6 +9,7 @@ from .core import (
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
+    build_discord_send_staging_packet,
     context_passport_from_text,
     fast_briefing,
     get_context_document,
@@ -103,6 +104,24 @@ def build_server(
     def review_reply_before_send(draft: str, understanding_confirmed: bool = False) -> dict[str, Any]:
         """送信前の返信 draft を直近文脈と照合します。"""
         return review_reply_intent(draft, load_events(store), understanding_confirmed=understanding_confirmed)
+
+    @server.tool()
+    def stage_discord_send_before_human_action(
+        draft: str,
+        mode: str = "reply",
+        target_url: str = "",
+        mention_label: str = "",
+        understanding_confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Discord 返信/メンションの下書き入力準備 packet を返します。実送信はしません。"""
+        return build_discord_send_staging_packet(
+            draft,
+            load_events(store),
+            mode=mode,
+            target_url=target_url,
+            mention_label=mention_label,
+            understanding_confirmed=understanding_confirmed,
+        )
 
     @server.tool()
     def guide_reply_from_visible_text(
