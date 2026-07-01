@@ -22,15 +22,16 @@ class CheckResult:
     output: str
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="実装後の運用チェックを並列で実行する")
     parser.add_argument("--port", type=int, default=8025, help="local smoke で使う port")
     parser.add_argument("--http", action="store_true", help="HTTP MCP 起動スモークも含める")
+    parser.add_argument("--skip-http", action="store_true", help="HTTP MCP 起動スモークを省略する（既定動作の明示用）")
     parser.add_argument("--gh", action="store_true", help="GitHub account と remote owner の一致も確認する")
     parser.add_argument("--gh-switch", action="store_true", help="GitHub account 不一致時に remote owner へ切り替える")
     parser.add_argument("--gh-account-only", action="store_true", help="GitHub token ではなく account 一致だけを確認する")
     parser.add_argument("--fail-fast", action="store_true", help="失敗した時点で終了する")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def run_command(name: str, command: list[str], *, env: dict[str, str] | None = None) -> CheckResult:

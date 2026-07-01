@@ -25,6 +25,8 @@ def _json(payload: dict[str, Any]) -> str:
 
 def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     started = time.perf_counter()
+    stdout = ""
+    stderr = ""
     process = subprocess.Popen(
         command,
         shell=True,
@@ -36,6 +38,8 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out_at_ms = min((time.perf_counter() - started) * 1000, max(timeout, 0) * 1000)
+        cleanup_started = time.perf_counter()
         try:
             if hasattr(os, "killpg"):
                 os.killpg(process.pid, signal.SIGKILL)
@@ -45,17 +49,23 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    timeout=0.5,
                 )
             else:
                 process.kill()
-        except ProcessLookupError:
+        except (ProcessLookupError, subprocess.TimeoutExpired):
             pass
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        cleanup_elapsed_ms = (time.perf_counter() - cleanup_started) * 1000
         return {
             "ok": False,
             "failure_stage": "timeout",
             "returncode": 124,
-            "elapsed_ms": (time.perf_counter() - started) * 1000,
+            "elapsed_ms": timed_out_at_ms,
+            "cleanup_elapsed_ms": cleanup_elapsed_ms,
             "stdout_chars": 0,
             "stderr_chars": len(stderr or ""),
             "text_output": "omitted",
