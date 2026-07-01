@@ -127,6 +127,11 @@ reply UI / message box への下書き入力、pre-send ping、`stop_before_send
 reply UI / message box が一意に取れない時は `blocked` で停止します。
 reply UI が 0 件または複数件の場合、通常 message box へ fallback しません。
 
+人間が最後の Discord 送信操作をした後は `closeout-discord-send` で
+metadata-only に閉じます。この closeout は `human_sent_observed`、
+`human_reviewed`、`observed_text_status` だけを状態として返し、本文、URL、
+snowflake は出力しません。`not-checked` のままでは `blocked` です。
+
 ## やらないこと
 
 - Discord へ送信しない。

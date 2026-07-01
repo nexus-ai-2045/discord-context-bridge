@@ -341,6 +341,21 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json
 ```
 
+人間が Discord 側で最後の送信操作をした後は、本文や snowflake を出さずに
+metadata-only closeout を返せます。`observed-text-status` は、copy block と一致した時は
+`matches-copy-block`、人間が最後に編集して目視確認した時は
+`human-edited-and-reviewed` を指定します。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  closeout-discord-send \
+  --human-sent-observed \
+  --human-reviewed \
+  --observed-text-status human-edited-and-reviewed \
+  --observed-message-id "<message-id>" \
+  --json
+```
+
 判断結果を次の作業へ渡す時は、safe metadata だけを review registry に保存できます。
 保存されるのは gate 状態、copy block 状態、read scope、next action で、返信本文や
 Discord raw 本文は保存しません。
@@ -871,21 +886,29 @@ python3 -m pip install ".[mcp]"
 discord-context-bridge-mcp
 ```
 
-MCP tool は 10個です。
+MCP tool は 15個です。
 
 - `import_visible_discord_text`: Discord の可視テキストを local event store に取り込みます。
 - `get_fast_briefing`: 直近文脈の短い briefing を返します。
 - `audit_event_store_before_tunnel`: tunnel 公開前に local event store の安全性を確認します。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
 - `stage_discord_send_before_human_action`: reply / mention の下書き入力準備 packet を返します。実送信はしません。
+- `verify_chrome_extension_fill_only_before_action`: Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。
+- `closeout_discord_send_after_human_action`: 人間送信後の状態を metadata-only で閉じます。本文、URL、snowflake は返しません。
 - `guide_reply_from_visible_text`: Discord の可視テキストと返信 draft から会話ガイドを返します。
 - `get_context_passport_from_visible_text`: Discord の可視テキストからスレッド文脈パスポートを返します。
+- `plan_discord_url_read`: Discord URL を読む前に、使う入口と不足 snapshot を本文なしで計画します。
+- `snapshot_discord_url_text`: Discord URL の可視テキスト snapshot を本文なし metadata と一緒に保存します。
+- `snapshot_chrome_extension_visible_text`: Chrome 拡張から受けた可視テキスト snapshot を保存します。
+- `get_context_passport_from_discord_url`: 保存済み snapshot からスレッド文脈パスポートを返します。
 - `upsert_context_library_entry`: サーバー/チャンネル/スレッド文脈をローカル文脈庫へ保存します。
 - `list_context_library_entries`: ローカル文脈庫の一覧を返します。本文は返さず summary だけ返します。
 - `audit_context_library_before_tunnel`: tunnel 公開前にローカル文脈庫の安全性を確認します。
 
 実送信 tool はありません。`stage_discord_send_before_human_action` は Chrome 拡張で
 下書き欄へ入れるための fill-only packet で、返信は人間が Discord 側で送信する前提です。
+送信後は `closeout_discord_send_after_human_action` で `human_sent_observed` と
+`human_reviewed` だけを閉じ、本文、URL、snowflake は返しません。
 
 `get_context_passport_from_visible_text` は `server_context`、`channel_context`、`thread_context` を受け取れます。
 各値には、サーバールール、チャンネル目的、スレッド固定文などのローカルで確認済みテキストを渡します。

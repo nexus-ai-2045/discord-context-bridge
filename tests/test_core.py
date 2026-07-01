@@ -14,6 +14,7 @@ from discord_context_bridge import (
     audit_context_store,
     audit_event_store,
     build_copy_block,
+    build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_handoff_packet,
     build_human_gate,
@@ -468,6 +469,62 @@ def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
     assert report["fill_permitted"] is False
     assert "reply_ui_not_unique" in report["blockers"]
     assert report["allowed_next_action"] == "fix_blockers"
+
+
+def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_values():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="human_edited_and_reviewed",
+        observed_message_id="423456789012345678",
+        observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+    )
+    serialized = json.dumps(closeout, ensure_ascii=False)
+
+    assert closeout["schema"] == "discord_post_send_closeout_packet.v1"
+    assert closeout["closeout_status"] == "closed"
+    assert closeout["blockers"] == []
+    assert closeout["recommended_next_state"] == "done"
+    assert closeout["observed_message_id_output"] == "omitted"
+    assert closeout["observed_url_output"] == "omitted"
+    assert closeout["raw_discord_text_output"] == "omitted"
+    assert closeout["text_returned"] is False
+    assert closeout["send_capability"] == "disabled"
+    assert closeout["outbound_actions"] == "disabled"
+    assert "423456789012345678" not in serialized
+    assert "discord.com/channels" not in serialized
+
+
+def test_build_discord_post_send_closeout_packet_blocks_missing_human_observation():
+    closeout = build_discord_post_send_closeout_packet(
+        human_sent_observed=False,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "human_send_not_observed" in closeout["blockers"]
+    assert closeout["recommended_next_state"] == "verify_visible_message"
 
 
 def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
@@ -1681,6 +1738,51 @@ def test_cli_verify_chrome_fill_dry_run_blocks_ambiguous_reply_ui(tmp_path, caps
     assert '"dry_run_status": "blocked"' in output
     assert '"reply_ui_not_unique"' in output
     assert '"outbound_actions": "disabled"' in output
+
+
+def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--human-sent-observed",
+            "--human-reviewed",
+            "--observed-text-status",
+            "human-edited-and-reviewed",
+            "--observed-message-id",
+            "423456789012345678",
+            "--observed-url",
+            "https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_post_send_closeout_packet.v1"' in output
+    assert '"closeout_status": "closed"' in output
+    assert '"observed_message_id_output": "omitted"' in output
+    assert '"observed_url_output": "omitted"' in output
+    assert '"text_returned": false' in output
+    assert "423456789012345678" not in output
+    assert "discord.com/channels" not in output
+
+
+def test_cli_closeout_discord_send_blocks_unchecked_text(capsys):
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--human-sent-observed",
+            "--human-reviewed",
+            "--observed-text-status",
+            "not-checked",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"closeout_status": "blocked"' in output
+    assert '"observed_text_not_checked"' in output
 
 
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
@@ -3171,6 +3273,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert sorted(server.tools) == [
         "audit_context_library_before_tunnel",
         "audit_event_store_before_tunnel",
+        "closeout_discord_send_after_human_action",
         "get_context_passport_from_discord_url",
         "get_context_passport_from_visible_text",
         "get_fast_briefing",

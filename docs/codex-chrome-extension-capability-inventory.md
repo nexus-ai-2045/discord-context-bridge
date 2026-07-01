@@ -6,7 +6,7 @@
 
 このメモは、Codex Chrome 拡張で Discord を扱う時の「できること」と
 「やってよいこと」を分けるための棚卸しです。Chrome 拡張は広い操作能力を持つため、
-Discord では `read -> stage -> fill -> stop -> human send` を標準 envelope とします。
+Discord では `read -> stage -> fill -> stop -> human send -> closeout` を標準 envelope とします。
 
 ## 残すべきコンテキスト
 
@@ -16,10 +16,11 @@ Discord では `read -> stage -> fill -> stop -> human send` を標準 envelope 
 | context | 残す理由 | 保存してよい形 |
 |---|---|---|
 | Chrome 拡張 capability | 実行能力と許可操作を分けるため | capability map、allowed / forbidden action |
-| Discord send envelope | 下書き入力と実送信を混ぜないため | `read -> stage -> fill -> stop -> human send` |
+| Discord send envelope | 下書き入力と実送信を混ぜないため | `read -> stage -> fill -> stop -> human send -> closeout` |
 | `stage-discord-send` blockers | 自動化を止める理由を機械判定するため | blocker 名、status、safe label |
 | socket evidence | 誤タブ、誤入力欄、二重送信を検知するため | preflight / after navigation / pre-send の結果 |
 | human final boundary | 最後の Discord 通知発生を人間責務に固定するため | `outbound_actions=disabled`、human gate |
+| post-send closeout | 送信後の残務を本文なしで閉じるため | `human_sent_observed`、`human_reviewed`、text status |
 
 残さないものは raw Discord 本文、実参加者名、実 ID、token、cookie、local profile、
 local absolute path です。これらは public package の architecture context ではなく、
@@ -34,10 +35,10 @@ private adapter 側の一時入力として扱います。
 |---|---|---|
 | P0 | `stage-discord-send` packet schema を runner contract として固定 | schema test、README pointer、MCP tool |
 | P0 | Chrome 拡張 runner の preflight / after-navigation / pre-send dry-run check | `verify-chrome-fill-dry-run` の JSON report、CLI、MCP tool |
+| P0 | human final send 後の metadata-only closeout | `closeout-discord-send` の JSON report、CLI、MCP tool |
 | P0 | reply UI と通常 message box の selector drift 検知 | 一意に取れない時は `blocked` |
 | P2 | fill-only 実行の dry-run / smoke command | draft を入れずに対象判定だけ返す |
 | P2 | PR gate に forbidden action scan を追加 | `send_message` / `click_send_button` が allowed に混ざると fail |
-| P3 | human final send 後の任意 metadata-only closeout | 本文なしで `human_sent_observed` / `not_observed` |
 
 仕組み化の基準は、Chrome 拡張が「できる」ことを増やすことではなく、
 できる操作のうち Discord で「やってよい」範囲だけを機械的に狭めることです。
@@ -86,6 +87,11 @@ stop:
 
 human:
   - 最後の送信操作は人間が行う
+
+closeout:
+  - closeout-discord-send
+  - human_sent_observed と human_reviewed を確認
+  - 本文、URL、snowflake は出力しない
 ```
 
 ## `stage-discord-send` gate
@@ -136,6 +142,34 @@ blocked reason は次を含みます。
 | `draft_mismatch` | 入力予定 draft が copy block と一致しない |
 | `socket_pre_send_missing` | 送信前停止地点の socket ping が未確認 |
 
+## `closeout-discord-send` gate
+
+人間が Discord 側で最後の送信操作をした後、runner / agent は
+`closeout-discord-send` で残務を metadata-only に閉じます。この gate は
+実送信、編集、reaction、削除をしません。
+
+`closeout_status=closed` になる条件:
+
+- 任意で渡した staging packet が `discord_send_staging_packet.v1` で `ready_to_fill`
+- 任意で渡した dry-run report が `chrome_extension_fill_only_dry_run.v1` で `ready_to_fill`
+- `human_sent_observed=true`
+- `human_reviewed=true`
+- `observed_text_status` が `matches-copy-block` または `human-edited-and-reviewed`
+
+blocked reason は次を含みます。
+
+| blocker | 意味 |
+|---|---|
+| `staging_packet_not_ready` | stage 側が ready ではない |
+| `dry_run_not_ready` | Chrome 拡張 dry-run が ready ではない |
+| `human_send_not_observed` | 人間送信後の visible message を確認していない |
+| `human_review_not_confirmed` | 送信後の見え方を人間が確認していない |
+| `observed_text_not_checked` | 送信後本文状態が未確認 |
+| `invalid_observed_text_status` | text status が定義外 |
+
+出力は `observed_message_id_output=omitted`、`observed_url_output=omitted`、
+`raw_discord_text_output=omitted`、`text_returned=false` を維持します。
+
 ## Socket checks
 
 Chrome 拡張を使う時は、最低 3 点を evidence として残します。
@@ -168,4 +202,5 @@ scope_route: Discord Chrome extension fill-only / external_action none until hum
 [ ] pre-send socket ping が通った
 [ ] automation は送信ボタン手前で停止した
 [ ] final send は human 操作
+[ ] closeout-discord-send が closed
 ```
