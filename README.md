@@ -303,6 +303,22 @@ artifact には `final candidate`、`human gate`、`copy block`、`safety bounda
 が入ります。`copy block` は `ready` ならそのままコピー候補、`split` なら2分割
 まで、`blocked` なら3分割以上になるため短く編集してから再レビューします。
 
+Chrome 拡張で Discord の入力欄へ入れる前には、送信準備 packet を作れます。
+この packet は **下書き入力まで** を許可し、`Enter` 送信、送信ボタン click、
+reaction、edit、delete は禁止 action として返します。reply は message URL、
+mention は Discord URL と `@safe-label` を要求し、URL は出力しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  stage-discord-send \
+  --mode reply \
+  --target-url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --understanding-confirmed \
+  --draft "まず前提を確認してから返事します。" \
+  --json
+```
+
 判断結果を次の作業へ渡す時は、safe metadata だけを review registry に保存できます。
 保存されるのは gate 状態、copy block 状態、read scope、next action で、返信本文や
 Discord raw 本文は保存しません。
@@ -833,19 +849,21 @@ python3 -m pip install ".[mcp]"
 discord-context-bridge-mcp
 ```
 
-MCP tool は 9 つです。
+MCP tool は 10個です。
 
 - `import_visible_discord_text`: Discord の可視テキストを local event store に取り込みます。
 - `get_fast_briefing`: 直近文脈の短い briefing を返します。
 - `audit_event_store_before_tunnel`: tunnel 公開前に local event store の安全性を確認します。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
+- `stage_discord_send_before_human_action`: reply / mention の下書き入力準備 packet を返します。実送信はしません。
 - `guide_reply_from_visible_text`: Discord の可視テキストと返信 draft から会話ガイドを返します。
 - `get_context_passport_from_visible_text`: Discord の可視テキストからスレッド文脈パスポートを返します。
 - `upsert_context_library_entry`: サーバー/チャンネル/スレッド文脈をローカル文脈庫へ保存します。
 - `list_context_library_entries`: ローカル文脈庫の一覧を返します。本文は返さず summary だけ返します。
 - `audit_context_library_before_tunnel`: tunnel 公開前にローカル文脈庫の安全性を確認します。
 
-送信 tool はありません。返信は人間が Discord 側で送信する前提です。
+実送信 tool はありません。`stage_discord_send_before_human_action` は Chrome 拡張で
+下書き欄へ入れるための fill-only packet で、返信は人間が Discord 側で送信する前提です。
 
 `get_context_passport_from_visible_text` は `server_context`、`channel_context`、`thread_context` を受け取れます。
 各値には、サーバールール、チャンネル目的、スレッド固定文などのローカルで確認済みテキストを渡します。

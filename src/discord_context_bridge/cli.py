@@ -18,6 +18,7 @@ from .core import (
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
+    build_discord_send_staging_packet,
     build_handoff_packet,
     build_review_artifact_markdown,
     context_passport_from_text,
@@ -192,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
     draft_review.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     draft_review.set_defaults(handler=_cmd_review_intent)
+
+    stage_send = sub.add_parser("stage-discord-send", help="Discord 返信/メンションの下書き入力準備だけを作る")
+    stage_send.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
+    stage_send.add_argument("--mode", choices=["reply", "mention"], default="reply", help="返信として入れるか、メンション付き通常投稿として入れるか")
+    stage_send.add_argument("--target-url", required=True, help="対象 Discord URL。出力には表示しません")
+    stage_send.add_argument("--mention-label", default="", help="メンション運用時に人間が確認する表示名。例: @safe-label")
+    stage_send.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ準備を進める")
+    stage_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    stage_send.set_defaults(handler=_cmd_stage_discord_send)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
     guide.add_argument("--input", type=Path, help="読み込むテキストファイル")
@@ -550,6 +560,28 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
         print(f"- {action}")
     print(guide["send_capability_label"])
     return 0
+
+
+def _cmd_stage_discord_send(args: argparse.Namespace) -> int:
+    packet = build_discord_send_staging_packet(
+        args.draft,
+        load_events(args.store),
+        mode=args.mode,
+        target_url=args.target_url,
+        mention_label=args.mention_label,
+        understanding_confirmed=args.understanding_confirmed,
+    )
+    exit_code = 0 if packet["staging_status"] == "ready_to_fill" else 2
+    if args.json:
+        print(_json(packet))
+        return exit_code
+    print(packet["message"])
+    print(f"mode: {packet['mode']}")
+    print(f"staging_status: {packet['staging_status']}")
+    if packet["blockers"]:
+        print("blockers: " + " / ".join(packet["blockers"]))
+    print(packet["send_capability_label"])
+    return exit_code
 
 
 def read_visible_text_arg(args: argparse.Namespace) -> str:
