@@ -5,6 +5,8 @@
 ## 開始
 
 ねくが「Discordチェックしたい」と言ったら、コデたんはこの流れを開始する。
+`https://discord.com/channels/...` の Discord link だけが貼られた場合も同じ入口として扱い、
+汎用URL調査ではなく read-only の `discord-context-bridge` ingress へ route する。
 
 1. コデたんが Chrome で Discord を開く。
 2. ねくが Chrome 上で目的の場所へ移動する。
