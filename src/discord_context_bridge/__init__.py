@@ -34,6 +34,7 @@ from .core import (
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     "status_dashboard",
     "upsert_review_state",
     "upsert_context_document",
+    "verify_chrome_extension_fill_only_dry_run",
 ]

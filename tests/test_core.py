@@ -37,6 +37,7 @@ from discord_context_bridge import (
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 from discord_context_bridge import cli as cli_module
 from discord_context_bridge.cli import build_parser
@@ -371,7 +372,16 @@ def test_build_discord_send_staging_packet_prepares_reply_without_send():
     assert packet["browser_action"]["capability"] == "chrome_extension_fill_only"
     assert "stop_before_send_button" in packet["browser_action"]["allowed_actions"]
     assert "click_send_button" in packet["browser_action"]["forbidden_actions"]
+    assert not set(packet["browser_action"]["allowed_actions"]) & set(packet["browser_action"]["forbidden_actions"])
+    assert packet["stage_guard"] == {
+        "schema": "discord_fill_only_guard.v1",
+        "max_runner_action": "fill_draft_only",
+        "external_action": "none_until_human_send",
+        "stop_condition": "stop_before_send_button",
+        "human_send_required": True,
+    }
     assert packet["send_capability"] == "disabled"
+    assert packet["outbound_actions"] == "disabled"
     assert packet["target_url_output"] == "omitted"
     serialized = json.dumps(packet, ensure_ascii=False)
     assert "123456789012345678" not in serialized
@@ -404,6 +414,60 @@ def test_build_discord_send_staging_packet_blocks_unverified_mention():
 
     assert packet["staging_status"] == "blocked"
     assert "mention_label_required" in packet["blockers"]
+
+
+def test_verify_chrome_extension_fill_only_dry_run_allows_unique_reply_ui():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+
+    report = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+
+    assert report["schema"] == "chrome_extension_fill_only_dry_run.v1"
+    assert report["dry_run_status"] == "ready_to_fill"
+    assert report["fill_permitted"] is True
+    assert report["required_stop"] == "stop_before_send_button"
+    assert report["outbound_actions"] == "disabled"
+    assert "click_send_button" in report["forbidden_actions"]
+
+
+def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+
+    report = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        reply_ui_candidates=2,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+
+    assert report["dry_run_status"] == "blocked"
+    assert report["fill_permitted"] is False
+    assert "reply_ui_not_unique" in report["blockers"]
+    assert report["allowed_next_action"] == "fix_blockers"
 
 
 def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
@@ -1577,6 +1641,45 @@ def test_cli_stage_discord_send_outputs_fill_only_packet(tmp_path, capsys):
     assert '"staging_status": "ready_to_fill"' in output
     assert '"target_url_output": "omitted"' in output
     assert "123456789012345678" not in output
+    assert '"stage_guard": {' in output
+    assert '"external_action": "none_until_human_send"' in output
+    assert '"human_send_required": true' in output
+    assert '"outbound_actions": "disabled"' in output
+
+
+def test_cli_verify_chrome_fill_dry_run_blocks_ambiguous_reply_ui(tmp_path, capsys):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    packet_path = tmp_path / "staging-packet.json"
+    packet_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "verify-chrome-fill-dry-run",
+            "--staging-packet",
+            str(packet_path),
+            "--socket-preflight",
+            "--target-url-verified",
+            "--socket-after-navigation",
+            "--reply-ui-candidates",
+            "2",
+            "--draft-matches-copy-block",
+            "--socket-pre-send",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"schema": "chrome_extension_fill_only_dry_run.v1"' in output
+    assert '"dry_run_status": "blocked"' in output
+    assert '"reply_ui_not_unique"' in output
     assert '"outbound_actions": "disabled"' in output
 
 
@@ -3080,6 +3183,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "snapshot_discord_url_text",
         "stage_discord_send_before_human_action",
         "upsert_context_library_entry",
+        "verify_chrome_extension_fill_only_before_action",
     ]
 
     imported = server.tools["import_visible_discord_text"]("member-a: 前提を確認したいです", dry_run=True)

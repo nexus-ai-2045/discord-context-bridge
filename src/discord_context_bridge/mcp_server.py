@@ -21,6 +21,7 @@ from .core import (
     review_reply_intent,
     snapshot_visible_text,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 
 MCP_DEPENDENCY_HELP = (
@@ -121,6 +122,29 @@ def build_server(
             target_url=target_url,
             mention_label=mention_label,
             understanding_confirmed=understanding_confirmed,
+        )
+
+    @server.tool()
+    def verify_chrome_extension_fill_only_before_action(
+        staging_packet: dict[str, Any],
+        socket_preflight: bool = False,
+        target_url_verified: bool = False,
+        socket_after_navigation: bool = False,
+        reply_ui_candidates: int = 0,
+        message_box_candidates: int = 0,
+        draft_matches_copy_block: bool = False,
+        socket_pre_send: bool = False,
+    ) -> dict[str, Any]:
+        """Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。"""
+        return verify_chrome_extension_fill_only_dry_run(
+            staging_packet,
+            socket_preflight=socket_preflight,
+            target_url_verified=target_url_verified,
+            socket_after_navigation=socket_after_navigation,
+            reply_ui_candidates=reply_ui_candidates,
+            message_box_candidates=message_box_candidates,
+            draft_matches_copy_block=draft_matches_copy_block,
+            socket_pre_send=socket_pre_send,
         )
 
     @server.tool()

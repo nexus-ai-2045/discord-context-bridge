@@ -33,8 +33,8 @@ private adapter 側の一時入力として扱います。
 | priority | mechanism | done shape |
 |---|---|---|
 | P0 | `stage-discord-send` packet schema を runner contract として固定 | schema test、README pointer、MCP tool |
-| P1 | Chrome 拡張 runner の preflight / after-navigation / pre-send check | `socket_checks` の JSON report |
-| P1 | reply UI と通常 message box の selector drift 検知 | 一意に取れない時は `blocked` |
+| P0 | Chrome 拡張 runner の preflight / after-navigation / pre-send dry-run check | `verify-chrome-fill-dry-run` の JSON report、CLI、MCP tool |
+| P0 | reply UI と通常 message box の selector drift 検知 | 一意に取れない時は `blocked` |
 | P2 | fill-only 実行の dry-run / smoke command | draft を入れずに対象判定だけ返す |
 | P2 | PR gate に forbidden action scan を追加 | `send_message` / `click_send_button` が allowed に混ざると fail |
 | P3 | human final send 後の任意 metadata-only closeout | 本文なしで `human_sent_observed` / `not_observed` |
@@ -74,6 +74,7 @@ stage:
   - blockers が空であることを確認
 
 fill:
+  - verify-chrome-fill-dry-run
   - reply UI または message box を一意に確認
   - draft を入力
   - socket_pre_send_ping
@@ -106,6 +107,34 @@ blocked reason は、少なくとも次のように分けます。
 | `mention_target_discord_url_required` | メンション投稿先 URL がない |
 | `mention_label_required` | 人間確認済みの `@safe-label` がない |
 | `unsupported_mode` | `reply` / `mention` 以外の mode |
+
+## `verify-chrome-fill-dry-run` gate
+
+`stage-discord-send` のあと、Chrome 拡張 runner は下書き入力前に
+`verify-chrome-fill-dry-run` を通します。これは実入力ではなく、観測結果だけを
+検査する gate です。
+
+`dry_run_status=ready_to_fill` になる条件:
+
+- staging packet が `discord_send_staging_packet.v1` で `ready_to_fill`
+- `socket_preflight=true`
+- `target_url_verified=true`
+- `socket_after_navigation=true`
+- `mode=reply` では `reply_ui_candidates=1`
+- `mode=mention` では `message_box_candidates=1`
+- `draft_matches_copy_block=true`
+- `socket_pre_send=true`
+
+blocked reason は次を含みます。
+
+| blocker | 意味 |
+|---|---|
+| `staging_packet_not_ready` | stage 側の blocker が残っている |
+| `target_url_not_verified` | 対象 Discord URL と表示中 URL が一致しない |
+| `reply_ui_not_found` / `reply_ui_not_unique` | reply UI が 0 件または複数件 |
+| `message_box_not_found` / `message_box_not_unique` | 通常入力欄が 0 件または複数件 |
+| `draft_mismatch` | 入力予定 draft が copy block と一致しない |
+| `socket_pre_send_missing` | 送信前停止地点の socket ping が未確認 |
 
 ## Socket checks
 
