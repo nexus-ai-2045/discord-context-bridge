@@ -76,6 +76,8 @@ public core に本文取得 route を戻さない。
 - private adapter から受け取る stdout contract
 - blocker の分類名
 - 永続化前に pseudonymize された参加者 alias と `text_snippet="omitted"`
+- snapshot の source kind / acquisition context / report acquisition context
+- `raw_text_returned=false` を満たす metadata-only latest report
 
 保存しないもの:
 
@@ -86,6 +88,10 @@ public core に本文取得 route を戻さない。
 - local absolute path
 - token、cookie、webhook、browser profile
 - 実会話のスクリーンショット
+
+`source_kind=Chrome DOM` は、保存済み snapshot の取得元を表す metadata です。
+`report-latest` の実行時に Chrome 接続、DOM 再取得、新規 capture をしたことは意味しません。
+その区別は `report_acquisition_context.mode=existing_saved_snapshot` として出力します。
 
 ## 最小E2E
 
