@@ -21,6 +21,7 @@ import e2e_private_adapter_check
 import codex_discord_ingress_smoke
 import live_ops_smoke
 import live_mvp_status
+import ops_check
 import ops_preflight
 import route_timing_log
 import fixture_13_step_e2e
@@ -768,7 +769,15 @@ def test_route_retry_decider_local_command_timeout_kills_process_group():
     assert result["failure_stage"] == "timeout"
     assert result["returncode"] == 124
     assert result["elapsed_ms"] < 1000
+    assert result["cleanup_elapsed_ms"] >= 0
     assert result["text_output"] == "omitted"
+
+
+def test_ops_check_accepts_explicit_skip_http_flag():
+    args = ops_check.parse_args(["--skip-http"])
+
+    assert args.skip_http is True
+    assert args.http is False
 
 
 def test_route_retry_decider_uses_gateway_without_leaking_text(tmp_path: Path):
