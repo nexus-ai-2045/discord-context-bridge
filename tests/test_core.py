@@ -10,6 +10,7 @@ import pytest
 from discord_context_bridge import (
     DisabledCapability,
     DiscordEvent,
+    acquisition_context_for_source,
     append_event,
     audit_context_store,
     audit_event_store,
@@ -17,6 +18,7 @@ from discord_context_bridge import (
     build_discord_send_staging_packet,
     build_handoff_packet,
     build_human_gate,
+    build_latest_snapshot_report,
     build_review_artifact_markdown,
     context_passport_from_text,
     fast_briefing,
@@ -157,6 +159,88 @@ def test_snapshot_visible_text_saves_changed_content_only(tmp_path):
     assert second["saved"] is False
     assert second["snapshot_count_for_target"] == 1
     assert load_text_snapshots(snapshot_store)[0]["private_local_only"] is True
+
+
+def test_snapshot_visible_text_saves_acquisition_context(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+
+    snapshot_visible_text(
+        text="member-a: visible hello",
+        url="https://discord.com/channels/1/2/3",
+        source="chrome_extension_dom",
+        path=snapshot_store,
+    )
+    stored = load_text_snapshots(snapshot_store)[0]
+
+    assert stored["acquisition_context"]["source_kind"] == "Chrome DOM"
+    assert stored["acquisition_context"]["capture_method"] == "chrome_dom_visible_range"
+    assert stored["acquisition_context"]["live_browser_access_required_for_capture"] is True
+    assert stored["acquisition_context"]["token_or_cookie_read"] is False
+
+
+def test_build_latest_snapshot_report_is_metadata_only_by_default(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    secret_text = "member-a: private launch wording should not leak"
+    snapshot_visible_text(
+        text=secret_text,
+        url="https://discord.com/channels/1/2/3",
+        source="chrome_extension_dom",
+        path=snapshot_store,
+    )
+
+    report = build_latest_snapshot_report(path=snapshot_store)
+    encoded = json.dumps(report, ensure_ascii=False)
+
+    assert report["ok"] is True
+    assert report["raw_text_returned"] is False
+    assert report["participant_names_returned"] is False
+    assert report["local_paths_returned"] is False
+    assert report["latest_saved_or_visible_message"]["speaker"] == "omitted"
+    assert report["latest_saved_or_visible_message"]["body_evidence"]["preview"] == "omitted"
+    assert report["source_summary"]["source_kind"] == "Chrome DOM"
+    assert report["source_summary"]["stored_acquisition_context"]["live_browser_access_required_for_capture"] is True
+    assert report["source_summary"]["report_acquisition_context"]["mode"] == "existing_saved_snapshot"
+    assert report["source_summary"]["report_acquisition_context"]["live_browser_access"] is False
+    assert report["source_summary"]["report_acquisition_context"]["new_capture"] is False
+    assert "private launch wording" not in encoded
+    assert "member-a" not in encoded
+    assert str(snapshot_store) not in encoded
+
+
+def test_build_latest_snapshot_report_can_include_bounded_preview(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_visible_text(
+        text="member-a: short local-only preview source",
+        url="https://discord.com/channels/1/2/3",
+        source="visible_text",
+        path=snapshot_store,
+    )
+
+    report = build_latest_snapshot_report(path=snapshot_store, include_preview=True)
+    evidence = report["latest_saved_or_visible_message"]["body_evidence"]
+
+    assert report["raw_text_returned"] is False
+    assert evidence["full_content_returned"] is False
+    assert evidence["preview_returned"] is True
+    assert evidence["preview_char_count"] <= 24
+    assert evidence["preview"] == "member-a: short local-on"
+    assert "source" not in evidence["preview"]
+
+
+def test_build_latest_snapshot_report_missing_snapshot_is_safe(tmp_path):
+    report = build_latest_snapshot_report(path=tmp_path / "missing.ndjson")
+
+    assert report["ok"] is False
+    assert report["reason"] == "snapshot_missing"
+    assert report["raw_text_returned"] is False
+    assert report["report_acquisition_context"]["mode"] == "existing_saved_snapshot"
+    assert report["report_acquisition_context"]["live_browser_access"] is False
+
+
+def test_acquisition_context_for_source_classifies_local_routes():
+    assert acquisition_context_for_source("discord_app_cache")["source_kind"] == "cache"
+    assert acquisition_context_for_source("source-command")["capture_method"] == "local_source_command_stdout"
+    assert acquisition_context_for_source("clipboard")["private_adapter_required_for_capture"] is False
 
 
 def test_audit_event_store_reports_safe_empty_store(tmp_path):
@@ -778,6 +862,7 @@ def test_cli_help_uses_japanese_user_facing_text():
     assert "audit-store" in help_text
     assert "ops-view" in help_text
     assert "status-dashboard" in help_text
+    assert "report-latest" in help_text
     assert "import-clipboard" in help_text
     assert "guide-reply" in help_text
     assert "context-passport" in help_text
@@ -811,6 +896,38 @@ def test_cli_status_dashboard_outputs_safe_json(tmp_path, capsys):
     assert "Can you clarify" not in output
     assert "member-a" not in output
     assert str(tmp_path) not in output
+
+
+def test_cli_report_latest_outputs_safe_json(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_visible_text(
+        text="member-a: private launch wording should not leak",
+        url="https://discord.com/channels/1/2/3",
+        source="chrome_extension_dom",
+        path=snapshot_store,
+    )
+
+    result = cli_main(
+        [
+            "report-latest",
+            "--snapshot-store",
+            str(snapshot_store),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["schema"] == "discord_bridge_latest_snapshot_report.v1"
+    assert payload["raw_text_returned"] is False
+    assert payload["source_summary"]["source_kind"] == "Chrome DOM"
+    assert payload["source_summary"]["report_acquisition_context"]["mode"] == "existing_saved_snapshot"
+    assert payload["source_summary"]["report_acquisition_context"]["live_browser_access"] is False
+    assert payload["source_summary"]["report_acquisition_context"]["new_capture"] is False
+    assert str(snapshot_store) not in output
+    assert "private launch wording" not in output
+    assert "member-a" not in output
 
 
 def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(tmp_path, capsys):
