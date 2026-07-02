@@ -10,6 +10,7 @@ from .core import (
     audit_event_store,
     build_copy_block,
     build_final_candidate,
+    build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_human_gate,
     build_handoff_packet,
@@ -37,6 +38,7 @@ from .core import (
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 
 __all__ = [
@@ -51,6 +53,7 @@ __all__ = [
     "audit_event_store",
     "build_copy_block",
     "build_final_candidate",
+    "build_discord_post_send_closeout_packet",
     "build_discord_send_staging_packet",
     "build_human_gate",
     "build_handoff_packet",
@@ -78,4 +81,5 @@ __all__ = [
     "status_dashboard",
     "upsert_review_state",
     "upsert_context_document",
+    "verify_chrome_extension_fill_only_dry_run",
 ]

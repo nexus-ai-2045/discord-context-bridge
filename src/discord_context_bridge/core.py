@@ -1638,6 +1638,35 @@ DISCORD_MESSAGE_URL_RE = re.compile(
 DISCORD_CHANNEL_URL_RE = re.compile(
     r"^https://discord(?:app)?\.com/channels/(?P<guild>\d{17,20})/(?P<channel>\d{17,20})(?:\?.*)?$"
 )
+DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS = (
+    "press_enter_to_send",
+    "click_send_button",
+    "send_message",
+    "react",
+    "edit",
+    "delete",
+)
+
+
+def _enforce_discord_fill_only_guard(packet: dict[str, Any]) -> dict[str, Any]:
+    browser_action = packet.get("browser_action") or {}
+    allowed_actions = set(browser_action.get("allowed_actions") or [])
+    forbidden_actions = set(browser_action.get("forbidden_actions") or [])
+    overlap = sorted(allowed_actions & forbidden_actions)
+    if overlap:
+        raise RuntimeError(f"stage-discord-send fill-only guard conflict: {', '.join(overlap)}")
+    if not set(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS).issubset(forbidden_actions):
+        raise RuntimeError("stage-discord-send fill-only guard is missing forbidden send actions")
+    if browser_action.get("capability") != "chrome_extension_fill_only":
+        raise RuntimeError("stage-discord-send must remain chrome_extension_fill_only")
+    if "stop_before_send_button" not in allowed_actions:
+        raise RuntimeError("stage-discord-send must stop before the send button")
+    guard = packet.get("stage_guard") or {}
+    if guard.get("external_action") != "none_until_human_send" or guard.get("human_send_required") is not True:
+        raise RuntimeError("stage-discord-send external action boundary is not fill-only")
+    if packet.get("send_capability") != "disabled" or packet.get("outbound_actions") != "disabled":
+        raise RuntimeError("stage-discord-send cannot enable outbound actions")
+    return packet
 
 
 def build_discord_send_staging_packet(
@@ -1691,7 +1720,7 @@ def build_discord_send_staging_packet(
     elif normalized_mode == "mention":
         browser_steps.extend(["focus_message_box", "insert_human_verified_mention_then_draft"])
     browser_steps.extend(["socket_pre_send_ping", "stop_before_send_button"])
-    return {
+    packet = {
         "schema": "discord_send_staging_packet.v1",
         "language": DEFAULT_LANGUAGE,
         "message": "Discord 送信準備パケットを作成しました。" if staging_status == "ready_to_fill" else "Discord 送信準備は gate で停止しました。",
@@ -1710,9 +1739,16 @@ def build_discord_send_staging_packet(
         "browser_action": {
             "capability": "chrome_extension_fill_only",
             "allowed_actions": browser_steps,
-            "forbidden_actions": ["press_enter_to_send", "click_send_button", "send_message", "react", "edit", "delete"],
+            "forbidden_actions": list(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS),
             "socket_checks": ["preflight", "after_navigation", "pre_send"],
             "double_submit_guard": "stop_before_send_button",
+        },
+        "stage_guard": {
+            "schema": "discord_fill_only_guard.v1",
+            "max_runner_action": "fill_draft_only",
+            "external_action": "none_until_human_send",
+            "stop_condition": "stop_before_send_button",
+            "human_send_required": True,
         },
         "human_gate": {
             "schema": "discord_send_human_gate.v1",
@@ -1726,6 +1762,164 @@ def build_discord_send_staging_packet(
         "send_capability_label": "この packet は下書き入力までです。Discord 送信は人間が最後に実行してください。",
         "outbound_actions": "disabled",
         "raw_discord_text_output": "omitted",
+    }
+    return _enforce_discord_fill_only_guard(packet)
+
+
+def verify_chrome_extension_fill_only_dry_run(
+    staging_packet: dict[str, Any],
+    *,
+    socket_preflight: bool = False,
+    target_url_verified: bool = False,
+    socket_after_navigation: bool = False,
+    reply_ui_candidates: int = 0,
+    message_box_candidates: int = 0,
+    draft_matches_copy_block: bool = False,
+    socket_pre_send: bool = False,
+) -> dict[str, Any]:
+    """Validate browser observations before a Chrome runner may fill a draft.
+
+    A ready staging packet only proves that the draft and safe metadata passed
+    the send-prep gate. This dry-run gate proves the visible browser surface is
+    also narrow enough to fill without sending.
+    """
+    mode = str(staging_packet.get("mode") or "").strip().casefold()
+    blockers: list[str] = []
+    if staging_packet.get("schema") != "discord_send_staging_packet.v1":
+        blockers.append("invalid_staging_packet")
+    if staging_packet.get("staging_status") != "ready_to_fill":
+        blockers.append("staging_packet_not_ready")
+    if not socket_preflight:
+        blockers.append("socket_preflight_missing")
+    if not target_url_verified:
+        blockers.append("target_url_not_verified")
+    if not socket_after_navigation:
+        blockers.append("socket_after_navigation_missing")
+    if mode == "reply":
+        if reply_ui_candidates < 1:
+            blockers.append("reply_ui_not_found")
+        elif reply_ui_candidates > 1:
+            blockers.append("reply_ui_not_unique")
+    elif mode == "mention":
+        if message_box_candidates < 1:
+            blockers.append("message_box_not_found")
+        elif message_box_candidates > 1:
+            blockers.append("message_box_not_unique")
+    else:
+        blockers.append("unsupported_mode")
+    if not draft_matches_copy_block:
+        blockers.append("draft_mismatch")
+    if not socket_pre_send:
+        blockers.append("socket_pre_send_missing")
+
+    dry_run_status = "ready_to_fill" if not blockers else "blocked"
+    return {
+        "schema": "chrome_extension_fill_only_dry_run.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Chrome 拡張 fill-only dry-run は入力可能です。"
+        if dry_run_status == "ready_to_fill"
+        else "Chrome 拡張 fill-only dry-run は gate で停止しました。",
+        "dry_run_status": dry_run_status,
+        "fill_permitted": dry_run_status == "ready_to_fill",
+        "blockers": blockers,
+        "observed": {
+            "socket_preflight": socket_preflight,
+            "target_url_verified": target_url_verified,
+            "socket_after_navigation": socket_after_navigation,
+            "reply_ui_candidates": reply_ui_candidates,
+            "message_box_candidates": message_box_candidates,
+            "draft_matches_copy_block": draft_matches_copy_block,
+            "socket_pre_send": socket_pre_send,
+        },
+        "required_stop": "stop_before_send_button",
+        "allowed_next_action": "fill_draft_then_stop" if dry_run_status == "ready_to_fill" else "fix_blockers",
+        "forbidden_actions": list(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS),
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def build_discord_post_send_closeout_packet(
+    *,
+    staging_packet: dict[str, Any] | None = None,
+    dry_run_report: dict[str, Any] | None = None,
+    human_sent_observed: bool = False,
+    human_reviewed: bool = False,
+    observed_text_status: str = "not_checked",
+    observed_message_id: str = "",
+    observed_url: str = "",
+    note_label: str = "",
+) -> dict[str, Any]:
+    """Build a metadata-only closeout after the human performs final send.
+
+    This records only state transitions. It never returns Discord body text,
+    message URLs, or snowflake values.
+    """
+    normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
+    allowed_text_statuses = {
+        "matches_copy_block",
+        "human_edited_and_reviewed",
+        "not_checked",
+    }
+    blockers: list[str] = []
+    if staging_packet is not None:
+        if (
+            staging_packet.get("schema") != "discord_send_staging_packet.v1"
+            or staging_packet.get("staging_status") != "ready_to_fill"
+        ):
+            blockers.append("staging_packet_not_ready")
+    if dry_run_report is not None:
+        if (
+            dry_run_report.get("schema") != "chrome_extension_fill_only_dry_run.v1"
+            or dry_run_report.get("dry_run_status") != "ready_to_fill"
+            or dry_run_report.get("fill_permitted") is not True
+        ):
+            blockers.append("dry_run_not_ready")
+    if not human_sent_observed:
+        blockers.append("human_send_not_observed")
+    if not human_reviewed:
+        blockers.append("human_review_not_confirmed")
+    if normalized_text_status not in allowed_text_statuses:
+        blockers.append("invalid_observed_text_status")
+    elif normalized_text_status == "not_checked":
+        blockers.append("observed_text_not_checked")
+
+    closeout_status = "closed" if not blockers else "blocked"
+    if closeout_status == "closed":
+        recommended_next_state = "done"
+    elif "human_send_not_observed" in blockers:
+        recommended_next_state = "verify_visible_message"
+    elif "human_review_not_confirmed" in blockers:
+        recommended_next_state = "human_review_required"
+    else:
+        recommended_next_state = "fix_blockers"
+    return {
+        "schema": "discord_post_send_closeout_packet.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 送信後 closeout は完了しました。"
+        if closeout_status == "closed"
+        else "Discord 送信後 closeout は gate で停止しました。",
+        "closeout_status": closeout_status,
+        "blockers": blockers,
+        "human_sent_observed": human_sent_observed,
+        "human_reviewed": human_reviewed,
+        "observed_text_status": normalized_text_status,
+        "observed_message_id_output": "omitted" if observed_message_id else "not_provided",
+        "observed_url_output": "omitted" if observed_url else "not_provided",
+        "note_label_output": redact_artifact_text(note_label) if note_label else "",
+        "staging_packet_status": str(staging_packet.get("staging_status") or "provided")
+        if staging_packet is not None
+        else "not_provided",
+        "dry_run_status": str(dry_run_report.get("dry_run_status") or "provided")
+        if dry_run_report is not None
+        else "not_provided",
+        "recommended_next_state": recommended_next_state,
+        "text_returned": False,
+        "raw_discord_text_output": "omitted",
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+        "send_capability_label": "この closeout は送信後 metadata の確認だけです。Discord への操作は実行しません。",
     }
 
 
