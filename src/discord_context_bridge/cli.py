@@ -19,6 +19,7 @@ from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
     audit_event_store,
+    build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_handoff_packet,
     build_latest_snapshot_report,
@@ -37,6 +38,7 @@ from .core import (
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 
 
@@ -212,6 +214,35 @@ def build_parser() -> argparse.ArgumentParser:
     stage_send.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ準備を進める")
     stage_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     stage_send.set_defaults(handler=_cmd_stage_discord_send)
+
+    chrome_fill = sub.add_parser("verify-chrome-fill-dry-run", help="Chrome 拡張 fill-only 実行前の観測結果を検査する")
+    chrome_fill.add_argument("--staging-packet", type=Path, required=True, help="stage-discord-send が出した JSON packet")
+    chrome_fill.add_argument("--socket-preflight", action="store_true", help="Chrome 拡張 socket preflight が通った")
+    chrome_fill.add_argument("--target-url-verified", action="store_true", help="対象 URL が一致した")
+    chrome_fill.add_argument("--socket-after-navigation", action="store_true", help="遷移後 socket / DOM 確認が通った")
+    chrome_fill.add_argument("--reply-ui-candidates", type=int, default=0, help="検出した reply UI 候補数")
+    chrome_fill.add_argument("--message-box-candidates", type=int, default=0, help="検出した通常 message box 候補数")
+    chrome_fill.add_argument("--draft-matches-copy-block", action="store_true", help="入力予定 draft が copy block と一致した")
+    chrome_fill.add_argument("--socket-pre-send", action="store_true", help="送信前停止地点で socket ping が通った")
+    chrome_fill.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    chrome_fill.set_defaults(handler=_cmd_verify_chrome_fill_dry_run)
+
+    closeout_send = sub.add_parser("closeout-discord-send", help="人間送信後の metadata-only closeout を確認する")
+    closeout_send.add_argument("--staging-packet", type=Path, help="任意: stage-discord-send が出した JSON packet")
+    closeout_send.add_argument("--dry-run-report", type=Path, help="任意: verify-chrome-fill-dry-run が出した JSON report")
+    closeout_send.add_argument("--human-sent-observed", action="store_true", help="Discord 上で人間送信済み message を確認した")
+    closeout_send.add_argument("--human-reviewed", action="store_true", help="送信後の見え方を人間が確認済み")
+    closeout_send.add_argument(
+        "--observed-text-status",
+        choices=["matches-copy-block", "human-edited-and-reviewed", "not-checked"],
+        default="not-checked",
+        help="送信後本文の安全な状態ラベル。本文は出力しません",
+    )
+    closeout_send.add_argument("--observed-message-id", default="", help="任意: 確認した message id。出力には表示しません")
+    closeout_send.add_argument("--observed-url", default="", help="任意: 確認した Discord URL。出力には表示しません")
+    closeout_send.add_argument("--note-label", default="", help="任意: closeout 用の短い安全ラベル")
+    closeout_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    closeout_send.set_defaults(handler=_cmd_closeout_discord_send)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
     guide.add_argument("--input", type=Path, help="読み込むテキストファイル")
@@ -617,6 +648,55 @@ def _cmd_stage_discord_send(args: argparse.Namespace) -> int:
     print(packet["message"])
     print(f"mode: {packet['mode']}")
     print(f"staging_status: {packet['staging_status']}")
+    if packet["blockers"]:
+        print("blockers: " + " / ".join(packet["blockers"]))
+    print(packet["send_capability_label"])
+    return exit_code
+
+
+def _cmd_verify_chrome_fill_dry_run(args: argparse.Namespace) -> int:
+    packet = json.loads(args.staging_packet.read_text(encoding="utf-8"))
+    report = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=args.socket_preflight,
+        target_url_verified=args.target_url_verified,
+        socket_after_navigation=args.socket_after_navigation,
+        reply_ui_candidates=args.reply_ui_candidates,
+        message_box_candidates=args.message_box_candidates,
+        draft_matches_copy_block=args.draft_matches_copy_block,
+        socket_pre_send=args.socket_pre_send,
+    )
+    exit_code = 0 if report["dry_run_status"] == "ready_to_fill" else 2
+    if args.json:
+        print(_json(report))
+        return exit_code
+    print(report["message"])
+    print(f"dry_run_status: {report['dry_run_status']}")
+    if report["blockers"]:
+        print("blockers: " + " / ".join(report["blockers"]))
+    print(report["send_capability_label"])
+    return exit_code
+
+
+def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
+    staging_packet = json.loads(args.staging_packet.read_text(encoding="utf-8")) if args.staging_packet else None
+    dry_run_report = json.loads(args.dry_run_report.read_text(encoding="utf-8")) if args.dry_run_report else None
+    packet = build_discord_post_send_closeout_packet(
+        staging_packet=staging_packet,
+        dry_run_report=dry_run_report,
+        human_sent_observed=args.human_sent_observed,
+        human_reviewed=args.human_reviewed,
+        observed_text_status=args.observed_text_status,
+        observed_message_id=args.observed_message_id,
+        observed_url=args.observed_url,
+        note_label=args.note_label,
+    )
+    exit_code = 0 if packet["closeout_status"] == "closed" else 2
+    if args.json:
+        print(_json(packet))
+        return exit_code
+    print(packet["message"])
+    print(f"closeout_status: {packet['closeout_status']}")
     if packet["blockers"]:
         print("blockers: " + " / ".join(packet["blockers"]))
     print(packet["send_capability_label"])

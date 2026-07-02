@@ -127,6 +127,17 @@ reply UI / message box への下書き入力、pre-send ping、`stop_before_send
 までを許可します。`Enter` 送信、送信ボタン click、reaction、edit、delete は
 常に禁止です。実際に Discord 通知を発生させる最後の操作は human の責任範囲です。
 
+`stage-discord-send` が `ready_to_fill` でも、実際の Chrome 拡張 runner は
+`verify-chrome-fill-dry-run` を先に通します。この dry-run は Socket、対象 URL、
+遷移後 DOM、入力予定 draft と copy block の一致、pre-send ping を確認し、
+reply UI / message box が一意に取れない時は `blocked` で停止します。
+reply UI が 0 件または複数件の場合、通常 message box へ fallback しません。
+
+人間が最後の Discord 送信操作をした後は `closeout-discord-send` で
+metadata-only に閉じます。この closeout は `human_sent_observed`、
+`human_reviewed`、`observed_text_status` だけを状態として返し、本文、URL、
+snowflake は出力しません。`not-checked` のままでは `blocked` です。
+
 ## やらないこと
 
 - Discord へ送信しない。

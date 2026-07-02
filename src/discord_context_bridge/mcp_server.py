@@ -9,6 +9,7 @@ from .core import (
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
+    build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     context_passport_from_text,
     fast_briefing,
@@ -21,6 +22,7 @@ from .core import (
     review_reply_intent,
     snapshot_visible_text,
     upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
 )
 
 MCP_DEPENDENCY_HELP = (
@@ -121,6 +123,52 @@ def build_server(
             target_url=target_url,
             mention_label=mention_label,
             understanding_confirmed=understanding_confirmed,
+        )
+
+    @server.tool()
+    def verify_chrome_extension_fill_only_before_action(
+        staging_packet: dict[str, Any],
+        socket_preflight: bool = False,
+        target_url_verified: bool = False,
+        socket_after_navigation: bool = False,
+        reply_ui_candidates: int = 0,
+        message_box_candidates: int = 0,
+        draft_matches_copy_block: bool = False,
+        socket_pre_send: bool = False,
+    ) -> dict[str, Any]:
+        """Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。"""
+        return verify_chrome_extension_fill_only_dry_run(
+            staging_packet,
+            socket_preflight=socket_preflight,
+            target_url_verified=target_url_verified,
+            socket_after_navigation=socket_after_navigation,
+            reply_ui_candidates=reply_ui_candidates,
+            message_box_candidates=message_box_candidates,
+            draft_matches_copy_block=draft_matches_copy_block,
+            socket_pre_send=socket_pre_send,
+        )
+
+    @server.tool()
+    def closeout_discord_send_after_human_action(
+        staging_packet: dict[str, Any] | None = None,
+        dry_run_report: dict[str, Any] | None = None,
+        human_sent_observed: bool = False,
+        human_reviewed: bool = False,
+        observed_text_status: str = "not_checked",
+        observed_message_id: str = "",
+        observed_url: str = "",
+        note_label: str = "",
+    ) -> dict[str, Any]:
+        """人間送信後の状態を metadata-only で閉じます。本文、URL、snowflake は返しません。"""
+        return build_discord_post_send_closeout_packet(
+            staging_packet=staging_packet,
+            dry_run_report=dry_run_report,
+            human_sent_observed=human_sent_observed,
+            human_reviewed=human_reviewed,
+            observed_text_status=observed_text_status,
+            observed_message_id=observed_message_id,
+            observed_url=observed_url,
+            note_label=note_label,
         )
 
     @server.tool()
