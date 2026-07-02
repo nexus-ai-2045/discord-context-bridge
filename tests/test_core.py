@@ -1087,6 +1087,27 @@ def test_ops_check_secret_scan_allows_windows_style_fixture_paths(monkeypatch):
     assert "想定外の一致" not in result.output
 
 
+def test_report_latest_smoke_verifies_metadata_only_contract():
+    report_latest_smoke = load_script_module("report_latest_smoke", ROOT / "scripts" / "report_latest_smoke.py")
+
+    report = report_latest_smoke.build_report()
+
+    assert report["ok"] is True
+    assert report["failure_stage"] is None
+    assert report["raw_text_returned"] is False
+    assert report["live_browser_access"] is False
+    assert report["new_capture"] is False
+
+
+def test_ops_check_includes_report_latest_smoke():
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    args = ops_check.parse_args([])
+
+    checks = ops_check.build_checks(args)
+
+    assert "report-latest smoke" in checks
+
+
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):
     result = cli_main(
         [
