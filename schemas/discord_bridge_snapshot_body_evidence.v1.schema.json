@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/discord_bridge_snapshot_body_evidence.v1.schema.json",
+  "title": "Discord Bridge snapshot body evidence",
+  "type": "object",
+  "required": [
+    "schema",
+    "raw_text_returned",
+    "full_content_returned",
+    "preview_returned",
+    "preview",
+    "preview_char_count",
+    "char_count",
+    "line_count",
+    "content_hash"
+  ],
+  "properties": {
+    "schema": {
+      "const": "discord_bridge_snapshot_body_evidence.v1"
+    },
+    "raw_text_returned": {
+      "const": false
+    },
+    "full_content_returned": {
+      "const": false
+    },
+    "preview_returned": {
+      "type": "boolean"
+    },
+    "preview": {
+      "type": "string"
+    },
+    "preview_char_count": {
+      "type": "integer"
+    },
+    "char_count": {
+      "type": "integer"
+    },
+    "line_count": {
+      "type": "integer"
+    },
+    "content_hash": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
