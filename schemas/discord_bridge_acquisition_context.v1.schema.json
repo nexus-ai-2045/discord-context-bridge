@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/discord_bridge_acquisition_context.v1.schema.json",
+  "title": "Discord Bridge acquisition context",
+  "type": "object",
+  "required": [
+    "schema",
+    "source_kind",
+    "source_route",
+    "record_origin",
+    "capture_method",
+    "token_or_cookie_read",
+    "outbound_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "discord_bridge_acquisition_context.v1"
+    },
+    "source_kind": {
+      "type": "string"
+    },
+    "source_route": {
+      "type": "string"
+    },
+    "record_origin": {
+      "const": "local_visible_text_snapshot"
+    },
+    "capture_method": {
+      "type": "string"
+    },
+    "live_browser_access_required_for_capture": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "private_adapter_required_for_capture": {
+      "type": "boolean"
+    },
+    "token_or_cookie_read": {
+      "const": false
+    },
+    "outbound_actions": {
+      "const": "disabled"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1220,6 +1220,20 @@ def test_report_latest_smoke_verifies_metadata_only_contract():
     assert report["new_capture"] is False
 
 
+def test_report_latest_schema_check_verifies_public_contract():
+    load_script_module("report_latest_smoke", ROOT / "scripts" / "report_latest_smoke.py")
+    report_latest_schema_check = load_script_module(
+        "report_latest_schema_check",
+        ROOT / "scripts" / "report_latest_schema_check.py",
+    )
+
+    report = report_latest_schema_check.build_report()
+
+    assert report["ok"] is True
+    assert report["failure_stage"] is None
+    assert report["validated_schema_count"] == 4
+
+
 def test_ops_check_includes_report_latest_smoke():
     ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
     args = ops_check.parse_args([])
@@ -1227,6 +1241,7 @@ def test_ops_check_includes_report_latest_smoke():
     checks = ops_check.build_checks(args)
 
     assert "report-latest smoke" in checks
+    assert "report-latest schema" in checks
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):
