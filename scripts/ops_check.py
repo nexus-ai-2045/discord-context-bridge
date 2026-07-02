@@ -133,6 +133,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/report_latest_smoke.py", "--json"],
             env=env,
         ),
+        "report-latest schema": lambda: run_command(
+            "report-latest schema",
+            [sys.executable, "scripts/report_latest_schema_check.py", "--json"],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.gh:
