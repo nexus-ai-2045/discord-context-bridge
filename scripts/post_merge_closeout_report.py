@@ -47,7 +47,14 @@ def rev_parse(ref: str) -> str | None:
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
-def build_report(pr: str, *, fetch: bool = False) -> dict[str, Any]:
+def remote_branch_exists(head_ref: str) -> tuple[bool | None, str | None]:
+    completed = run(["git", "ls-remote", "--heads", "origin", head_ref])
+    if completed.returncode != 0:
+        return None, (completed.stderr or "git ls-remote failed").strip()
+    return bool(completed.stdout.strip()), completed.stdout.strip() or None
+
+
+def build_report(pr: str, *, fetch: bool = False, head_ref: str | None = None, retained_path: Path | None = None) -> dict[str, Any]:
     checks: dict[str, dict[str, str | None]] = {}
     if fetch:
         fetched = run(["git", "fetch", "origin", "--prune"])
@@ -57,6 +64,7 @@ def build_report(pr: str, *, fetch: bool = False) -> dict[str, Any]:
     if pr_data:
         merge_commit = pr_data.get("mergeCommit") or {}
         merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        pr_head_ref = str(pr_data.get("headRefName") or "")
         checks["pr_merged"] = check(
             "ok" if pr_data.get("state") == "MERGED" and merge_oid else "error",
             str(pr_data.get("state")),
@@ -64,6 +72,7 @@ def build_report(pr: str, *, fetch: bool = False) -> dict[str, Any]:
         )
         checks["merge_commit"] = check("ok" if merge_oid else "error", merge_oid)
     else:
+        pr_head_ref = ""
         checks["pr_merged"] = check("error", pr, pr_error)
         checks["merge_commit"] = check("error", None)
 
@@ -80,6 +89,24 @@ def build_report(pr: str, *, fetch: bool = False) -> dict[str, Any]:
         "main == origin/main" if local_main and remote_main and local_main == remote_main else "main != origin/main",
     )
 
+    branch_to_check = head_ref or pr_head_ref
+    if branch_to_check:
+        exists, detail = remote_branch_exists(branch_to_check)
+        checks["remote_head_branch_deleted"] = check(
+            "ok" if exists is False else "error" if exists is True else "warning",
+            branch_to_check,
+            "merged head branch still exists on origin" if exists else detail,
+        )
+    else:
+        checks["remote_head_branch_deleted"] = check("warning", None, "head branch unknown")
+
+    if retained_path:
+        checks["retained_local_artifacts"] = check(
+            "ok" if retained_path.exists() else "warning",
+            str(retained_path),
+            None if retained_path.exists() else "retained path not found; ok if no local-only artifacts existed",
+        )
+
     overall = "error" if any(item["status"] == "error" for item in checks.values()) else "warning" if any(item["status"] == "warning" for item in checks.values()) else "ok"
     return {
         "schema": "discord_context_bridge_post_merge_closeout.v1",
@@ -93,10 +120,12 @@ def build_report(pr: str, *, fetch: bool = False) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Discord Context Bridge 専用の post-merge closeout report")
     parser.add_argument("--pr", required=True, help="PR number or URL")
+    parser.add_argument("--head-ref", help="merge後にremoteから消えているべきhead branch")
+    parser.add_argument("--retained-path", type=Path, help="repo外へ退避したlocal-only artifact directory")
     parser.add_argument("--fetch", action="store_true", help="確認前に git fetch --prune を実行する")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    report = build_report(args.pr, fetch=args.fetch)
+    report = build_report(args.pr, fetch=args.fetch, head_ref=args.head_ref, retained_path=args.retained_path)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     else:
