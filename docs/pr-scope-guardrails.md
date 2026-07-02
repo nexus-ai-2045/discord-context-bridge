@@ -42,6 +42,11 @@ PR本文には必ず次を入れる。
 japanese_pr_ok: yes
 ```
 
+Dependabot が生成した dependency update PR は例外レーンとして扱う。`author=dependabot[bot]`
+または `headRefName=dependabot/...` で、かつタイトルまたは本文に dependency update の信号がある場合だけ、
+`check_pr_language.py` は `dependabot_update_allowed=true` として通す。これは人間レビュー済みPRとは別扱いで、
+通常PRの日本語タイトル、本文見出し、`japanese_pr_ok: yes` 要件は維持する。
+
 ## post-merge closeout
 
 マージ後は次を確認する。

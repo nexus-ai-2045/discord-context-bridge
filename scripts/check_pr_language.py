@@ -13,6 +13,12 @@ JAPANESE_RE = re.compile(r"[一-龥ぁ-んァ-ン]")
 REQUIRED_BODY_HEADINGS = ("## 概要", "## 検証", "## 境界", "## 日本語レビュー")
 ENGLISH_DEFAULT_HEADINGS = ("## Summary", "## Validation", "## Notes")
 HUMAN_JAPANESE_APPROVAL_RE = re.compile(r"(?im)^\s*japanese_pr_ok:\s*yes\s*$")
+DEPENDABOT_LOGIN = "dependabot[bot]"
+DEPENDABOT_HEAD_PREFIX = "dependabot/"
+DEPENDABOT_UPDATE_RE = re.compile(
+    r"\b(dependabot|bumps?|dependency|dependencies|github-actions group)\b",
+    re.IGNORECASE,
+)
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -27,9 +33,9 @@ def japanese_ratio(text: str) -> float:
     return len(japanese) / len(letters)
 
 
-def load_pr_with_gh(pr_number_or_url: str) -> tuple[str, str]:
+def load_pr_with_gh(pr_number_or_url: str) -> dict[str, str]:
     completed = subprocess.run(
-        ["gh", "pr", "view", pr_number_or_url, "--json", "title,body"],
+        ["gh", "pr", "view", pr_number_or_url, "--json", "title,body,author,headRefName"],
         check=False,
         capture_output=True,
         text=True,
@@ -38,11 +44,48 @@ def load_pr_with_gh(pr_number_or_url: str) -> tuple[str, str]:
     if completed.returncode != 0:
         raise RuntimeError("gh pr view に失敗しました。")
     payload = json.loads(completed.stdout)
-    return str(payload.get("title") or ""), str(payload.get("body") or "")
+    author = payload.get("author") or {}
+    if not isinstance(author, dict):
+        author = {}
+    return {
+        "title": str(payload.get("title") or ""),
+        "body": str(payload.get("body") or ""),
+        "author_login": str(author.get("login") or ""),
+        "head_ref_name": str(payload.get("headRefName") or ""),
+    }
 
 
-def validate_pr_language(title: str, body: str) -> list[str]:
+def is_dependabot_dependency_update(
+    title: str,
+    body: str,
+    *,
+    author_login: str = "",
+    head_ref_name: str = "",
+) -> bool:
+    """Detect generated Dependabot dependency update PRs without weakening human PR gates."""
+    has_dependabot_identity = (
+        author_login == DEPENDABOT_LOGIN or head_ref_name.startswith(DEPENDABOT_HEAD_PREFIX)
+    )
+    has_update_signal = bool(DEPENDABOT_UPDATE_RE.search(f"{title}\n{body}"))
+    return has_dependabot_identity and has_update_signal
+
+
+def validate_pr_language(
+    title: str,
+    body: str,
+    *,
+    author_login: str = "",
+    head_ref_name: str = "",
+) -> list[str]:
     issues: list[str] = []
+    if is_dependabot_dependency_update(
+        title,
+        body,
+        author_login=author_login,
+        head_ref_name=head_ref_name,
+    ):
+        return issues
+
     visible = f"{title}\n{body}"
 
     if not JAPANESE_RE.search(title):
@@ -75,13 +118,32 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.pr:
-            title, body = load_pr_with_gh(args.pr)
+            metadata = load_pr_with_gh(args.pr)
         else:
             if not args.title:
                 raise RuntimeError("--body-file には --title が必要です。")
-            title = args.title
-            body = args.body_file.read_text(encoding="utf-8")
-        issues = validate_pr_language(title, body)
+            metadata = {
+                "title": args.title,
+                "body": args.body_file.read_text(encoding="utf-8"),
+                "author_login": "",
+                "head_ref_name": "",
+            }
+        title = metadata["title"]
+        body = metadata["body"]
+        author_login = metadata["author_login"]
+        head_ref_name = metadata["head_ref_name"]
+        dependabot_update_allowed = is_dependabot_dependency_update(
+            title,
+            body,
+            author_login=author_login,
+            head_ref_name=head_ref_name,
+        )
+        issues = validate_pr_language(
+            title,
+            body,
+            author_login=author_login,
+            head_ref_name=head_ref_name,
+        )
     except Exception as exc:
         print(_json({"ok": False, "issues": ["pr_language_check_failed"], "reason": str(exc)}))
         return 2
@@ -94,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
                 "issues": issues,
                 "title_has_japanese": bool(JAPANESE_RE.search(title)),
                 "human_japanese_approved": bool(HUMAN_JAPANESE_APPROVAL_RE.search(body)),
+                "dependabot_update_allowed": dependabot_update_allowed,
                 "body_japanese_ratio": round(japanese_ratio(body), 3),
             }
         )
