@@ -115,7 +115,7 @@ def validate_payload(payload: dict[str, Any], output: str, snapshot_store: Path)
     return issues
 
 
-def build_report() -> dict[str, Any]:
+def build_report(*, include_payload: bool = False) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="dcb-report-latest-") as tmpdir:
         snapshot_store = Path(tmpdir) / "text-snapshots.ndjson"
         write_synthetic_snapshot(snapshot_store)
@@ -140,7 +140,7 @@ def build_report() -> dict[str, Any]:
                 "stdout_chars": len(completed.stdout),
             }
         issues = validate_payload(payload, completed.stdout, snapshot_store)
-        return {
+        report = {
             "schema": "discord_bridge_report_latest_smoke.v1",
             "ok": not issues,
             "failure_stage": None if not issues else "metadata_contract",
@@ -150,6 +150,9 @@ def build_report() -> dict[str, Any]:
             "live_browser_access": ((payload.get("source_summary") or {}).get("report_acquisition_context") or {}).get("live_browser_access"),
             "new_capture": ((payload.get("source_summary") or {}).get("report_acquisition_context") or {}).get("new_capture"),
         }
+        if include_payload:
+            report["payload"] = payload
+        return report
 
 
 def main(argv: list[str] | None = None) -> int:
