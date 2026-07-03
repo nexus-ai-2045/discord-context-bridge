@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -83,6 +84,55 @@ def run_secret_scan() -> CheckResult:
     return CheckResult(result.name, ok, result.elapsed, result.command, output)
 
 
+def run_context_operating_mode_smoke(env: dict[str, str]) -> CheckResult:
+    started = time.perf_counter()
+    commands: list[str] = []
+    outputs: list[str] = []
+    failures: list[str] = []
+    for command_name in ("triage-mode", "catchup-mode", "join-thread-mode", "boundary-mode"):
+        command = [
+            sys.executable,
+            "-m",
+            "discord_context_bridge.cli",
+            command_name,
+            "--input",
+            "tests/fixtures/discord_rich_copy.txt",
+            "--focus",
+            "公開時期",
+            "--json",
+        ]
+        commands.append(" ".join(command))
+        result = run_command(f"{command_name} smoke", command, env=env)
+        outputs.append(f"$ {' '.join(command)}\n{result.output}")
+        if not result.ok:
+            failures.append(f"{command_name}: command failed")
+            continue
+        try:
+            payload = json.loads(result.output)
+        except json.JSONDecodeError as exc:
+            failures.append(f"{command_name}: invalid JSON: {exc}")
+            continue
+        if payload.get("schema") != "discord_context_operating_mode.v1":
+            failures.append(f"{command_name}: schema mismatch")
+        if payload.get("send_capability") != "disabled":
+            failures.append(f"{command_name}: send_capability is not disabled")
+        boundary = payload.get("safety_boundary") or {}
+        if boundary.get("raw_text_returned") is not False:
+            failures.append(f"{command_name}: raw_text_returned is not false")
+        if boundary.get("participant_names_returned") is not False:
+            failures.append(f"{command_name}: participant_names_returned is not false")
+    output = "\n".join(outputs)
+    if failures:
+        output += "\n失敗:\n" + "\n".join(failures)
+    return CheckResult(
+        "文脈運用モード smoke",
+        not failures,
+        time.perf_counter() - started,
+        ["; ".join(commands)],
+        output,
+    )
+
+
 def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult]]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
@@ -144,6 +194,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
             env=env,
         ),
+        "文脈運用モード smoke": lambda: run_context_operating_mode_smoke(env),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.gh:

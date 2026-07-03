@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from discord_context_bridge.core import audit_context_store, audit_event_store, context_passport_from_text, guide_reply_from_text, import_visible_text, load_events, review_reply_intent, upsert_context_document
+from discord_context_bridge.core import audit_context_store, audit_event_store, context_operating_mode_from_text, context_passport_from_text, guide_reply_from_text, import_visible_text, load_events, review_reply_intent, upsert_context_document
 from discord_context_bridge.cli import read_clipboard_text, read_command_text
 
 
@@ -46,6 +46,7 @@ def print_result(label: str, payload: dict, *, json_output: bool = False) -> Non
         "review": "返信前レビュー",
         "guide": "返信ガイド",
         "passport": "文脈パスポート",
+        "context_modes": "文脈運用モード",
         "context_library": "文脈庫",
         "context_audit": "文脈庫監査",
         "http_mcp": "HTTP MCP確認",
@@ -93,6 +94,11 @@ def print_result(label: str, payload: dict, *, json_output: bool = False) -> Non
         print(payload.get("rule_notes_label", "ルール注意を確認してください。"))
         print(payload.get("people_temperature_label", "温度感を確認してください。"))
         print(payload["send_capability_label"])
+        return
+    if label == "context_modes":
+        print(payload.get("message", "文脈運用モードを確認しました。"))
+        for mode, packet in payload.get("modes", {}).items():
+            print(f"{mode}: route={packet.get('route')} / send={packet.get('send_capability')}")
         return
     if label == "context_library":
         print(payload.get("message", "文脈庫を確認しました。"))
@@ -278,6 +284,17 @@ def main() -> int:
         thread_context=args.thread_context.read_text(encoding="utf-8") if args.thread_context else "",
     )
     print_result("passport", passport, json_output=args.json_output)
+
+    modes = {
+        mode: context_operating_mode_from_text(text, mode=mode, focus="公開時期")
+        for mode in ("triage", "catchup", "join-thread", "boundary")
+    }
+    mode_payload = {
+        "language": "ja",
+        "message": "4つの文脈運用モードを確認しました。",
+        "modes": modes,
+    }
+    print_result("context_modes", mode_payload, json_output=args.json_output)
 
     if not args.skip_http:
         http = run_http_smoke(args.store, args.port)
