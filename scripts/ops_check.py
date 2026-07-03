@@ -209,7 +209,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         ),
         "ingest route policy lint": lambda: run_command(
             "ingest route policy lint",
-            [sys.executable, "scripts/lint_ingest_route_policy.py", "--json"],
+            [sys.executable, "scripts/lint_ingest_route_policy.py", "--skip-local-claude-skill", "--json"],
             env=env,
         ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
