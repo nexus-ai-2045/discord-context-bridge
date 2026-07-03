@@ -135,8 +135,10 @@ reply UI が 0 件または複数件の場合、通常 message box へ fallback 
 
 人間が最後の Discord 送信操作をした後は `closeout-discord-send` で
 metadata-only に閉じます。この closeout は `human_sent_observed`、
-`human_reviewed`、`observed_text_status` だけを状態として返し、本文、URL、
-snowflake は出力しません。`not-checked` のままでは `blocked` です。
+`human_reviewed`、`observed_text_status`、`unread_check_status`、
+`unread_signal_count` だけを状態として返し、本文、URL、snowflake は出力しません。
+本文または未読確認が `not-checked` のままでは `blocked` です。未読が残っている場合も
+`blocked` とし、先に未読を確認します。
 
 ## やらないこと
 

@@ -1847,6 +1847,8 @@ def build_discord_post_send_closeout_packet(
     human_sent_observed: bool = False,
     human_reviewed: bool = False,
     observed_text_status: str = "not_checked",
+    unread_check_status: str = "not_checked",
+    unread_signal_count: int = 0,
     observed_message_id: str = "",
     observed_url: str = "",
     note_label: str = "",
@@ -1857,11 +1859,18 @@ def build_discord_post_send_closeout_packet(
     message URLs, or snowflake values.
     """
     normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
+    normalized_unread_status = unread_check_status.strip().lower().replace("-", "_") or "not_checked"
     allowed_text_statuses = {
         "matches_copy_block",
         "human_edited_and_reviewed",
         "not_checked",
     }
+    allowed_unread_statuses = {
+        "none_unread",
+        "has_unread",
+        "not_checked",
+    }
+    safe_unread_signal_count = max(0, int(unread_signal_count))
     blockers: list[str] = []
     if staging_packet is not None:
         if (
@@ -1884,6 +1893,12 @@ def build_discord_post_send_closeout_packet(
         blockers.append("invalid_observed_text_status")
     elif normalized_text_status == "not_checked":
         blockers.append("observed_text_not_checked")
+    if normalized_unread_status not in allowed_unread_statuses:
+        blockers.append("invalid_unread_check_status")
+    elif normalized_unread_status == "not_checked":
+        blockers.append("unread_not_checked")
+    elif normalized_unread_status == "has_unread" or safe_unread_signal_count > 0:
+        blockers.append("unread_items_remaining")
 
     closeout_status = "closed" if not blockers else "blocked"
     if closeout_status == "closed":
@@ -1892,6 +1907,10 @@ def build_discord_post_send_closeout_packet(
         recommended_next_state = "verify_visible_message"
     elif "human_review_not_confirmed" in blockers:
         recommended_next_state = "human_review_required"
+    elif "unread_not_checked" in blockers:
+        recommended_next_state = "check_unread_items"
+    elif "unread_items_remaining" in blockers:
+        recommended_next_state = "review_unread_items"
     else:
         recommended_next_state = "fix_blockers"
     return {
@@ -1905,6 +1924,8 @@ def build_discord_post_send_closeout_packet(
         "human_sent_observed": human_sent_observed,
         "human_reviewed": human_reviewed,
         "observed_text_status": normalized_text_status,
+        "unread_check_status": normalized_unread_status,
+        "unread_signal_count": safe_unread_signal_count,
         "observed_message_id_output": "omitted" if observed_message_id else "not_provided",
         "observed_url_output": "omitted" if observed_url else "not_provided",
         "note_label_output": redact_artifact_text(note_label) if note_label else "",

@@ -238,6 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="not-checked",
         help="送信後本文の安全な状態ラベル。本文は出力しません",
     )
+    closeout_send.add_argument(
+        "--unread-check-status",
+        choices=["none-unread", "has-unread", "not-checked"],
+        default="not-checked",
+        help="送信後に未読が残っていないかの安全な状態ラベル。本文は出力しません",
+    )
+    closeout_send.add_argument("--unread-signal-count", type=int, default=0, help="任意: 未読シグナル件数。本文は出力しません")
     closeout_send.add_argument("--observed-message-id", default="", help="任意: 確認した message id。出力には表示しません")
     closeout_send.add_argument("--observed-url", default="", help="任意: 確認した Discord URL。出力には表示しません")
     closeout_send.add_argument("--note-label", default="", help="任意: closeout 用の短い安全ラベル")
@@ -687,6 +694,8 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         human_sent_observed=args.human_sent_observed,
         human_reviewed=args.human_reviewed,
         observed_text_status=args.observed_text_status,
+        unread_check_status=args.unread_check_status,
+        unread_signal_count=args.unread_signal_count,
         observed_message_id=args.observed_message_id,
         observed_url=args.observed_url,
         note_label=args.note_label,
