@@ -1,0 +1,30 @@
+schema: discord_context_bridge_capability_manifest.v1
+name: discord-context-bridge
+display_name: Discord Context Bridge
+ssot_repo: nexus-ai-2045/discord-context-bridge
+contract_path: docs/operating-contract.md
+default_entrypoint: discord-context-bridge
+runtime_targets:
+  - codex
+  - claude-code
+  - grok
+  - antigravity
+stoplines:
+  - no_discord_send
+  - no_external_share
+  - no_raw_discord_text_in_visible_output
+  - no_tokens_or_cookies
+required_commands:
+  - command: import-visible-text
+    purpose: 可視テキストをローカル event store に取り込む
+  - command: context-passport
+    purpose: 可視テキストから文脈カードを作る
+  - command: guide-reply
+    purpose: 可視テキストと下書きから返信前ガイドを作る
+  - command: review-draft
+    purpose: 下書きの文脈適合・トーン・不足前提を確認する
+verification_commands:
+  - command: python3 scripts/verify_ssot_projection.py --json
+    purpose: SSOT から生成された runtime skill が最新か確認する
+  - command: python3 scripts/ops_check.py --gh
+    purpose: test / smoke / secret scan / GitHub account をまとめて確認する

@@ -68,6 +68,7 @@ def run_secret_scan() -> CheckResult:
         "./PUBLIC_RELEASE_CHECKLIST.md:",
         "./SECURITY.md:",
         "./scripts/read_visible_discord_text.py:",
+        "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
     )
     unexpected = []
@@ -136,6 +137,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         "report-latest schema": lambda: run_command(
             "report-latest schema",
             [sys.executable, "scripts/report_latest_schema_check.py", "--json"],
+            env=env,
+        ),
+        "SSOT projection": lambda: run_command(
+            "SSOT projection",
+            [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
             env=env,
         ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
