@@ -76,6 +76,30 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json
 ```
 
+### 添付 ledger と OCR log
+
+`attachment-ledger` は、保存済み raw cache / snapshot の JSONL から添付 metadata だけを抜き出し、
+Markdown ledger を作ります。Discord CDN URL、local path、メッセージ本文、実 ID は出力しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  attachment-ledger \
+  --input .local/discord-context-bridge/raw.ndjson \
+  --output .local/discord-context-bridge/attachment-ledger.md \
+  --json
+```
+
+画像の OCR 結果を人間レビュー用に残す場合は、OCR 本文を stdout に返さず private local log に保存します。
+OCR の取得自体は既存の private adapter / local command の責務で、bridge は本文保存と安全な metadata 出力だけを扱います。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  attachment-ocr-log \
+  --source-key "<attachment-ledger の source_key>" \
+  --ocr-text-file /path/to/ocr.txt \
+  --output .local/discord-context-bridge/attachment-ocr.md
+```
+
 ## 基本言語
 
 この package の基本言語は日本語です。
@@ -95,6 +119,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 - ユーザーの返信意図を直近会話と照合します。
 - local command で取得した可視テキストを監視し、会話ガイドを自動更新します。
 - 保存済み snapshot から、本文なしの最新 metadata report を作ります。
+- 保存済み raw cache / snapshot から、添付の metadata ledger と private OCR log を作ります。
 - Discord への送信は既定で禁止します。
 
 ## しないこと

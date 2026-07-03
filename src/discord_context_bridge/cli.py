@@ -15,10 +15,13 @@ from typing import Any
 from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
+    DEFAULT_ATTACHMENT_LEDGER,
     DEFAULT_STORE,
     DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
     audit_event_store,
+    build_attachment_ledger,
+    load_jsonl_records,
     build_coverage_report,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
@@ -41,6 +44,7 @@ from .core import (
     upsert_context_document,
     build_url_intake_gate,
     verify_chrome_extension_fill_only_dry_run,
+    write_attachment_ocr_log,
 )
 
 
@@ -166,6 +170,21 @@ def build_parser() -> argparse.ArgumentParser:
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
     report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     report_latest.set_defaults(handler=_cmd_report_latest)
+
+    attachment_ledger = sub.add_parser("attachment-ledger", help="raw cache から添付の safe metadata ledger を作る")
+    attachment_ledger.add_argument("--input", type=Path, required=True, help="Discord raw cache / snapshot ndjson")
+    attachment_ledger.add_argument("--output", type=Path, default=DEFAULT_ATTACHMENT_LEDGER, help="保存する metadata-only ledger")
+    attachment_ledger.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    attachment_ledger.set_defaults(handler=_cmd_attachment_ledger)
+
+    attachment_ocr = sub.add_parser("attachment-ocr-log", help="添付画像 OCR 結果を private local log として保存する")
+    attachment_ocr.add_argument("--source-key", required=True, help="attachment-ledger が出した source_key")
+    attachment_ocr.add_argument("--output", type=Path, required=True, help="保存する OCR log Markdown")
+    attachment_ocr.add_argument("--ocr-text-file", type=Path, help="OCR 済み text file。stdout には本文を返しません")
+    attachment_ocr.add_argument("--ocr-command", help="OCR text を stdout に出す local command。stdout には本文を返しません")
+    attachment_ocr.add_argument("--note-label", default="", help="任意の安全な短い label")
+    attachment_ocr.add_argument("--source-timeout", type=float, default=20.0, help="local command の最大秒数")
+    attachment_ocr.set_defaults(handler=_cmd_attachment_ocr_log)
 
     intake = sub.add_parser("verify-url-intake", help="Discord URL の raw-cache-first intake gate を確認する")
     intake.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
@@ -559,6 +578,38 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
         print(f"reason: {report['reason']}")
     print("outbound: disabled")
     return 0 if report["ok"] else 2
+
+
+def _cmd_attachment_ledger(args: argparse.Namespace) -> int:
+    payload = build_attachment_ledger(records=load_jsonl_records(args.input), output=args.output)
+    if args.json:
+        print(_json(payload))
+        return 0
+    print(payload["message"])
+    print(f"attachment_count: {payload['attachment_count']}")
+    print("raw_url_returned: false")
+    print("raw_text_returned: false")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0
+
+
+def _cmd_attachment_ocr_log(args: argparse.Namespace) -> int:
+    if bool(args.ocr_text_file) == bool(args.ocr_command):
+        raise SystemExit("--ocr-text-file または --ocr-command のどちらか一方を指定してください。")
+    ocr_text = (
+        args.ocr_text_file.read_text(encoding="utf-8")
+        if args.ocr_text_file
+        else read_command_text(args.ocr_command, empty_message="OCR command の出力が空です。", timeout=args.source_timeout)
+    )
+    payload = write_attachment_ocr_log(
+        source_key=args.source_key,
+        ocr_text=ocr_text,
+        output=args.output,
+        note_label=args.note_label,
+    )
+    print(_json(payload))
+    return 0
 
 
 def _cmd_verify_url_intake(args: argparse.Namespace) -> int:

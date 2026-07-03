@@ -14,6 +14,7 @@ from discord_context_bridge import (
     append_event,
     audit_context_store,
     audit_event_store,
+    build_attachment_ledger,
     build_copy_block,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
@@ -22,6 +23,7 @@ from discord_context_bridge import (
     build_human_gate,
     build_latest_snapshot_report,
     build_review_artifact_markdown,
+    write_attachment_ocr_log,
     build_url_intake_gate,
     context_passport_from_text,
     fast_briefing,
@@ -31,6 +33,7 @@ from discord_context_bridge import (
     import_visible_text,
     load_text_snapshots,
     list_context_documents,
+    load_jsonl_records,
     load_review_registry,
     load_events,
     ops_view_summary,
@@ -241,6 +244,69 @@ def test_build_latest_snapshot_report_missing_snapshot_is_safe(tmp_path):
     assert report["raw_text_returned"] is False
     assert report["report_acquisition_context"]["mode"] == "existing_saved_snapshot"
     assert report["report_acquisition_context"]["live_browser_access"] is False
+
+
+def test_attachment_ledger_keeps_urls_and_local_paths_out_of_output(tmp_path):
+    source = tmp_path / "raw.ndjson"
+    ledger = tmp_path / "attachment-ledger.md"
+    source.write_text(
+        json.dumps(
+            {
+                "message_id": "123456789012345678",
+                "timestamp": "2026-07-03T00:00:00+00:00",
+                "content": "fixture message body",
+                "attachments": [
+                    {
+                        "id": "223456789012345678",
+                        "filename": "screen.png",
+                        "content_type": "image/png",
+                        "url": "https://example.invalid/attachments/screen.png?ex=secret",
+                        "width": 640,
+                        "height": 480,
+                        "size": 1200,
+                        "local_path": str(tmp_path / "screen.png"),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_attachment_ledger(records=load_jsonl_records(source), output=ledger)
+    rendered = json.dumps(payload, ensure_ascii=False) + ledger.read_text(encoding="utf-8")
+
+    assert payload["schema"] == "discord_attachment_ledger.v1"
+    assert payload["attachment_count"] == 1
+    assert payload["entries"][0]["attachment_type"] == "image"
+    assert payload["entries"][0]["local_status"] == "missing"
+    assert payload["raw_url_returned"] is False
+    assert payload["local_paths_returned"] is False
+    assert "example.invalid" not in rendered
+    assert "123456789012345678" not in rendered
+    assert str(tmp_path) not in rendered
+    assert "fixture message body" not in rendered
+
+
+def test_attachment_ocr_log_writes_private_artifact_without_stdout_text(tmp_path):
+    output = tmp_path / "ocr.md"
+    payload = write_attachment_ocr_log(
+        source_key="safe-source",
+        ocr_text="fixture OCR text saved in the local artifact",
+        output=output,
+        note_label="safe-note",
+    )
+    stdout_payload = json.dumps(payload, ensure_ascii=False)
+    artifact = output.read_text(encoding="utf-8")
+
+    assert payload["schema"] == "discord_attachment_ocr_log.v1"
+    assert payload["created"] is True
+    assert payload["raw_text_returned"] is False
+    assert payload["local_paths_returned"] is False
+    assert "fixture OCR text" not in stdout_payload
+    assert "fixture OCR text saved in the local artifact" in artifact
+    assert str(tmp_path) not in stdout_payload
 
 
 def test_discord_forum_url_shape_reports_parent_channel_presence():
