@@ -19,6 +19,7 @@ from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
     audit_event_store,
+    build_coverage_report,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_handoff_packet,
@@ -38,6 +39,7 @@ from .core import (
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
+    build_url_intake_gate,
     verify_chrome_extension_fill_only_dry_run,
 )
 
@@ -164,6 +166,33 @@ def build_parser() -> argparse.ArgumentParser:
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
     report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     report_latest.set_defaults(handler=_cmd_report_latest)
+
+    intake = sub.add_parser("verify-url-intake", help="Discord URL の raw-cache-first intake gate を確認する")
+    intake.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    intake.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
+    intake.add_argument("--raw-cache", type=Path, help="Discord raw cache / local snapshot ndjson")
+    intake.add_argument("--ai-log", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="AI-facing snapshot log")
+    intake.add_argument("--sync", action="store_true", help="raw cache exact match を AI log へ同期する")
+    intake.set_defaults(handler=_cmd_verify_url_intake)
+
+    coverage = sub.add_parser("coverage-report", help="Discord URL / target_key の coverage と freshness を本文なしで確認する")
+    coverage.add_argument("--url", default="", help="対象 Discord URL。出力には表示しません")
+    coverage.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
+    coverage.add_argument("--raw-cache", type=Path, help="Discord raw cache / local snapshot ndjson")
+    coverage.add_argument("--ai-log", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="AI-facing snapshot log")
+    coverage.add_argument(
+        "--source-kind",
+        choices=["saved_log", "visible_dom", "scroll_dom", "api_or_export"],
+        default="saved_log",
+        help="coverage の保証レベルを表す source kind",
+    )
+    coverage.add_argument(
+        "--dedupe-policy",
+        choices=["none", "by_hash", "by_author_time_text", "semantic_near"],
+        default="by_hash",
+        help="重複判定方針",
+    )
+    coverage.set_defaults(handler=_cmd_coverage_report)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -530,6 +559,31 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
         print(f"reason: {report['reason']}")
     print("outbound: disabled")
     return 0 if report["ok"] else 2
+
+
+def _cmd_verify_url_intake(args: argparse.Namespace) -> int:
+    payload = build_url_intake_gate(
+        args.url,
+        raw_cache_path=args.raw_cache,
+        ai_log_path=args.ai_log,
+        target_key=args.target_key or None,
+        sync=args.sync,
+    )
+    print(_json(payload))
+    return 0 if payload["state"] == "ready" else 2
+
+
+def _cmd_coverage_report(args: argparse.Namespace) -> int:
+    payload = build_coverage_report(
+        url=args.url,
+        target_key=args.target_key,
+        raw_cache_path=args.raw_cache,
+        ai_log_path=args.ai_log,
+        source_kind=args.source_kind,
+        dedupe_policy=args.dedupe_policy,
+    )
+    print(_json(payload))
+    return 0 if payload["coverage"]["exact_coverage"] else 2
 
 
 def _cmd_handoff_packet(args: argparse.Namespace) -> int:

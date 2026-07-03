@@ -17,10 +17,12 @@ from discord_context_bridge import (
     build_copy_block,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
+    build_coverage_report,
     build_handoff_packet,
     build_human_gate,
     build_latest_snapshot_report,
     build_review_artifact_markdown,
+    build_url_intake_gate,
     context_passport_from_text,
     fast_briefing,
     get_context_document,
@@ -41,6 +43,8 @@ from discord_context_bridge import (
     upsert_review_state,
     upsert_context_document,
     verify_chrome_extension_fill_only_dry_run,
+    analyze_discord_forum_url_shape,
+    target_key_for_url,
 )
 from discord_context_bridge import cli as cli_module
 from discord_context_bridge.cli import build_parser
@@ -237,6 +241,116 @@ def test_build_latest_snapshot_report_missing_snapshot_is_safe(tmp_path):
     assert report["raw_text_returned"] is False
     assert report["report_acquisition_context"]["mode"] == "existing_saved_snapshot"
     assert report["report_acquisition_context"]["live_browser_access"] is False
+
+
+def test_discord_forum_url_shape_reports_parent_channel_presence():
+    ready = analyze_discord_forum_url_shape("https://discord.com/channels/1/10/20")
+    missing_parent = analyze_discord_forum_url_shape("https://discord.com/channels/1/20")
+
+    assert ready["valid_discord_channel_url"] is True
+    assert ready["parent_channel_id_present"] is True
+    assert ready["thread_id_present"] is True
+    assert ready["blocked_reason"] == ""
+    assert missing_parent["parent_channel_id_present"] is False
+    assert missing_parent["blocked_reason"] == "forum_parent_channel_missing"
+    assert missing_parent["same_guild_fuzzy_match_allowed"] is False
+
+
+def test_url_intake_gate_reports_ai_log_stale_and_syncs(tmp_path):
+    url = "https://discord.com/channels/1/10/20"
+    key = target_key_for_url(url)
+    raw_cache = tmp_path / "raw.ndjson"
+    ai_log = tmp_path / "ai.ndjson"
+    raw_cache.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "text": "member-a: local raw cache text",
+                "captured_at": "2026-07-03T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stale = build_url_intake_gate(
+        url,
+        raw_cache_path=raw_cache,
+        ai_log_path=ai_log,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+    synced = build_url_intake_gate(
+        url,
+        raw_cache_path=raw_cache,
+        ai_log_path=ai_log,
+        sync=True,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert stale["state"] == "ai_log_stale"
+    assert stale["exact_coverage"] == "no"
+    assert stale["recency"]["reason"] == "raw_cache_exact_match_but_ai_log_missing"
+    assert stale["stale_policy"]["fallback_allowed"] == "manual_visible_text_or_chrome_extension_only"
+    assert synced["state"] == "ready"
+    assert synced["exact_coverage"] == "yes"
+    assert synced["raw_text_returned"] is False
+    assert "member-a" not in json.dumps(synced, ensure_ascii=False)
+
+
+def test_url_intake_gate_splits_forum_parent_missing_from_raw_cache_miss(tmp_path):
+    url = "https://discord.com/channels/1/20"
+    raw_cache = tmp_path / "raw.ndjson"
+    raw_cache.write_text('{"url": "https://discord.com/channels/1/other", "text": "other"}\n', encoding="utf-8")
+
+    payload = build_url_intake_gate(
+        url,
+        raw_cache_path=raw_cache,
+        ai_log_path=tmp_path / "ai.ndjson",
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["state"] == "raw_cache_missing"
+    assert payload["blocked_reason"] == "forum_parent_channel_missing"
+    assert payload["url_shape"]["parent_channel_id_present"] is False
+    assert payload["url_shape"]["same_guild_fuzzy_match_allowed"] is False
+
+
+def test_coverage_report_marks_stale_snapshot_recency_and_policy(tmp_path):
+    url = "https://discord.com/channels/1/10/20"
+    key = target_key_for_url(url)
+    ai_log = tmp_path / "ai.ndjson"
+    ai_log.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "text": "member-a: saved snapshot text",
+                "captured_at": "2026-07-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_coverage_report(
+        url=url,
+        raw_cache_path=tmp_path / "raw.ndjson",
+        ai_log_path=ai_log,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["coverage"]["exact_coverage"] is True
+    assert payload["freshness"]["status"] == "stale"
+    assert payload["stale_policy"]["usable_for_reply"] is False
+    assert payload["stale_policy"]["usable_for_routing"] is True
+    assert payload["stale_policy"]["required_action"] == "refresh_exact_url_snapshot"
+    assert payload["url_shape"]["parent_channel_id_present"] is True
+    assert "member-a" not in rendered
+    assert url not in rendered
 
 
 def test_acquisition_context_for_source_classifies_local_routes():
