@@ -29,6 +29,7 @@ from .core import (
     build_latest_snapshot_report,
     build_review_artifact_markdown,
     context_passport_from_text,
+    digest_context_from_text,
     fast_briefing,
     get_review_state,
     get_context_document,
@@ -331,6 +332,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     passport.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     passport.set_defaults(handler=_cmd_context_passport)
+
+    chew = sub.add_parser("chew-context", help="Discord 可視テキストを咀嚼し、返信前の理解メモを作る")
+    chew.add_argument("--input", type=Path, help="読み込むテキストファイル")
+    chew.add_argument("--from-clipboard", action="store_true", help="--input ではなくローカルのクリップボードから可視テキストを読む")
+    chew.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
+    chew.add_argument("--source-command", help="Discord 可視テキストを出力するローカルコマンド")
+    chew.add_argument("--guild", default="example-community", help="サーバー名または仮ラベル")
+    chew.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
+    chew.add_argument("--server-context", type=Path, help="サーバールールや全体方針を書いたローカルテキスト")
+    chew.add_argument("--channel-context", type=Path, help="チャンネル目的や掲示板ルールを書いたローカルテキスト")
+    chew.add_argument("--thread-context", type=Path, help="スレッド固定文・目的・注意事項を書いたローカルテキスト")
+    chew.add_argument("--server-context-key", help="文脈庫から読むサーバー文脈キー")
+    chew.add_argument("--channel-context-key", help="文脈庫から読むチャンネル文脈キー")
+    chew.add_argument("--thread-context-key", help="文脈庫から読むスレッド文脈キー")
+    chew.add_argument(
+        "--auto-context-bindings",
+        action="store_true",
+        help="安全な guild/channel label から文脈庫キーを補助的に解決する",
+    )
+    chew.add_argument("--focus", default="", help="任意: 咀嚼したい焦点。出力前に安全化します")
+    chew.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    chew.set_defaults(handler=_cmd_chew_context)
 
     watch_passport = sub.add_parser(
         "watch-passport",
@@ -851,6 +874,33 @@ def _cmd_context_passport(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_chew_context(args: argparse.Namespace) -> int:
+    text = read_visible_text_arg(args)
+    digestion = build_context_digestion_from_args(text, args)
+    if args.json:
+        print(_json(digestion))
+        return 0 if digestion["parsed"] else 2
+    print(digestion["message"])
+    print(f"解析件数: {digestion['parsed']}")
+    print(digestion["thread_purpose_label"])
+    print(digestion["people_temperature_label"])
+    print(digestion["confidence_label"])
+    print("理解レイヤー:")
+    for layer in digestion["understanding_layers"]:
+        print(f"- {layer}")
+    print("未確認:")
+    if digestion["open_questions"]:
+        for question in digestion["open_questions"]:
+            print(f"- {question}")
+    else:
+        print("- なし")
+    print("次アクション:")
+    for action in digestion["next_actions"]:
+        print(f"- {action}")
+    print(digestion["send_capability_label"])
+    return 0 if digestion["parsed"] else 2
+
+
 def build_context_passport_from_args(text: str, args: argparse.Namespace) -> dict[str, Any]:
     contexts = read_passport_contexts(args)
     passport = context_passport_from_text(
@@ -868,6 +918,26 @@ def build_context_passport_from_args(text: str, args: argparse.Namespace) -> dic
         passport["auto_context_bindings_used"] = False
         passport["auto_context_bindings_label"] = "safe label による自動文脈参照は使っていません。"
     return passport
+
+
+def build_context_digestion_from_args(text: str, args: argparse.Namespace) -> dict[str, Any]:
+    contexts = read_passport_contexts(args)
+    digestion = digest_context_from_text(
+        text,
+        guild_label=args.guild,
+        channel_label=args.channel,
+        server_context=contexts["server_context"],
+        channel_context=contexts["channel_context"],
+        thread_context=contexts["thread_context"],
+        focus=args.focus,
+    )
+    digestion["auto_context_bindings_used"] = bool(contexts["auto_context_bindings_used"])
+    digestion["auto_context_bindings_label"] = (
+        "safe label から文脈庫を補助参照しました。"
+        if contexts["auto_context_bindings_used"]
+        else "safe label による自動文脈参照は使っていません。"
+    )
+    return digestion
 
 
 def read_optional_text_file(path: Path | None) -> str:

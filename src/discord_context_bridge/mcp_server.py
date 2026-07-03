@@ -12,6 +12,7 @@ from .core import (
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     context_passport_from_text,
+    digest_context_from_text,
     fast_briefing,
     get_context_document,
     guide_reply_from_text,
@@ -233,6 +234,27 @@ def build_server(
                 ]
                 if part.strip()
             ),
+        )
+
+    @server.tool()
+    def chew_discord_context_from_visible_text(
+        text: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+        focus: str = "",
+    ) -> dict[str, Any]:
+        """Discord の可視テキストを咀嚼し、raw 本文なしの理解メモを返します。"""
+        return digest_context_from_text(
+            text,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+            focus=focus,
         )
 
     @server.tool()

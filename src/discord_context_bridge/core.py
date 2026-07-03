@@ -1838,6 +1838,113 @@ def context_passport_from_text(
     )
 
 
+def build_context_digestion(
+    events: list[DiscordEvent],
+    *,
+    context_documents: list[dict[str, str]] | None = None,
+    focus: str = "",
+) -> dict[str, Any]:
+    context_documents = context_documents or []
+    joined = " ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)
+    purposes = sorted(detect_purposes(joined))
+    topics = sorted(detect_topics(joined))
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    rule_notes = extract_context_rule_notes(context_documents) + extract_matching_snippets(events, RULE_KEYWORDS, limit=2)
+    premise_count = len(
+        extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=5)
+    )
+    focus_text = redact_artifact_text(focus)
+    focus_matched = bool(focus_text and focus_text.casefold() in joined.casefold())
+    understanding_layers = [
+        "目的: " + purpose_label,
+        "温度: " + temperature_label,
+        "前提: "
+        + (
+            "直近可視範囲に前提候補があります。"
+            if premise_count
+            else "前提はまだ薄いです。必要なら追加で読みます。"
+        ),
+    ]
+    if rule_notes:
+        understanding_layers.append("制約: ルールや注意点らしき情報があります。")
+    else:
+        understanding_layers.append("制約: 直近可視範囲では強いルール注意は未検出です。")
+    if focus_text:
+        understanding_layers.append(
+            "焦点: 指定 focus は文脈内に見えます。" if focus_matched else "焦点: 指定 focus は直近文脈だけでは未確認です。"
+        )
+    open_questions: list[str] = []
+    if not events:
+        open_questions.append("Discord 可視本文がまだありません。")
+    if not topics and not purposes:
+        open_questions.append("話題・目的がまだ薄いので、前後の発言を追加すると咀嚼精度が上がります。")
+    if temperature in {"serious", "hot"}:
+        open_questions.append("温度が高い可能性があるため、返信前に相手の意図を人間が確認してください。")
+    if focus_text and not focus_matched:
+        open_questions.append("focus と直近文脈の接続が未確認です。")
+    next_actions = [
+        "3〜8点の理解サマリを人間が確認する。",
+        "返信へ進む場合は review-draft または stage-discord-send の理解 gate を通す。",
+    ]
+    if not events:
+        next_actions.insert(0, "先に import-visible-text または snapshot-discord-url-text で可視本文を取り込む。")
+    elif open_questions:
+        next_actions.insert(0, "不足している前提だけを追加で読む。")
+    else:
+        next_actions.insert(0, "この咀嚼結果を返信前の理解メモとして使える。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_digestion.v1",
+        "message": "咀嚼モードの文脈整理を作成しました。",
+        "parsed": len(events),
+        "mode": "chew",
+        "focus": focus_text,
+        "focus_matched": focus_matched if focus_text else None,
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "detected_purposes": purposes,
+        "detected_topics": topics,
+        "understanding_layers": understanding_layers,
+        "open_questions": open_questions,
+        "next_actions": next_actions,
+        "confidence": "visible_context_only" if events else "missing_context",
+        "confidence_label": "可視範囲だけの仮整理です。" if events else "咀嚼する文脈が不足しています。",
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def digest_context_from_text(
+    text: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+    focus: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_digestion(
+        events,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+        focus=focus,
+    )
+
+
 UNDERSTANDING_GATE_OPTIONS = ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
 
 
