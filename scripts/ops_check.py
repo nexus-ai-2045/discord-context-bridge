@@ -68,6 +68,7 @@ def run_secret_scan() -> CheckResult:
     allowed_prefixes = (
         "./PUBLIC_RELEASE_CHECKLIST.md:",
         "./SECURITY.md:",
+        "./scripts/lint_runtime_skill_sync.py:",
         "./scripts/read_visible_discord_text.py:",
         "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
@@ -195,6 +196,17 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             env=env,
         ),
         "文脈運用モード smoke": lambda: run_context_operating_mode_smoke(env),
+        "runtime skill sync lint": lambda: run_command(
+            "runtime skill sync lint",
+            [
+                sys.executable,
+                "scripts/lint_runtime_skill_sync.py",
+                "--target",
+                "codex=dist/skills/codex/SKILL.md",
+                "--json",
+            ],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.gh:

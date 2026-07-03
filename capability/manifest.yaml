@@ -26,5 +26,7 @@ required_commands:
 verification_commands:
   - command: python3 scripts/verify_ssot_projection.py --json
     purpose: SSOT から生成された runtime skill が最新か確認する
+  - command: python3 scripts/lint_runtime_skill_sync.py --target codex=/path/to/SKILL.md --json
+    purpose: runtime skill directory の実体が SSOT 生成物と一致するか read-only で確認する
   - command: python3 scripts/ops_check.py --gh
     purpose: test / smoke / secret scan / GitHub account をまとめて確認する

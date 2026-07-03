@@ -83,3 +83,42 @@ def test_checked_in_projection_is_current():
     )
 
     assert report["overall"] == "ok"
+
+
+def test_lint_runtime_skill_sync_accepts_matching_runtime_skill(tmp_path):
+    module = load_script_module("lint_runtime_skill_sync_ok", ROOT / "scripts" / "lint_runtime_skill_sync.py")
+
+    target = tmp_path / "codex" / "SKILL.md"
+    target.parent.mkdir()
+    target.write_text((ROOT / "dist" / "skills" / "codex" / "SKILL.md").read_text(encoding="utf-8"), encoding="utf-8")
+
+    report = module.lint_runtime_skill_sync(targets={"codex": target})
+
+    assert report["overall"] == "ok"
+    assert report["checks"]["codex"]["status"] == "ok"
+    assert report["checks"]["codex"]["read_only"] is True
+
+
+def test_lint_runtime_skill_sync_detects_drift(tmp_path):
+    module = load_script_module("lint_runtime_skill_sync_drift", ROOT / "scripts" / "lint_runtime_skill_sync.py")
+
+    target = tmp_path / "claude-code" / "SKILL.md"
+    target.parent.mkdir()
+    body = (ROOT / "dist" / "skills" / "claude-code" / "SKILL.md").read_text(encoding="utf-8")
+    target.write_text(body.replace("no_discord_send", "mutated_stopline"), encoding="utf-8")
+
+    report = module.lint_runtime_skill_sync(targets={"claude-code": target})
+
+    assert report["overall"] == "error"
+    assert report["checks"]["claude-code"]["status"] == "error"
+    assert report["checks"]["claude-code"]["reason"] == "content_mismatch"
+
+
+def test_lint_runtime_skill_sync_can_allow_missing_optional_target(tmp_path):
+    module = load_script_module("lint_runtime_skill_sync_missing", ROOT / "scripts" / "lint_runtime_skill_sync.py")
+
+    report = module.lint_runtime_skill_sync(targets={"grok": tmp_path / "missing" / "SKILL.md"}, allow_missing=True)
+
+    assert report["overall"] == "ok"
+    assert report["checks"]["grok"]["status"] == "warning"
+    assert report["checks"]["grok"]["reason"] == "target_missing"
