@@ -2498,6 +2498,8 @@ def build_discord_send_staging_packet(
             "schema": "discord_fill_only_guard.v1",
             "max_runner_action": "fill_draft_only",
             "external_action": "none_until_human_send",
+            "latest_visible_snapshot_required": True,
+            "latest_visible_snapshot_check": "required_before_user_action",
             "stop_condition": "stop_before_send_button",
             "human_send_required": True,
         },
@@ -2523,6 +2525,7 @@ def verify_chrome_extension_fill_only_dry_run(
     socket_preflight: bool = False,
     target_url_verified: bool = False,
     socket_after_navigation: bool = False,
+    latest_visible_snapshot_confirmed: bool = False,
     reply_ui_candidates: int = 0,
     message_box_candidates: int = 0,
     draft_matches_copy_block: bool = False,
@@ -2546,6 +2549,8 @@ def verify_chrome_extension_fill_only_dry_run(
         blockers.append("target_url_not_verified")
     if not socket_after_navigation:
         blockers.append("socket_after_navigation_missing")
+    if not latest_visible_snapshot_confirmed:
+        blockers.append("latest_visible_snapshot_not_confirmed")
     if mode == "reply":
         if reply_ui_candidates < 1:
             blockers.append("reply_ui_not_found")
@@ -2577,6 +2582,7 @@ def verify_chrome_extension_fill_only_dry_run(
             "socket_preflight": socket_preflight,
             "target_url_verified": target_url_verified,
             "socket_after_navigation": socket_after_navigation,
+            "latest_visible_snapshot_confirmed": latest_visible_snapshot_confirmed,
             "reply_ui_candidates": reply_ui_candidates,
             "message_box_candidates": message_box_candidates,
             "draft_matches_copy_block": draft_matches_copy_block,
