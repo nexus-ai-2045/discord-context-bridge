@@ -127,6 +127,363 @@ def stable_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def target_key_for_url(url: str) -> str:
+    return stable_text_hash(url.strip())
+
+
+def parse_snapshot_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def latest_captured_at(records: Iterable[dict[str, Any]]) -> str:
+    latest: datetime | None = None
+    latest_text = ""
+    for record in records:
+        captured_at = record.get("captured_at") or record.get("observed_at") or record.get("timestamp")
+        parsed = parse_snapshot_timestamp(captured_at)
+        if parsed is not None and (latest is None or parsed > latest):
+            latest = parsed
+            latest_text = str(captured_at)
+    return latest_text
+
+
+def analyze_discord_forum_url_shape(url: str) -> dict[str, Any]:
+    match = re.match(
+        r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+        r"([^/?#]+)(?:/([^/?#]+))?(?:/([^/?#]+))?(?:/([^/?#]+))?",
+        url.strip(),
+    )
+    if not match:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_forum_url_shape.v1",
+            "valid_discord_channel_url": False,
+            "shape": "invalid",
+            "path_id_count": 0,
+            "guild_id_present": False,
+            "parent_channel_id_present": False,
+            "thread_id_present": False,
+            "message_id_present": False,
+            "blocked_reason": "discord_channel_url_required",
+            "same_guild_fuzzy_match_allowed": False,
+        }
+
+    guild_id, first_channel_id, thread_or_message_id, message_id = match.groups()
+    path_id_count = len([part for part in (guild_id, first_channel_id, thread_or_message_id, message_id) if part])
+    blocked_reason = ""
+    if path_id_count < 2:
+        blocked_reason = "discord_channel_url_required"
+    elif path_id_count == 2:
+        blocked_reason = "forum_parent_channel_missing"
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_forum_url_shape.v1",
+        "valid_discord_channel_url": path_id_count >= 2,
+        "shape": {
+            1: "guild_only",
+            2: "channel_or_thread_without_parent",
+            3: "forum_parent_thread_or_message",
+            4: "forum_parent_thread_message",
+        }.get(path_id_count, "unknown"),
+        "path_id_count": path_id_count,
+        "guild_id_present": bool(guild_id),
+        "parent_channel_id_present": path_id_count >= 3,
+        "thread_id_present": path_id_count >= 3,
+        "message_id_present": path_id_count >= 4,
+        "blocked_reason": blocked_reason,
+        "same_guild_fuzzy_match_allowed": False,
+    }
+
+
+def snapshot_freshness(
+    records: list[dict[str, Any]],
+    *,
+    generated_at: str,
+    source: str,
+    max_age_hours: int = 24,
+) -> dict[str, Any]:
+    newest_captured_at = latest_captured_at(records)
+    if not records:
+        return {
+            "status": "missing",
+            "reason": "no_exact_url_or_target_key_match",
+            "source": source,
+            "newest_captured_at": "",
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+        }
+
+    now = parse_snapshot_timestamp(generated_at) or datetime.now(timezone.utc)
+    newest = parse_snapshot_timestamp(newest_captured_at)
+    if newest is None:
+        return {
+            "status": "unknown",
+            "reason": "snapshot_timestamp_unparseable",
+            "source": source,
+            "newest_captured_at": newest_captured_at,
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+        }
+
+    age_seconds = max(0, int((now - newest).total_seconds()))
+    status = "recent" if age_seconds <= max_age_hours * 3600 else "stale"
+    return {
+        "status": status,
+        "reason": "snapshot_within_recency_window" if status == "recent" else "snapshot_older_than_recency_window",
+        "source": source,
+        "newest_captured_at": newest_captured_at,
+        "age_seconds": age_seconds,
+        "max_age_hours": max_age_hours,
+    }
+
+
+def stale_policy_for_freshness(freshness: dict[str, Any]) -> dict[str, Any]:
+    is_stale = freshness.get("status") == "stale"
+    return {
+        "usable_for_reply": not is_stale and freshness.get("status") != "missing",
+        "usable_for_routing": freshness.get("status") in {"recent", "stale", "unknown"},
+        "required_action": "refresh_exact_url_snapshot" if is_stale else "none",
+        "fallback_allowed": "manual_visible_text_or_chrome_extension_only",
+        "reason": "stale_snapshot_requires_refresh" if is_stale else str(freshness.get("reason") or ""),
+    }
+
+
+def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError:
+            loaded = {"text": line, "line_no": line_no, "source_format": "plain_text"}
+        if isinstance(loaded, dict):
+            loaded.setdefault("line_no", line_no)
+            records.append(loaded)
+    return records
+
+
+def snapshot_record_matches(record: dict[str, Any], *, url: str, target_key: str) -> bool:
+    if record.get("url") == url or record.get("target_key") == target_key:
+        return True
+    return bool(url and url in json.dumps(record, ensure_ascii=False))
+
+
+def matching_snapshot_records(path: Path, *, url: str, target_key: str) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in load_snapshot_like_records(path)
+        if snapshot_record_matches(record, url=url, target_key=target_key)
+    ]
+
+
+def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str, target_key: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {key: value for key, value in record.items() if key not in {"line_no", "source_format"}}
+    payload["url"] = url
+    payload["target_key"] = target_key
+    payload.setdefault("captured_at", utc_now())
+    payload.setdefault("private_local_only", True)
+    payload.setdefault("external_share_allowed", False)
+    payload.setdefault("outbound_actions", "disabled")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def build_url_intake_gate(
+    url: str,
+    *,
+    raw_cache_path: Path | None,
+    ai_log_path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str | None = None,
+    sync: bool = False,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    url_shape = analyze_discord_forum_url_shape(url)
+    payload: dict[str, Any] = {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_url_intake_gate.v1",
+        "generated_at": generated,
+        "message": "Discord URL intake gate を確認しました。",
+        "url_output": "omitted",
+        "target_key": key,
+        "url_shape": url_shape,
+        "snapshot_status": "unknown",
+        "freshness": snapshot_freshness([], generated_at=generated, source="none"),
+        "recency": {
+            "status": "missing",
+            "reason": "no_exact_url_or_target_key_match",
+            "source": "none",
+        },
+        "raw_cache_checked": "no",
+        "ai_log_compared": "no",
+        "sync_performed": "no",
+        "exact_coverage": "no",
+        "fallback_allowed": "no",
+        "fallback_policy": "dom_export_or_manual_paste_only",
+        "ocr_allowed": False,
+        "outbound_actions": "disabled",
+        "raw_text_returned": False,
+        "state": "blocked",
+        "blocked_reason": "",
+        "route_failure": "none",
+        "paths_output": "omitted",
+    }
+
+    if raw_cache_path is None:
+        payload["blocked_reason"] = "raw_cache_gate_skipped"
+        payload["route_failure"] = "raw_cache_gate_skipped"
+        payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+        return payload
+
+    payload["raw_cache_checked"] = "yes"
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=key)
+    raw_freshness = snapshot_freshness(raw_matches, generated_at=generated, source="raw_cache")
+    payload["raw_cache"] = {"exists": raw_cache_path.exists(), "match_count": len(raw_matches)}
+
+    ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key)
+    ai_freshness = snapshot_freshness(ai_matches, generated_at=generated, source="ai_log")
+    payload["ai_log_compared"] = "yes"
+    payload["ai_log"] = {"exists": ai_log_path.exists(), "match_count": len(ai_matches)}
+
+    if raw_matches and ai_matches:
+        payload["state"] = "ready"
+        payload["exact_coverage"] = "yes"
+        payload["sync_performed"] = "not_needed"
+        payload["blocked_reason"] = ""
+        payload["snapshot_status"] = "ready"
+        payload["freshness"] = ai_freshness
+        payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
+        payload["stale_policy"] = stale_policy_for_freshness(ai_freshness)
+        return payload
+
+    if raw_matches and not ai_matches:
+        payload["state"] = "ai_log_stale"
+        payload["blocked_reason"] = "ai_log_stale"
+        payload["snapshot_status"] = "ai_log_stale"
+        payload["freshness"] = raw_freshness
+        payload["recency"] = {
+            "status": raw_freshness["status"],
+            "reason": "raw_cache_exact_match_but_ai_log_missing",
+            "source": "raw_cache",
+        }
+        if sync:
+            append_snapshot_like_record(ai_log_path, raw_matches[0], url=url, target_key=key)
+            ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key)
+            ai_freshness = snapshot_freshness(ai_matches, generated_at=generated, source="ai_log")
+            payload["sync_performed"] = "yes"
+            payload["exact_coverage"] = "yes"
+            payload["state"] = "ready"
+            payload["blocked_reason"] = ""
+            payload["snapshot_status"] = "ready"
+            payload["freshness"] = ai_freshness
+            payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
+            payload["ai_log"]["exists"] = True
+            payload["ai_log"]["match_count"] = len(ai_matches)
+        payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+        return payload
+
+    payload["state"] = "raw_cache_missing"
+    payload["blocked_reason"] = url_shape["blocked_reason"] or "raw_cache_missing"
+    payload["snapshot_status"] = "raw_cache_missing"
+    payload["freshness"] = snapshot_freshness([], generated_at=generated, source="none")
+    payload["recency"] = {
+        "status": "missing",
+        "reason": "no_exact_url_or_target_key_match",
+        "source": "none",
+    }
+    payload["fallback_allowed"] = "yes"
+    payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+    return payload
+
+
+def build_coverage_report(
+    *,
+    url: str = "",
+    target_key: str = "",
+    raw_cache_path: Path | None = None,
+    ai_log_path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    source_kind: str = "saved_log",
+    dedupe_policy: str = "by_hash",
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    generated = generated_at or utc_now()
+    key = target_key or (target_key_for_url(url) if url else "")
+    raw_matches = (
+        matching_snapshot_records(raw_cache_path, url=url, target_key=key)
+        if raw_cache_path is not None and url and key
+        else []
+    )
+    ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key) if url and key else []
+    exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
+    selected_records = ai_matches or raw_matches
+    freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
+    freshness = snapshot_freshness(selected_records, generated_at=generated, source=freshness_source)
+    url_shape = analyze_discord_forum_url_shape(url) if url else {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_forum_url_shape.v1",
+        "valid_discord_channel_url": False,
+        "shape": "missing",
+        "path_id_count": 0,
+        "guild_id_present": False,
+        "parent_channel_id_present": False,
+        "thread_id_present": False,
+        "message_id_present": False,
+        "blocked_reason": "url_missing",
+        "same_guild_fuzzy_match_allowed": False,
+    }
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_coverage_report.v1",
+        "generated_at": generated,
+        "message": "Discord URL coverage report を作成しました。",
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": url_shape,
+        "snapshot_status": "ready" if exact_coverage else "raw_cache_missing" if raw_cache_path is not None else "unknown",
+        "freshness": freshness,
+        "recency": {key: freshness[key] for key in ("status", "reason", "source")},
+        "stale_policy": stale_policy_for_freshness(freshness),
+        "source_kind": source_kind,
+        "dedupe_policy": dedupe_policy,
+        "coverage": {
+            "raw_cache_checked": raw_cache_path is not None,
+            "raw_cache_match_count": len(raw_matches),
+            "ai_log_checked": True,
+            "ai_log_match_count": len(ai_matches),
+            "exact_coverage": exact_coverage,
+        },
+        "fallback_policy": {
+            "allowed": "dom_export_or_manual_paste_only",
+            "ocr_allowed": False,
+            "outbound_actions": "disabled",
+            "raw_text_returned": False,
+        },
+        "same_guild_fuzzy_match_allowed": False,
+        "path_output": "omitted",
+    }
+
+
 def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     if not path.exists():
         return []
