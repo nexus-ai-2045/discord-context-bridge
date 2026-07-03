@@ -1945,6 +1945,98 @@ def digest_context_from_text(
     )
 
 
+CONTEXT_OPERATING_MODES = ("triage", "catchup", "join-thread", "boundary")
+
+
+def build_context_operating_mode(
+    events: list[DiscordEvent],
+    *,
+    mode: str,
+    context_documents: list[dict[str, str]] | None = None,
+    focus: str = "",
+) -> dict[str, Any]:
+    if mode not in CONTEXT_OPERATING_MODES:
+        raise ValueError("unknown context operating mode")
+    context_documents = context_documents or []
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    rule_notes = extract_context_rule_notes(context_documents) + extract_matching_snippets(events, RULE_KEYWORDS, limit=2)
+    focus_text = redact_artifact_text(focus)
+    no_context = not events
+    needs_care = temperature in {"serious", "hot"} or bool(rule_notes)
+
+    if mode == "triage":
+        route = "read_context" if no_context else "boundary_check" if rule_notes else "chew_context"
+        checklist = ["可視本文の有無", "ルール注意の有無", "返信へ進む前の理解 gate"]
+        next_actions = ["先に可視本文を取り込む。"] if no_context else ["chew-context で理解メモを作る。"]
+    elif mode == "catchup":
+        route = "read_more" if no_context or needs_care else "caught_up_for_light_entry"
+        checklist = ["最初または固定投稿", "直近の流れ", "ルール・管理者メモ", "未読や stale snapshot"]
+        next_actions = ["固定文・最新発言・ルール注意を確認する。"]
+    elif mode == "join-thread":
+        route = "observe_only" if no_context else "ask_before_join" if temperature == "hot" else "read_then_join"
+        checklist = ["初参加として入る余地", "話題からの脱線", "自己紹介の長さ", "相手が訂正できる余白"]
+        next_actions = ["短く、直近話題に接続して入る。"] if route == "read_then_join" else ["追加で読み、入室前に人間が判断する。"]
+    else:
+        route = "hold_for_human_go" if needs_care else "safe_to_continue"
+        checklist = ["raw 本文を出さない", "URL・snowflake・local path を出さない", "外部送信しない", "ルール注意を見落とさない"]
+        next_actions = ["必要なら人間確認を挟む。"] if needs_care else ["次のローカル処理へ進める。"]
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_operating_mode.v1",
+        "message": "Discord 文脈運用モードを作成しました。",
+        "mode": mode,
+        "parsed": len(events),
+        "focus": focus_text,
+        "route": route,
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "rule_attention": bool(rule_notes),
+        "checklist": checklist,
+        "next_actions": next_actions,
+        "do_not_do": [
+            "Discord へ自動送信しない。",
+            "raw 本文・参加者名・URL・snowflake・local path を出力しない。",
+            "初参加時に長い自己紹介や断定で流れを切らない。",
+        ],
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def context_operating_mode_from_text(
+    text: str,
+    *,
+    mode: str,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+    focus: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_operating_mode(
+        events,
+        mode=mode,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+        focus=focus,
+    )
+
+
 UNDERSTANDING_GATE_OPTIONS = ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
 
 
