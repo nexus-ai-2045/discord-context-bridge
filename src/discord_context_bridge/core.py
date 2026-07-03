@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import re
 import time
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
 DEFAULT_TEXT_SNAPSHOT_STORE = Path(".local/discord-context-bridge/text-snapshots.ndjson")
+DEFAULT_ATTACHMENT_LEDGER = Path(".local/discord-context-bridge/attachment-ledger.md")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
@@ -1256,6 +1258,199 @@ def snapshot_visible_text(
         "message_count": len(message_list),
         "context_ready": True,
         "visible_text_saved": True,
+    }
+
+
+def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            records.append(dict(json.loads(line)))
+    return records
+
+
+def attachment_source_key(record: dict[str, Any], attachment: dict[str, Any], index: int) -> str:
+    identity = {
+        "message_id": record.get("message_id") or record.get("id") or record.get("messageId") or "",
+        "attachment_id": attachment.get("id") or attachment.get("attachment_id") or "",
+        "filename": attachment.get("filename") or attachment.get("name") or "",
+        "index": index,
+    }
+    return stable_event_id(identity)
+
+
+def classify_attachment_type(filename: str, content_type: str = "") -> str:
+    mime = content_type.strip() or (mimetypes.guess_type(filename)[0] or "")
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime == "application/pdf":
+        return "document"
+    if mime.startswith("text/"):
+        return "text"
+    return "unknown"
+
+
+def safe_attachment_filename(filename: str) -> str:
+    safe = redact_artifact_text(Path(filename or "attachment").name)
+    return safe or "attachment"
+
+
+def attachment_local_status(local_path: str | Path | None) -> str:
+    if not local_path:
+        return "not_recorded"
+    return "present" if Path(local_path).exists() else "missing"
+
+
+def normalize_attachment_entries(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for record in records:
+        attachments = record.get("attachments") or []
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if not isinstance(attachments, list):
+            continue
+        for index, item in enumerate(attachments):
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or item.get("name") or "attachment")
+            content_type = str(item.get("content_type") or item.get("contentType") or "")
+            local_path = item.get("local_path") or item.get("localPath") or item.get("path")
+            width = item.get("width")
+            height = item.get("height")
+            size = item.get("size") or item.get("size_bytes") or item.get("sizeBytes")
+            entry = {
+                "schema": "discord_attachment_ledger_entry.v1",
+                "source_key": attachment_source_key(record, item, index),
+                "captured_at": str(record.get("captured_at") or record.get("timestamp") or record.get("observed_at") or ""),
+                "filename": safe_attachment_filename(filename),
+                "content_type": content_type or (mimetypes.guess_type(filename)[0] or "unknown"),
+                "attachment_type": classify_attachment_type(filename, content_type),
+                "width": int(width) if isinstance(width, int) else None,
+                "height": int(height) if isinstance(height, int) else None,
+                "size_bytes": int(size) if isinstance(size, int) else None,
+                "local_status": attachment_local_status(local_path),
+                "url_present": bool(item.get("url") or item.get("proxy_url") or item.get("proxyUrl")),
+                "url_output": "omitted",
+                "local_path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+            entries.append(entry)
+    return entries
+
+
+def render_attachment_ledger_markdown(entries: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Discord attachment ledger",
+        "",
+        "この ledger は添付の safe metadata だけを保持します。raw Discord URL、local path、本文は出力しません。",
+        "",
+        "| source_key | type | filename | size_bytes | dimensions | local_status |",
+        "|---|---|---|---:|---|---|",
+    ]
+    for entry in entries:
+        dimensions = ""
+        if entry.get("width") and entry.get("height"):
+            dimensions = f"{entry['width']}x{entry['height']}"
+        lines.append(
+            "| {source_key} | {attachment_type} | {filename} | {size_bytes} | {dimensions} | {local_status} |".format(
+                source_key=entry["source_key"],
+                attachment_type=entry["attachment_type"],
+                filename=entry["filename"],
+                size_bytes=entry["size_bytes"] if entry["size_bytes"] is not None else "",
+                dimensions=dimensions,
+                local_status=entry["local_status"],
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "raw_url_output: omitted",
+            "local_path_output: omitted",
+            "outbound_actions: disabled",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def build_attachment_ledger(*, records: Iterable[dict[str, Any]], output: Path | None = None) -> dict[str, Any]:
+    entries = normalize_attachment_entries(records)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_attachment_ledger_markdown(entries), encoding="utf-8")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_attachment_ledger.v1",
+        "message": "Discord 添付 ledger を作成しました。",
+        "attachment_count": len(entries),
+        "entries": entries,
+        "ledger_created": output is not None,
+        "path_output": "omitted",
+        "raw_url_returned": False,
+        "raw_text_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def build_attachment_ocr_log_markdown(
+    *,
+    source_key: str,
+    ocr_text: str,
+    note_label: str = "",
+) -> str:
+    safe_source_key = redact_artifact_text(source_key) or stable_text_hash(source_key)
+    safe_note_label = redact_artifact_text(note_label)
+    return "\n".join(
+        [
+            "# Discord attachment OCR log",
+            "",
+            "status: private_local_review",
+            f"source_key: {safe_source_key}",
+            f"note_label: {safe_note_label or 'なし'}",
+            "raw_url_output: omitted",
+            "local_path_output: omitted",
+            "stdout_raw_text_output: omitted",
+            "outbound_actions: disabled",
+            "",
+            "## OCR text",
+            "",
+            ocr_text.strip() or "(empty)",
+            "",
+        ]
+    )
+
+
+def write_attachment_ocr_log(
+    *,
+    source_key: str,
+    ocr_text: str,
+    output: Path,
+    note_label: str = "",
+) -> dict[str, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        build_attachment_ocr_log_markdown(source_key=source_key, ocr_text=ocr_text, note_label=note_label),
+        encoding="utf-8",
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_attachment_ocr_log.v1",
+        "message": "Discord 添付 OCR log を保存しました。",
+        "created": True,
+        "source_key": redact_artifact_text(source_key) or stable_text_hash(source_key),
+        "note_label": redact_artifact_text(note_label),
+        "ocr_char_count": len(ocr_text),
+        "path_output": "omitted",
+        "raw_text_returned": False,
+        "raw_url_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
     }
 
 
