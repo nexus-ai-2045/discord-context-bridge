@@ -26,6 +26,7 @@ from discord_context_bridge import (
     write_attachment_ocr_log,
     build_url_intake_gate,
     context_passport_from_text,
+    digest_context_from_text,
     fast_briefing,
     get_context_document,
     get_review_state,
@@ -567,6 +568,26 @@ def test_guide_reply_from_text_returns_conversation_guide():
     assert guide["reply_review"]["quick_verdict_label"].startswith("go:")
     assert guide["send_capability_label"] == "このツールから Discord へ送信しません。"
     assert "文脈と返信意図は大きくずれていません。" in guide["next_actions"]
+
+
+def test_digest_context_from_text_returns_safe_chewing_packet():
+    digestion = digest_context_from_text(
+        RICH_COPY_FIXTURE.read_text(encoding="utf-8"),
+        focus="公開時期",
+    )
+    rendered = json.dumps(digestion, ensure_ascii=False)
+
+    assert digestion["schema"] == "discord_context_digestion.v1"
+    assert digestion["mode"] == "chew"
+    assert digestion["parsed"] == 3
+    assert digestion["focus"] == "公開時期"
+    assert digestion["focus_matched"] is True
+    assert digestion["safety_boundary"]["raw_text_returned"] is False
+    assert digestion["safety_boundary"]["participant_names_returned"] is False
+    assert digestion["send_capability"] == "disabled"
+    assert any(layer.startswith("目的:") for layer in digestion["understanding_layers"])
+    assert "member-a" not in rendered
+    assert "公開時期の話ですよね" not in rendered
 
 
 def test_guide_reply_warns_about_topic_mismatch():
@@ -3688,6 +3709,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert sorted(server.tools) == [
         "audit_context_library_before_tunnel",
         "audit_event_store_before_tunnel",
+        "chew_discord_context_from_visible_text",
         "closeout_discord_send_after_human_action",
         "get_context_passport_from_discord_url",
         "get_context_passport_from_visible_text",
