@@ -136,6 +136,13 @@ def post_mcp(port: int, payload: dict, session_id: str | None = None) -> tuple[d
         return dict(response.headers), response.read().decode("utf-8")
 
 
+def remove_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
 def wait_for_mcp(port: int) -> tuple[str, str]:
     last_error = ""
     payload = {
@@ -234,10 +241,9 @@ def run_http_smoke(store: Path, port: int) -> dict:
 
 def main() -> int:
     args = parse_args()
-    if args.reset and args.store.exists():
-        args.store.unlink()
-    if args.reset and args.context_store.exists():
-        args.context_store.unlink()
+    if args.reset:
+        remove_if_present(args.store)
+        remove_if_present(args.context_store)
 
     if args.from_clipboard:
         text = read_clipboard_text(args.clipboard_command)

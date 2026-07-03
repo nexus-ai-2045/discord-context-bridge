@@ -20,6 +20,7 @@ import e2e_discord_route_check
 import e2e_private_adapter_check
 import codex_discord_ingress_smoke
 import live_ops_smoke
+import local_smoke
 import live_mvp_status
 import ops_check
 import ops_preflight
@@ -666,6 +667,70 @@ def test_live_ops_smoke_writes_timing_log(tmp_path: Path):
     assert entries[0]["parsed"] == 2
     assert entries[0]["elapsed_ms"] >= 0
     assert entries[0]["outbound_actions"] == "disabled"
+
+
+def test_local_smoke_reset_allows_missing_store_files(tmp_path: Path, monkeypatch):
+    store = tmp_path / "missing-events.ndjson"
+    context_store = tmp_path / "missing-context.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "local_smoke.py",
+            "--reset",
+            "--skip-http",
+            "--store",
+            str(store),
+            "--context-store",
+            str(context_store),
+        ],
+    )
+
+    assert local_smoke.main() == 0
+    assert store.exists()
+    assert context_store.exists()
+
+
+def test_live_ops_smoke_reset_allows_missing_store_file(tmp_path: Path):
+    store = tmp_path / "missing-live-events.ndjson"
+
+    result = live_ops_smoke.main(
+        [
+            "--reset",
+            "--source-command",
+            f"{sys.executable} -c \"print('member-a: 公開時期の前提を確認したいです。')\"",
+            "--store",
+            str(store),
+            "--json",
+        ]
+    )
+
+    assert result == 0
+    assert store.exists()
+
+
+def test_ops_check_local_smoke_uses_run_scoped_store_paths(monkeypatch):
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_command(name: str, command: list[str], **kwargs) -> ops_check.CheckResult:
+        captured[name] = command
+        return ops_check.CheckResult(name, True, 0.0, command, "")
+
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    args = ops_check.parse_args(["--skip-http"])
+
+    checks = ops_check.build_checks(args)
+    checks["ローカルスモーク"]()
+    command = captured["ローカルスモーク"]
+
+    assert "--store" in command
+    assert "--context-store" in command
+    store = Path(command[command.index("--store") + 1])
+    context_store = Path(command[command.index("--context-store") + 1])
+    assert store.name.startswith("dcb-local-smoke-")
+    assert context_store.name.startswith("dcb-context-library-smoke-")
+    assert str(store) != "/tmp/dcb-local-smoke.ndjson"
+    assert str(context_store) != "/tmp/dcb-context-library-smoke.json"
 
 
 def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path):
