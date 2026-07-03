@@ -393,7 +393,7 @@ Chrome 拡張でできることと停止線の棚卸しは
 
 Chrome 拡張 runner は、`stage-discord-send` のあとに
 `verify-chrome-fill-dry-run` を通します。Socket、対象 URL、reply UI / message box
-候補数、copy block との一致、pre-send ping が揃らない場合は `blocked` になり、
+候補数、ユーザー操作直前の最新可視 snapshot、copy block との一致、pre-send ping が揃らない場合は `blocked` になり、
 下書き入力もしません。reply UI が複数または 0 件の時は通常 message box へ
 fallback せず停止します。
 
@@ -415,6 +415,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --socket-preflight \
   --target-url-verified \
   --socket-after-navigation \
+  --latest-visible-snapshot-confirmed \
   --reply-ui-candidates 1 \
   --draft-matches-copy-block \
   --socket-pre-send \

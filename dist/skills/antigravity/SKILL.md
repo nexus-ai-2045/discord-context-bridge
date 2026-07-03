@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 009f14d6265b5d22fb5e868fafba9189c999116d
+ssot_commit: 02d407cda1c2abff4ec3e0e8a80cb889ba10dd6b
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: dc9dacae93f34c31f6b4a062feb5c5b7fc7f18a5be568eda8333e7ec0f4f7a60
-contract_checksum: 210a2d97e44a53aa097db97a2b0c23dc4e2fc6dec57a4a837176edb659c6f7a8
-generated_at: 2026-07-03T14:40:19+00:00
+manifest_checksum: e45d44c2e0849518ab35f002c2677491a03c429aefe78b07ddb4160e416c0639
+contract_checksum: 640e8397df3eccfbd53071c63ad39d0393c932a4b7f693ae42d04727866f204b
+generated_at: 2026-07-03T18:56:13+00:00
 runtime_target: antigravity
 ---
 
@@ -26,6 +26,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - 外部共有、公開投稿、GitHub への raw Discord text の追加はしない。
 - raw Discord 本文、実 guild/channel/message ID、handle、token、cookie、local absolute path を visible output に出さない。
 - 取得経路は local-first / read-only とし、可視テキスト・clipboard・private adapter のいずれも outbound action を持たない。
+- Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 
 ## 標準フロー
@@ -54,10 +55,13 @@ PR 前と運用 closeout では次を確認する。
 
 ```bash
 python3 scripts/verify_ssot_projection.py --json
+python3 scripts/lint_ingest_route_policy.py --json
 python3 scripts/ops_check.py --gh
 ```
 
 `verify_ssot_projection.py` は runtime skill の欠落、stale、provenance 不一致、private / raw data 混入を検出する。
+
+`lint_ingest_route_policy.py` は contract / runtime skill / local Claude skill に Playwright fallback 禁止の運用文が残っているかを検出する。
 
 各 runtime の local skill directory は、勝手に書き換えず read-only lint で同期状態を確認する。
 
@@ -75,6 +79,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `no_external_share`
 - `no_raw_discord_text_in_visible_output`
 - `no_tokens_or_cookies`
+- `no_playwright_default_for_discord_context`
 
 ## Commands
 
@@ -87,4 +92,5 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 - `python3 scripts/verify_ssot_projection.py --json`: SSOT から生成された runtime skill が最新か確認する
 - `python3 scripts/lint_runtime_skill_sync.py --target codex=/path/to/SKILL.md --json`: runtime skill directory の実体が SSOT 生成物と一致するか read-only で確認する
+- `python3 scripts/lint_ingest_route_policy.py --json`: Discord 文脈取得で Playwright を既定経路にしない運用を確認する
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する

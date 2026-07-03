@@ -14,6 +14,7 @@ stoplines:
   - no_external_share
   - no_raw_discord_text_in_visible_output
   - no_tokens_or_cookies
+  - no_playwright_default_for_discord_context
 required_commands:
   - command: import-visible-text
     purpose: 可視テキストをローカル event store に取り込む
@@ -28,5 +29,7 @@ verification_commands:
     purpose: SSOT から生成された runtime skill が最新か確認する
   - command: python3 scripts/lint_runtime_skill_sync.py --target codex=/path/to/SKILL.md --json
     purpose: runtime skill directory の実体が SSOT 生成物と一致するか read-only で確認する
+  - command: python3 scripts/lint_ingest_route_policy.py --json
+    purpose: Discord 文脈取得で Playwright を既定経路にしない運用を確認する
   - command: python3 scripts/ops_check.py --gh
     purpose: test / smoke / secret scan / GitHub account をまとめて確認する
