@@ -24,6 +24,7 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert manifest["ssot_repo"] == "nexus-ai-2045/discord-context-bridge"
     assert {"codex", "claude-code", "grok", "antigravity"} <= set(manifest["runtime_targets"])
     assert "no_discord_send" in manifest["stoplines"]
+    assert "no_playwright_default_for_discord_context" in manifest["stoplines"]
 
 
 def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
@@ -45,6 +46,7 @@ def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
     assert "ssot_commit: testcommit123" in body
     assert "manifest_checksum:" in body
     assert "Discord への send / 自動返信 / reaction / delete / edit はしない" in body
+    assert "Playwright / headless browser / 新規 browser profile を既定経路にしない" in body
 
 
 def test_verify_projection_detects_stale_generated_skill(tmp_path):
@@ -122,3 +124,48 @@ def test_lint_runtime_skill_sync_can_allow_missing_optional_target(tmp_path):
     assert report["overall"] == "ok"
     assert report["checks"]["grok"]["status"] == "warning"
     assert report["checks"]["grok"]["reason"] == "target_missing"
+
+
+def test_lint_ingest_route_policy_requires_playwright_default_ban(tmp_path):
+    module = load_script_module("lint_ingest_route_policy_ok", ROOT / "scripts" / "lint_ingest_route_policy.py")
+    generated = tmp_path / "dist" / "skills" / "codex"
+    generated.mkdir(parents=True)
+    required = "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility"
+    contract = tmp_path / "operating-contract.md"
+    contract.write_text(required, encoding="utf-8")
+    (generated / "SKILL.md").write_text(required, encoding="utf-8")
+    local_skill = tmp_path / "local" / "SKILL.md"
+    local_skill.parent.mkdir()
+    local_skill.write_text(required, encoding="utf-8")
+
+    report = module.lint_ingest_route_policy(
+        contract=contract,
+        generated_skills_dir=tmp_path / "dist" / "skills",
+        local_claude_skill=local_skill,
+    )
+
+    assert report["overall"] == "ok"
+    assert report["checks"]["contract"]["status"] == "ok"
+    assert report["checks"]["generated:codex"]["status"] == "ok"
+    assert report["checks"]["local:claude-code"]["status"] == "ok"
+
+
+def test_lint_ingest_route_policy_detects_missing_phrase(tmp_path):
+    module = load_script_module("lint_ingest_route_policy_missing", ROOT / "scripts" / "lint_ingest_route_policy.py")
+    generated = tmp_path / "dist" / "skills" / "codex"
+    generated.mkdir(parents=True)
+    contract = tmp_path / "operating-contract.md"
+    contract.write_text("cic Discord Desktop cache macOS Accessibility", encoding="utf-8")
+    (generated / "SKILL.md").write_text(
+        "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility",
+        encoding="utf-8",
+    )
+
+    report = module.lint_ingest_route_policy(
+        contract=contract,
+        generated_skills_dir=tmp_path / "dist" / "skills",
+        include_local_claude_skill=False,
+    )
+
+    assert report["overall"] == "error"
+    assert report["checks"]["contract"]["reason"] == "required_phrase_missing"
