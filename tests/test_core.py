@@ -26,6 +26,7 @@ from discord_context_bridge import (
     write_attachment_ocr_log,
     build_url_intake_gate,
     context_passport_from_text,
+    context_operating_mode_from_text,
     digest_context_from_text,
     fast_briefing,
     get_context_document,
@@ -588,6 +589,49 @@ def test_digest_context_from_text_returns_safe_chewing_packet():
     assert any(layer.startswith("目的:") for layer in digestion["understanding_layers"])
     assert "member-a" not in rendered
     assert "公開時期の話ですよね" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_route"),
+    [
+        ("triage", "chew_context"),
+        ("catchup", "caught_up_for_light_entry"),
+        ("join-thread", "read_then_join"),
+        ("boundary", "safe_to_continue"),
+    ],
+)
+def test_context_operating_modes_return_safe_packets(mode, expected_route):
+    snowflake = "1" * 18
+    discord_url = "https://discord.com/" + f"channels/{snowflake}/{'2' * 18}"
+    local_path = "/" + "Users" + "/example/private.txt"
+    packet = context_operating_mode_from_text(
+        RICH_COPY_FIXTURE.read_text(encoding="utf-8"),
+        mode=mode,
+        focus=f"公開時期 {discord_url} {local_path}",
+    )
+    rendered = json.dumps(packet, ensure_ascii=False)
+
+    assert packet["schema"] == "discord_context_operating_mode.v1"
+    assert packet["mode"] == mode
+    assert packet["route"] == expected_route
+    assert packet["safety_boundary"]["raw_text_returned"] is False
+    assert packet["safety_boundary"]["participant_names_returned"] is False
+    assert packet["send_capability"] == "disabled"
+    assert packet["checklist"]
+    assert packet["next_actions"]
+    assert "member-a" not in rendered
+    assert "公開時期の話ですよね" not in rendered
+    assert "discord.com/channels" not in rendered
+    assert snowflake not in rendered
+    assert local_path not in rendered
+
+
+def test_join_thread_mode_holds_without_visible_context():
+    packet = context_operating_mode_from_text("", mode="join-thread")
+
+    assert packet["route"] == "observe_only"
+    assert packet["parsed"] == 0
+    assert packet["send_capability"] == "disabled"
 
 
 def test_guide_reply_warns_about_topic_mismatch():
@@ -1220,6 +1264,10 @@ def test_cli_help_uses_japanese_user_facing_text():
     assert "import-clipboard" in help_text
     assert "guide-reply" in help_text
     assert "context-passport" in help_text
+    assert "triage-mode" in help_text
+    assert "catchup-mode" in help_text
+    assert "join-thread-mode" in help_text
+    assert "boundary-mode" in help_text
     assert "watch-passport" in help_text
     assert "使い方:" in help_text
     assert "オプション:" in help_text
@@ -1556,6 +1604,43 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
     assert calls[0][1]["capture_output"] is True
     assert '"message": "Discord 返信ガイドを作成しました。"' in output
     assert '"send_capability": "disabled"' in output
+
+
+@pytest.mark.parametrize(
+    ("command", "mode"),
+    [
+        ("triage-mode", "triage"),
+        ("catchup-mode", "catchup"),
+        ("join-thread-mode", "join-thread"),
+        ("boundary-mode", "boundary"),
+    ],
+)
+def test_cli_context_modes_output_safe_json(command, mode, capsys):
+    snowflake = "1" * 18
+    discord_url = "https://discord.com/" + f"channels/{snowflake}/{'2' * 18}"
+    local_path = "/" + "Users" + "/example/private.txt"
+    result = cli_main(
+        [
+            command,
+            "--input",
+            str(RICH_COPY_FIXTURE),
+            "--focus",
+            f"公開時期 {discord_url} {local_path}",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_context_operating_mode.v1"' in output
+    assert f'"mode": "{mode}"' in output
+    assert '"raw_text_returned": false' in output
+    assert '"send_capability": "disabled"' in output
+    assert "member-a" not in output
+    assert "公開時期の話ですよね" not in output
+    assert "discord.com/channels" not in output
+    assert snowflake not in output
+    assert local_path not in output
 
 
 def test_cli_source_command_error_redacts_sensitive_stderr(monkeypatch):
@@ -3711,6 +3796,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "audit_event_store_before_tunnel",
         "chew_discord_context_from_visible_text",
         "closeout_discord_send_after_human_action",
+        "get_context_operating_mode_from_visible_text",
         "get_context_passport_from_discord_url",
         "get_context_passport_from_visible_text",
         "get_fast_briefing",

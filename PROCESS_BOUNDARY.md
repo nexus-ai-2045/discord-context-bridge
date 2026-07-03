@@ -123,6 +123,10 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --draft "前提を確認してから返信します。"
 ```
 
+`triage-mode`、`catchup-mode`、`join-thread-mode`、`boundary-mode` は、
+読む範囲と停止線を返す判断 packet です。Discord への参加操作、送信、
+reaction、edit、delete は行いません。
+
 送信テスト運用では `stage-discord-send` を使い、Chrome 拡張が実行してよい範囲を
 `fill-only` packet として固定します。packet は socket preflight、対象 URL 照合、
 reply UI / message box への下書き入力、pre-send ping、`stop_before_send_button`

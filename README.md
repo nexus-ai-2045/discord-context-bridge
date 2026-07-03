@@ -337,6 +337,27 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --interval 1
 ```
 
+### 文脈運用モード
+
+`context-passport` と `chew-context` の前後で、Discord スレッドに入る前の
+運用判断を 4 つの mode に分けて確認できます。いずれも Discord へ送信せず、
+raw 本文、参加者名、URL、snowflake、local path は出力しません。
+
+| mode | 用途 |
+|---|---|
+| `triage-mode` | 読む・咀嚼・返信・保存・停止の入口を切る |
+| `catchup-mode` | 初参加/再訪時にどこまで読めばよいかを切る |
+| `join-thread-mode` | スレッド初参加としてどう入るかを切る |
+| `boundary-mode` | raw/private/外部送信/公開境界を切る |
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  join-thread-mode \
+  --input tests/fixtures/discord_rich_copy.txt \
+  --focus "公開時期" \
+  --json
+```
+
 返信前は、保存済みの直近文脈に対して下書きを gate できます。このコマンドも Discord へ送信しません。
 
 ```bash
@@ -947,7 +968,7 @@ python3 -m pip install ".[mcp]"
 discord-context-bridge-mcp
 ```
 
-MCP tool は 15個です。
+MCP tool は 18個です。
 
 - `import_visible_discord_text`: Discord の可視テキストを local event store に取り込みます。
 - `get_fast_briefing`: 直近文脈の短い briefing を返します。
@@ -958,6 +979,8 @@ MCP tool は 15個です。
 - `closeout_discord_send_after_human_action`: 人間送信後の状態と未読確認を metadata-only で閉じます。本文、URL、snowflake は返しません。
 - `guide_reply_from_visible_text`: Discord の可視テキストと返信 draft から会話ガイドを返します。
 - `get_context_passport_from_visible_text`: Discord の可視テキストからスレッド文脈パスポートを返します。
+- `chew_discord_context_from_visible_text`: Discord の可視テキストを咀嚼し、raw 本文なしの理解メモを返します。
+- `get_context_operating_mode_from_visible_text`: triage / catchup / join-thread / boundary の運用判断 packet を返します。
 - `plan_discord_url_read`: Discord URL を読む前に、使う入口と不足 snapshot を本文なしで計画します。
 - `snapshot_discord_url_text`: Discord URL の可視テキスト snapshot を本文なし metadata と一緒に保存します。
 - `snapshot_chrome_extension_visible_text`: Chrome 拡張から受けた可視テキスト snapshot を保存します。

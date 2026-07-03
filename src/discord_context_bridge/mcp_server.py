@@ -11,6 +11,7 @@ from .core import (
     audit_event_store,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
+    context_operating_mode_from_text,
     context_passport_from_text,
     digest_context_from_text,
     fast_briefing,
@@ -249,6 +250,29 @@ def build_server(
         """Discord の可視テキストを咀嚼し、raw 本文なしの理解メモを返します。"""
         return digest_context_from_text(
             text,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+            focus=focus,
+        )
+
+    @server.tool()
+    def get_context_operating_mode_from_visible_text(
+        text: str,
+        mode: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+        focus: str = "",
+    ) -> dict[str, Any]:
+        """triage/catchup/join-thread/boundary の運用モード packet を返します。"""
+        return context_operating_mode_from_text(
+            text,
+            mode=mode,
             guild_label=guild_label,
             channel_label=channel_label,
             server_context=server_context,

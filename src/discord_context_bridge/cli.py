@@ -29,6 +29,7 @@ from .core import (
     build_latest_snapshot_report,
     build_review_artifact_markdown,
     context_passport_from_text,
+    context_operating_mode_from_text,
     digest_context_from_text,
     fast_briefing,
     get_review_state,
@@ -354,6 +355,34 @@ def build_parser() -> argparse.ArgumentParser:
     chew.add_argument("--focus", default="", help="任意: 咀嚼したい焦点。出力前に安全化します")
     chew.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     chew.set_defaults(handler=_cmd_chew_context)
+
+    for command, mode, help_text in [
+        ("triage-mode", "triage", "読む・咀嚼・返信・保存・停止の入口を切る"),
+        ("catchup-mode", "catchup", "初参加/再訪時にどこまで読めばよいかを切る"),
+        ("join-thread-mode", "join-thread", "スレッド初参加としてどう入るかを切る"),
+        ("boundary-mode", "boundary", "raw/private/外部送信/公開境界を切る"),
+    ]:
+        mode_parser = sub.add_parser(command, help=help_text)
+        mode_parser.add_argument("--input", type=Path, help="読み込むテキストファイル")
+        mode_parser.add_argument("--from-clipboard", action="store_true", help="--input ではなくローカルのクリップボードから可視テキストを読む")
+        mode_parser.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
+        mode_parser.add_argument("--source-command", help="Discord 可視テキストを出力するローカルコマンド")
+        mode_parser.add_argument("--guild", default="example-community", help="サーバー名または仮ラベル")
+        mode_parser.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
+        mode_parser.add_argument("--server-context", type=Path, help="サーバールールや全体方針を書いたローカルテキスト")
+        mode_parser.add_argument("--channel-context", type=Path, help="チャンネル目的や掲示板ルールを書いたローカルテキスト")
+        mode_parser.add_argument("--thread-context", type=Path, help="スレッド固定文・目的・注意事項を書いたローカルテキスト")
+        mode_parser.add_argument("--server-context-key", help="文脈庫から読むサーバー文脈キー")
+        mode_parser.add_argument("--channel-context-key", help="文脈庫から読むチャンネル文脈キー")
+        mode_parser.add_argument("--thread-context-key", help="文脈庫から読むスレッド文脈キー")
+        mode_parser.add_argument(
+            "--auto-context-bindings",
+            action="store_true",
+            help="安全な guild/channel label から文脈庫キーを補助的に解決する",
+        )
+        mode_parser.add_argument("--focus", default="", help="任意: 見たい焦点。出力前に安全化します")
+        mode_parser.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+        mode_parser.set_defaults(handler=_cmd_context_mode, context_mode=mode)
 
     watch_passport = sub.add_parser(
         "watch-passport",
@@ -901,6 +930,28 @@ def _cmd_chew_context(args: argparse.Namespace) -> int:
     return 0 if digestion["parsed"] else 2
 
 
+def _cmd_context_mode(args: argparse.Namespace) -> int:
+    text = read_visible_text_arg(args)
+    packet = build_context_mode_from_args(text, args)
+    if args.json:
+        print(_json(packet))
+        return 0 if packet["route"] not in {"read_context", "observe_only"} else 2
+    print(packet["message"])
+    print(f"mode: {packet['mode']}")
+    print(f"route: {packet['route']}")
+    print(f"解析件数: {packet['parsed']}")
+    print(packet["thread_purpose_label"])
+    print(packet["people_temperature_label"])
+    print("checklist:")
+    for item in packet["checklist"]:
+        print(f"- {item}")
+    print("next:")
+    for action in packet["next_actions"]:
+        print(f"- {action}")
+    print(packet["send_capability_label"])
+    return 0 if packet["route"] not in {"read_context", "observe_only"} else 2
+
+
 def build_context_passport_from_args(text: str, args: argparse.Namespace) -> dict[str, Any]:
     contexts = read_passport_contexts(args)
     passport = context_passport_from_text(
@@ -938,6 +989,27 @@ def build_context_digestion_from_args(text: str, args: argparse.Namespace) -> di
         else "safe label による自動文脈参照は使っていません。"
     )
     return digestion
+
+
+def build_context_mode_from_args(text: str, args: argparse.Namespace) -> dict[str, Any]:
+    contexts = read_passport_contexts(args)
+    packet = context_operating_mode_from_text(
+        text,
+        mode=args.context_mode,
+        guild_label=args.guild,
+        channel_label=args.channel,
+        server_context=contexts["server_context"],
+        channel_context=contexts["channel_context"],
+        thread_context=contexts["thread_context"],
+        focus=args.focus,
+    )
+    packet["auto_context_bindings_used"] = bool(contexts["auto_context_bindings_used"])
+    packet["auto_context_bindings_label"] = (
+        "safe label から文脈庫を補助参照しました。"
+        if contexts["auto_context_bindings_used"]
+        else "safe label による自動文脈参照は使っていません。"
+    )
+    return packet
 
 
 def read_optional_text_file(path: Path | None) -> str:
