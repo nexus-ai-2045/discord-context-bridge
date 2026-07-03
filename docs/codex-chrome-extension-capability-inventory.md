@@ -35,7 +35,7 @@ private adapter 側の一時入力として扱います。
 |---|---|---|
 | P0 | `stage-discord-send` packet schema を runner contract として固定 | schema test、README pointer、MCP tool |
 | P0 | Chrome 拡張 runner の preflight / after-navigation / pre-send dry-run check | `verify-chrome-fill-dry-run` の JSON report、CLI、MCP tool |
-| P0 | human final send 後の metadata-only closeout | `closeout-discord-send` の JSON report、CLI、MCP tool |
+| P0 | human final send 後の metadata-only closeout + unread check | `closeout-discord-send` の JSON report、CLI、MCP tool |
 | P0 | reply UI と通常 message box の selector drift 検知 | 一意に取れない時は `blocked` |
 | P2 | fill-only 実行の dry-run / smoke command | draft を入れずに対象判定だけ返す |
 | P2 | PR gate に forbidden action scan を追加 | `send_message` / `click_send_button` が allowed に混ざると fail |
@@ -155,6 +155,8 @@ blocked reason は次を含みます。
 - `human_sent_observed=true`
 - `human_reviewed=true`
 - `observed_text_status` が `matches-copy-block` または `human-edited-and-reviewed`
+- `unread_check_status=none-unread`
+- `unread_signal_count=0`
 
 blocked reason は次を含みます。
 
@@ -166,9 +168,13 @@ blocked reason は次を含みます。
 | `human_review_not_confirmed` | 送信後の見え方を人間が確認していない |
 | `observed_text_not_checked` | 送信後本文状態が未確認 |
 | `invalid_observed_text_status` | text status が定義外 |
+| `unread_not_checked` | 送信後の未読有無が未確認 |
+| `unread_items_remaining` | 未読が残っている |
+| `invalid_unread_check_status` | unread check status が定義外 |
 
 出力は `observed_message_id_output=omitted`、`observed_url_output=omitted`、
-`raw_discord_text_output=omitted`、`text_returned=false` を維持します。
+`raw_discord_text_output=omitted`、`text_returned=false` を維持します。未読確認も
+本文や message ID ではなく、`unread_check_status` と `unread_signal_count` だけを返します。
 
 ## Socket checks
 
@@ -202,5 +208,6 @@ scope_route: Discord Chrome extension fill-only / external_action none until hum
 [ ] pre-send socket ping が通った
 [ ] automation は送信ボタン手前で停止した
 [ ] final send は human 操作
+[ ] unread check が none_unread
 [ ] closeout-discord-send が closed
 ```

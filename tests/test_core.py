@@ -580,6 +580,7 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="human_edited_and_reviewed",
+        unread_check_status="none_unread",
         observed_message_id="423456789012345678",
         observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
     )
@@ -589,6 +590,8 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     assert closeout["closeout_status"] == "closed"
     assert closeout["blockers"] == []
     assert closeout["recommended_next_state"] == "done"
+    assert closeout["unread_check_status"] == "none_unread"
+    assert closeout["unread_signal_count"] == 0
     assert closeout["observed_message_id_output"] == "omitted"
     assert closeout["observed_url_output"] == "omitted"
     assert closeout["raw_discord_text_output"] == "omitted"
@@ -604,11 +607,40 @@ def test_build_discord_post_send_closeout_packet_blocks_missing_human_observatio
         human_sent_observed=False,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
     )
 
     assert closeout["closeout_status"] == "blocked"
     assert "human_send_not_observed" in closeout["blockers"]
     assert closeout["recommended_next_state"] == "verify_visible_message"
+
+
+def test_build_discord_post_send_closeout_packet_blocks_unread_items():
+    closeout = build_discord_post_send_closeout_packet(
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="has_unread",
+        unread_signal_count=2,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "unread_items_remaining" in closeout["blockers"]
+    assert closeout["recommended_next_state"] == "review_unread_items"
+    assert closeout["unread_check_status"] == "has_unread"
+    assert closeout["unread_signal_count"] == 2
+
+
+def test_build_discord_post_send_closeout_packet_blocks_missing_unread_check():
+    closeout = build_discord_post_send_closeout_packet(
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "unread_not_checked" in closeout["blockers"]
+    assert closeout["recommended_next_state"] == "check_unread_items"
 
 
 def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
@@ -1901,6 +1933,8 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
             "--human-reviewed",
             "--observed-text-status",
             "human-edited-and-reviewed",
+            "--unread-check-status",
+            "none-unread",
             "--observed-message-id",
             "423456789012345678",
             "--observed-url",
@@ -1915,6 +1949,7 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
     assert '"closeout_status": "closed"' in output
     assert '"observed_message_id_output": "omitted"' in output
     assert '"observed_url_output": "omitted"' in output
+    assert '"unread_check_status": "none_unread"' in output
     assert '"text_returned": false' in output
     assert "423456789012345678" not in output
     assert "discord.com/channels" not in output
@@ -1936,6 +1971,29 @@ def test_cli_closeout_discord_send_blocks_unchecked_text(capsys):
     assert result == 2
     assert '"closeout_status": "blocked"' in output
     assert '"observed_text_not_checked"' in output
+
+
+def test_cli_closeout_discord_send_blocks_unread_items(capsys):
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--human-sent-observed",
+            "--human-reviewed",
+            "--observed-text-status",
+            "matches-copy-block",
+            "--unread-check-status",
+            "has-unread",
+            "--unread-signal-count",
+            "1",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"closeout_status": "blocked"' in output
+    assert '"unread_items_remaining"' in output
+    assert '"recommended_next_state": "review_unread_items"' in output
 
 
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):

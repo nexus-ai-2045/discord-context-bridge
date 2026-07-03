@@ -378,7 +378,8 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 人間が Discord 側で最後の送信操作をした後は、本文や snowflake を出さずに
 metadata-only closeout を返せます。`observed-text-status` は、copy block と一致した時は
 `matches-copy-block`、人間が最後に編集して目視確認した時は
-`human-edited-and-reviewed` を指定します。
+`human-edited-and-reviewed` を指定します。送信後に未読が残っていないことを確認した時だけ
+`--unread-check-status none-unread` を指定します。
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -386,6 +387,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --human-sent-observed \
   --human-reviewed \
   --observed-text-status human-edited-and-reviewed \
+  --unread-check-status none-unread \
   --observed-message-id "<message-id>" \
   --json
 ```
@@ -928,7 +930,7 @@ MCP tool は 15個です。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
 - `stage_discord_send_before_human_action`: reply / mention の下書き入力準備 packet を返します。実送信はしません。
 - `verify_chrome_extension_fill_only_before_action`: Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。
-- `closeout_discord_send_after_human_action`: 人間送信後の状態を metadata-only で閉じます。本文、URL、snowflake は返しません。
+- `closeout_discord_send_after_human_action`: 人間送信後の状態と未読確認を metadata-only で閉じます。本文、URL、snowflake は返しません。
 - `guide_reply_from_visible_text`: Discord の可視テキストと返信 draft から会話ガイドを返します。
 - `get_context_passport_from_visible_text`: Discord の可視テキストからスレッド文脈パスポートを返します。
 - `plan_discord_url_read`: Discord URL を読む前に、使う入口と不足 snapshot を本文なしで計画します。
@@ -942,7 +944,8 @@ MCP tool は 15個です。
 実送信 tool はありません。`stage_discord_send_before_human_action` は Chrome 拡張で
 下書き欄へ入れるための fill-only packet で、返信は人間が Discord 側で送信する前提です。
 送信後は `closeout_discord_send_after_human_action` で `human_sent_observed` と
-`human_reviewed` だけを閉じ、本文、URL、snowflake は返しません。
+`human_reviewed`、`observed_text_status`、`unread_check_status` を閉じ、本文、URL、
+snowflake は返しません。
 
 `get_context_passport_from_visible_text` は `server_context`、`channel_context`、`thread_context` を受け取れます。
 各値には、サーバールール、チャンネル目的、スレッド固定文などのローカルで確認済みテキストを渡します。
