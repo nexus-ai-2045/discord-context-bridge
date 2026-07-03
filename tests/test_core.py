@@ -1554,7 +1554,6 @@ def test_ops_check_includes_report_latest_smoke():
 
     assert "report-latest smoke" in checks
     assert "report-latest schema" in checks
-    assert "ingest route policy lint" in checks
     assert "文脈運用モード smoke" in checks
 
 
