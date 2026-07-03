@@ -7,6 +7,8 @@ scope_route: public-discord-context-bridge / process-boundary / no-private-data 
 
 スレッド観測から返信候補までの初期13工程は
 `references/initial-thread-ruleset.md` を正本にします。
+システムアーキテクチャ視点で残すべき context と仕組み化する保証は
+`docs/architecture-context-closeout.md` に分けて置きます。
 
 ## 目的
 

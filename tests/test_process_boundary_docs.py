@@ -58,3 +58,29 @@ def test_process_boundary_notification_metadata_probe_gate_is_textless():
 
     for term in required_terms:
         assert term in probe
+
+
+def test_architecture_context_closeout_preserves_public_safe_boundaries():
+    body = (ROOT / "docs/architecture-context-closeout.md").read_text(encoding="utf-8")
+
+    required_terms = [
+        "obsidian_check: checked",
+        "scope_route: public-discord-context-bridge / architecture-context-closeout / no-private-data / no-discord-action",
+        "source provenance",
+        "content boundary",
+        "human gate",
+        "post-send closeout",
+        "operation proof",
+        "metadata-only",
+        "fill-only",
+        "no outbound action",
+        "no raw text",
+        "raw Discord text",
+        "snowflake",
+        "local absolute path",
+        "python3 scripts/ops_check.py",
+        "python3 scripts/gh_guard.py --account-only",
+    ]
+
+    for term in required_terms:
+        assert term in body
