@@ -707,8 +707,8 @@ def test_build_discord_send_staging_packet_prepares_reply_without_send():
         "schema": "discord_fill_only_guard.v1",
         "max_runner_action": "fill_draft_only",
         "external_action": "none_until_human_send",
-        "latest_visible_snapshot_required": True,
-        "latest_visible_snapshot_check": "required_before_user_action",
+        "latest_target_snapshot_required": True,
+        "latest_target_snapshot_check": "required_before_user_action",
         "stop_condition": "stop_before_send_button",
         "human_send_required": True,
     }
@@ -763,7 +763,7 @@ def test_verify_chrome_extension_fill_only_dry_run_allows_unique_reply_ui():
         socket_preflight=True,
         target_url_verified=True,
         socket_after_navigation=True,
-        latest_visible_snapshot_confirmed=True,
+        latest_target_snapshot_confirmed=True,
         reply_ui_candidates=1,
         draft_matches_copy_block=True,
         socket_pre_send=True,
@@ -799,8 +799,8 @@ def test_verify_chrome_extension_fill_only_dry_run_blocks_without_latest_snapsho
 
     assert report["dry_run_status"] == "blocked"
     assert report["fill_permitted"] is False
-    assert "latest_visible_snapshot_not_confirmed" in report["blockers"]
-    assert report["observed"]["latest_visible_snapshot_confirmed"] is False
+    assert "latest_target_snapshot_not_confirmed" in report["blockers"]
+    assert report["observed"]["latest_target_snapshot_confirmed"] is False
 
 
 def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
@@ -818,7 +818,7 @@ def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
         socket_preflight=True,
         target_url_verified=True,
         socket_after_navigation=True,
-        latest_visible_snapshot_confirmed=True,
+        latest_target_snapshot_confirmed=True,
         reply_ui_candidates=2,
         draft_matches_copy_block=True,
         socket_pre_send=True,
@@ -844,7 +844,7 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
         socket_preflight=True,
         target_url_verified=True,
         socket_after_navigation=True,
-        latest_visible_snapshot_confirmed=True,
+        latest_target_snapshot_confirmed=True,
         reply_ui_candidates=1,
         draft_matches_copy_block=True,
         socket_pre_send=True,
@@ -3873,6 +3873,32 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "https://discord.com/channels/1/2/3",
         text=PASSPORT_FIXTURE.read_text(encoding="utf-8"),
     )
+    staging_packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認してから返信します。",
+        parse_visible_text(FIXTURE.read_text(encoding="utf-8")),
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    mcp_blocked_dry_run = server.tools["verify_chrome_extension_fill_only_before_action"](
+        staging_packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    mcp_ready_dry_run = server.tools["verify_chrome_extension_fill_only_before_action"](
+        staging_packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
 
     assert imported["language"] == "ja"
     assert imported["dry_run"] is True
@@ -3890,6 +3916,8 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert snapshot["source"] == "chrome_extension_dom"
     assert snapshot["visible_text_saved"] is True
     assert url_passport["snapshot"]["visible_text_saved"] is True
+    assert "latest_target_snapshot_not_confirmed" in mcp_blocked_dry_run["blockers"]
+    assert mcp_ready_dry_run["dry_run_status"] == "ready_to_fill"
     assert any("個人情報の共有は禁止" in note for note in passport["rule_notes"])
 
 
