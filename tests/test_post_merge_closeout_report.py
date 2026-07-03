@@ -104,3 +104,22 @@ def test_post_merge_closeout_flags_remaining_remote_head_branch(monkeypatch):
 
     assert report["overall"] == "error"
     assert report["checks"]["remote_head_branch_deleted"]["status"] == "error"
+
+
+def test_pr_scope_guardrails_document_required_closeout_gates():
+    body = (ROOT / "docs" / "pr-scope-guardrails.md").read_text(encoding="utf-8")
+
+    required_phrases = [
+        "必須 gate",
+        "python3 scripts/post_merge_closeout_report.py --pr <number> --head-ref <branch> --fetch --json",
+        "gh pr checks",
+        "no checks reported",
+        "python3 -m pytest -q",
+        "python3 scripts/ops_check.py --gh",
+        "python3 scripts/gh_guard.py --json --history-ref HEAD",
+        "python3 scripts/verify_ssot_projection.py --json",
+        "失敗した check を無視するためには使わない",
+    ]
+
+    for phrase in required_phrases:
+        assert phrase in body
