@@ -146,6 +146,9 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
     ]
     if not args.http:
         smoke_command.append("--skip-http")
+    ingest_route_policy_command = [sys.executable, "scripts/lint_ingest_route_policy.py", "--json"]
+    if os.environ.get("CI"):
+        ingest_route_policy_command.append("--skip-local-claude-skill")
     checks = {
         "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env),
         "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
@@ -205,6 +208,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "codex=dist/skills/codex/SKILL.md",
                 "--json",
             ],
+            env=env,
+        ),
+        "ingest route policy lint": lambda: run_command(
+            "ingest route policy lint",
+            ingest_route_policy_command,
             env=env,
         ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),

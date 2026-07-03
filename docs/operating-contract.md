@@ -8,6 +8,7 @@
 - 外部共有、公開投稿、GitHub への raw Discord text の追加はしない。
 - raw Discord 本文、実 guild/channel/message ID、handle、token、cookie、local absolute path を visible output に出さない。
 - 取得経路は local-first / read-only とし、可視テキスト・clipboard・private adapter のいずれも outbound action を持たない。
+- Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 
 ## 標準フロー
@@ -36,10 +37,13 @@ PR 前と運用 closeout では次を確認する。
 
 ```bash
 python3 scripts/verify_ssot_projection.py --json
+python3 scripts/lint_ingest_route_policy.py --json
 python3 scripts/ops_check.py --gh
 ```
 
 `verify_ssot_projection.py` は runtime skill の欠落、stale、provenance 不一致、private / raw data 混入を検出する。
+
+`lint_ingest_route_policy.py` は contract / runtime skill / local Claude skill に Playwright fallback 禁止の運用文が残っているかを検出する。
 
 各 runtime の local skill directory は、勝手に書き換えず read-only lint で同期状態を確認する。
 
