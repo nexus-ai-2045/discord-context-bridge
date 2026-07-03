@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 13d16ac90474283e09d9c87f4396b855c2e9ed51
+ssot_commit: 009f14d6265b5d22fb5e868fafba9189c999116d
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 5b70a012ef07d581c4b74822fe79e24c1204876096b4eaf7dacc055fa3d5d9c8
-contract_checksum: a722316a74476be56039da6c8efb6ecb1a71b79f180d61bfb6b6195b7d7f6da1
-generated_at: 2026-07-03T11:47:03+00:00
+manifest_checksum: dc9dacae93f34c31f6b4a062feb5c5b7fc7f18a5be568eda8333e7ec0f4f7a60
+contract_checksum: 210a2d97e44a53aa097db97a2b0c23dc4e2fc6dec57a4a837176edb659c6f7a8
+generated_at: 2026-07-03T14:40:19+00:00
 runtime_target: codex
 ---
 
@@ -59,6 +59,16 @@ python3 scripts/ops_check.py --gh
 
 `verify_ssot_projection.py` は runtime skill の欠落、stale、provenance 不一致、private / raw data 混入を検出する。
 
+各 runtime の local skill directory は、勝手に書き換えず read-only lint で同期状態を確認する。
+
+```bash
+python3 scripts/lint_runtime_skill_sync.py \
+  --target codex=/path/to/discord-context-bridge/SKILL.md \
+  --json
+```
+
+`lint_runtime_skill_sync.py` は target file を読み、`dist/skills/<runtime>/SKILL.md` と完全一致するか、`ssot_commit` / checksum / privacy pattern を確認する。更新が必要な場合でも、この script は書き込みを行わない。
+
 ## Stoplines
 
 - `no_discord_send`
@@ -76,4 +86,5 @@ python3 scripts/ops_check.py --gh
 ## Verification
 
 - `python3 scripts/verify_ssot_projection.py --json`: SSOT から生成された runtime skill が最新か確認する
+- `python3 scripts/lint_runtime_skill_sync.py --target codex=/path/to/SKILL.md --json`: runtime skill directory の実体が SSOT 生成物と一致するか read-only で確認する
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する

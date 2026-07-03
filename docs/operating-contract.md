@@ -40,3 +40,13 @@ python3 scripts/ops_check.py --gh
 ```
 
 `verify_ssot_projection.py` は runtime skill の欠落、stale、provenance 不一致、private / raw data 混入を検出する。
+
+各 runtime の local skill directory は、勝手に書き換えず read-only lint で同期状態を確認する。
+
+```bash
+python3 scripts/lint_runtime_skill_sync.py \
+  --target codex=/path/to/discord-context-bridge/SKILL.md \
+  --json
+```
+
+`lint_runtime_skill_sync.py` は target file を読み、`dist/skills/<runtime>/SKILL.md` と完全一致するか、`ssot_commit` / checksum / privacy pattern を確認する。更新が必要な場合でも、この script は書き込みを行わない。
