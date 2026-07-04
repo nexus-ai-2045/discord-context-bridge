@@ -24,6 +24,11 @@ public package の責務は、Discord を操作することではなく、privat
 `source_kind=Chrome DOM` のような値は、保存済み snapshot の取得元 metadata です。
 report 実行時の live browser access とは分け、`report_acquisition_context.mode=existing_saved_snapshot` のように別 field で保持します。
 
+送信後の実測では、可視 snapshot 保存と closeout を別 layer に分けます。
+`snapshot-discord-url-text` は private snapshot store に本文を保存する producer 境界で、
+`closeout-discord-send` は本文なしの metadata-only 完了確認です。
+この分離により、「本文を実測して保存したか」と「Discord 送信後の残務が閉じたか」を混同しません。
+
 ## 仕組み化すべきもの
 
 仕組み化は、便利な取得経路を増やすことより先に、責務境界を壊さない検査を増やす順で進めます。
@@ -34,6 +39,7 @@ report 実行時の live browser access とは分け、`report_acquisition_conte
 4. `triage-mode`、`catchup-mode`、`join-thread-mode`、`boundary-mode` は `文脈運用モード smoke` として ops check に含め、schema、停止線、raw 非返却を毎回確認する。
 5. GitHub account / remote owner / git author は `scripts/gh_guard.py` と PR readiness で確認し、名義事故を Git 操作前に止める。
 6. private adapter producer contract は別 layer で管理し、public core には stdout contract と metadata schema だけを渡す。
+7. MCP にある producer 操作は CLI にも対応する入口を置き、人間レビュー後の再現手順を `snapshot -> coverage -> closeout` の順で固定する。
 
 ## 人間レビュー観点
 

@@ -95,6 +95,11 @@ public core に本文取得 route を戻さない。
 `report-latest` の実行時に Chrome 接続、DOM 再取得、新規 capture をしたことは意味しません。
 その区別は `report_acquisition_context.mode=existing_saved_snapshot` として出力します。
 
+`snapshot-discord-url-text` は、private adapter や人間が取得済みの可視テキストを
+URL に紐づけて snapshot store へ保存する境界です。このコマンド自体は Discord を開かず、
+送信せず、reaction / edit / delete も行いません。CLI 出力は metadata-only とし、
+raw 本文、実 URL、local path は標準出力に返しません。
+
 ## 最小E2E
 
 最小E2Eは、実 Discord 本文ではなく合成 fixture で確認します。
@@ -145,6 +150,10 @@ metadata-only に閉じます。この closeout は `human_sent_observed`、
 `unread_signal_count` だけを状態として返し、本文、URL、snowflake は出力しません。
 本文または未読確認が `not-checked` のままでは `blocked` です。未読が残っている場合も
 `blocked` とし、先に未読を確認します。
+
+送信後本文を保存する必要がある場合は、先に `snapshot-discord-url-text` で
+private snapshot store へ保存し、その後に `closeout-discord-send` で
+metadata-only の完了状態だけを閉じます。snapshot 保存と closeout を同じ操作に混ぜません。
 
 ## やらないこと
 

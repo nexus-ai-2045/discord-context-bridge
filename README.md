@@ -76,6 +76,24 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json
 ```
 
+### Discord URL 可視 snapshot 保存
+
+`snapshot-discord-url-text` は、既に取得済みの可視テキストを Discord URL に紐づけて
+local snapshot store へ保存します。Chrome 接続や Discord 操作は行わず、stdin、
+clipboard、または `--source-command` が返した可視テキストを保存するだけです。
+
+CLI の見える出力には raw 本文、実 URL、local path を出しません。本文は指定した
+snapshot store にだけ残し、後続の `coverage-report` / `report-latest` / post-send
+closeout から metadata-only に参照します。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  snapshot-discord-url-text \
+  --url "$DISCORD_URL" \
+  --input /path/to/visible-text.txt \
+  --snapshot-store .local/discord-context-bridge/text-snapshots.ndjson
+```
+
 ### 添付 ledger と OCR log
 
 `attachment-ledger` は、保存済み raw cache / snapshot の JSONL から添付 metadata だけを抜き出し、
