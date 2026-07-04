@@ -143,11 +143,18 @@ def print_human(summary: dict) -> None:
     print("message text: omitted")
 
 
+def remove_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.perf_counter()
-    if args.reset and args.store.exists():
-        args.store.unlink()
+    if args.reset:
+        remove_if_present(args.store)
 
     try:
         source_started = time.perf_counter()
