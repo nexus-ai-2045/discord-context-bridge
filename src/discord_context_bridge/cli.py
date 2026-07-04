@@ -41,6 +41,7 @@ from .core import (
     ops_view_summary,
     review_reply_intent,
     resolve_context_bindings,
+    snapshot_visible_text,
     status_dashboard,
     upsert_review_state,
     upsert_context_document,
@@ -172,6 +173,25 @@ def build_parser() -> argparse.ArgumentParser:
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
     report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     report_latest.set_defaults(handler=_cmd_report_latest)
+
+    snapshot_url = sub.add_parser(
+        "snapshot-discord-url-text",
+        help="Discord URL の可視テキストを local snapshot として保存する",
+    )
+    snapshot_url.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    snapshot_url.add_argument("--input", type=Path, help="読み込む可視テキストファイル。省略時は stdin")
+    snapshot_url.add_argument("--from-clipboard", action="store_true", help="--input ではなくローカルのクリップボードから可視テキストを読む")
+    snapshot_url.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
+    snapshot_url.add_argument("--source-command", help="Discord 可視テキストを出力するローカルコマンド")
+    snapshot_url.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存先 snapshot store")
+    snapshot_url.add_argument("--title", default="", help="任意の安全な短い label。実 channel 名や private 名は避ける")
+    snapshot_url.add_argument(
+        "--source",
+        default="discord_url_visible_text",
+        help="snapshot の取得元 label。例: discord_url_visible_text / computer_use_accessibility_tree",
+    )
+    snapshot_url.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    snapshot_url.set_defaults(handler=_cmd_snapshot_discord_url_text)
 
     attachment_ledger = sub.add_parser("attachment-ledger", help="raw cache から添付の safe metadata ledger を作る")
     attachment_ledger.add_argument("--input", type=Path, required=True, help="Discord raw cache / snapshot ndjson")
@@ -631,6 +651,30 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
         print(f"reason: {report['reason']}")
     print("outbound: disabled")
     return 0 if report["ok"] else 2
+
+
+def _cmd_snapshot_discord_url_text(args: argparse.Namespace) -> int:
+    text = read_visible_text_arg(args)
+    payload = snapshot_visible_text(
+        text=text,
+        url=args.url,
+        title=args.title,
+        source=args.source,
+        path=args.snapshot_store,
+    )
+    if args.json:
+        print(_json(payload))
+        return 0
+    print(payload["message"])
+    print(f"saved: {str(payload['saved']).lower()}")
+    print(f"changed: {str(payload['changed']).lower()}")
+    print(f"target_key: {payload['target_key']}")
+    print(f"content_hash: {payload['content_hash']}")
+    print(f"snapshot_count_for_target: {payload['snapshot_count_for_target']}")
+    print("raw_text_returned: false")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0
 
 
 def _cmd_attachment_ledger(args: argparse.Namespace) -> int:

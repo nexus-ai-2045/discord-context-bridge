@@ -1363,6 +1363,70 @@ def test_cli_report_latest_outputs_safe_json(tmp_path, capsys):
     assert "member-a" not in output
 
 
+def test_cli_snapshot_discord_url_text_saves_snapshot_without_echoing_raw_text(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    visible_text = tmp_path / "visible.txt"
+    visible_text.write_text("member-a: private post-send wording should stay local", encoding="utf-8")
+
+    result = cli_main(
+        [
+            "snapshot-discord-url-text",
+            "--url",
+            "https://discord.com/channels/1/2/3",
+            "--input",
+            str(visible_text),
+            "--snapshot-store",
+            str(snapshot_store),
+            "--source",
+            "computer_use_accessibility_tree",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "saved: true" in output
+    assert "raw_text_returned: false" in output
+    assert "path_output: omitted" in output
+    assert "private post-send wording" not in output
+    assert "member-a" not in output
+    assert "discord.com/channels" not in output
+
+    records = load_jsonl_records(snapshot_store)
+    assert len(records) == 1
+    assert records[0]["text"] == "member-a: private post-send wording should stay local"
+    assert records[0]["source"] == "computer_use_accessibility_tree"
+
+
+def test_cli_snapshot_discord_url_text_json_is_metadata_only(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    visible_text = tmp_path / "visible.txt"
+    visible_text.write_text("member-b: raw saved text is local only", encoding="utf-8")
+
+    result = cli_main(
+        [
+            "snapshot-discord-url-text",
+            "--url",
+            "https://discord.com/channels/4/5/6",
+            "--input",
+            str(visible_text),
+            "--snapshot-store",
+            str(snapshot_store),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["visible_text_saved"] is True
+    assert payload["private_local_only"] is True
+    assert payload["external_share_allowed"] is False
+    assert payload["outbound_actions"] == "disabled"
+    assert "raw saved text" not in output
+    assert "member-b" not in output
+    assert "discord.com/channels" not in output
+
+
 def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(tmp_path, capsys):
     store = tmp_path / "events.ndjson"
     artifact_path = tmp_path / "review.md"
