@@ -792,6 +792,90 @@ def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path):
     assert "公開時期の前提" not in rendered
 
 
+def test_discord_inventory_dashboard_reports_zero_residual_operational_state(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    def fake_run(command: list[str]):
+        if command[:3] == ["git", "status", "--short"]:
+            return Completed("")
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return Completed("main\n")
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
+            return Completed("0\t0\n")
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed("[]")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
+
+    payload = discord_inventory_dashboard.build_operational_status()
+
+    assert payload["now"]["state"] == "done"
+    assert payload["residual_count"] == 0
+    assert payload["github"]["open_pr_count"] == 0
+    assert payload["safety_boundary"]["outbound_actions"] == "disabled"
+
+
+def test_discord_inventory_dashboard_reports_actionable_residuals(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    def fake_run(command: list[str]):
+        if command[:3] == ["git", "status", "--short"]:
+            return Completed(" M README.md\n")
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return Completed("codex/example\n")
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
+            return Completed("1\t2\n")
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed(
+                json.dumps(
+                    [
+                        {
+                            "number": 36,
+                            "title": "impact-todo の旧clone整理を完了に更新する",
+                            "headRefName": "codex/impact-todo-old-clone-done-20260704",
+                            "mergeStateStatus": "CLEAN",
+                            "isDraft": False,
+                            "url": "https://github.com/nexus-ai-2045/discord-context-bridge/pull/36",
+                        }
+                    ]
+                )
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
+
+    payload = discord_inventory_dashboard.build_operational_status()
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["now"]["state"] == "attention_required"
+    assert payload["residual_count"] == 4
+    assert {item["code"] for item in payload["residual"]} == {
+        "working_tree_dirty",
+        "main_behind_origin",
+        "local_commits_unpushed",
+        "open_pull_requests",
+    }
+    assert payload["github"]["open_pr_count"] == 1
+    assert "synthetic-secret" not in rendered
+
+
+def test_ops_check_includes_status_dashboard():
+    args = ops_check.parse_args(["--skip-http"])
+
+    checks = ops_check.build_checks(args)
+
+    assert "status dashboard" in checks
+
+
 def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()

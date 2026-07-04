@@ -198,6 +198,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             ],
             env=env,
         ),
+        "status dashboard": lambda: run_command(
+            "status dashboard",
+            [sys.executable, "scripts/discord_inventory_dashboard.py", "--json"],
+            env=env,
+        ),
         "report-latest smoke": lambda: run_command(
             "report-latest smoke",
             [sys.executable, "scripts/report_latest_smoke.py", "--json"],
