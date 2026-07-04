@@ -90,15 +90,17 @@ def verify_projection(
             relative = Path(runtime) / "SKILL.md"
             actual = output_dir / relative
             expected = expected_dir / relative
+            # report に載せる path は OS に依らず POSIX 区切りで固定する (Windows の \ 混入防止)
+            relative_label = relative.as_posix()
             if not actual.exists():
-                mismatches.append(f"{relative}:missing")
+                mismatches.append(f"{relative_label}:missing")
                 continue
             actual_text = re.sub(r"(?m)^generated_at: .+$", "generated_at: VERIFY", actual.read_text(encoding="utf-8"))
             if actual_text != expected.read_text(encoding="utf-8"):
-                mismatches.append(str(relative))
+                mismatches.append(relative_label)
             for pattern in PRIVATE_PATTERNS:
                 if pattern.search(actual_text):
-                    privacy_hits.append(f"{relative}:{pattern.pattern}")
+                    privacy_hits.append(f"{relative_label}:{pattern.pattern}")
         checks["generated_files"] = check(
             "ok" if not mismatches else "error",
             f"{len(runtimes)} runtime skills",
