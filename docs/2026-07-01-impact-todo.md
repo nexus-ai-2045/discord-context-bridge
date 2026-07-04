@@ -25,9 +25,9 @@ external_action: none
 | P0 | 完了 | Windows timeout test の安定化 | timeout判定時間とkill後のcleanup時間を分け、運用判断を不安定な後始末時間に依存させない。 | `test_route_retry_decider_local_command_timeout_kills_process_group` と全pytestを実行する。 | `elapsed_ms` はtimeout判定時間、`cleanup_elapsed_ms` は後始末時間として分離。`195 passed`。 |
 | P0 | 完了 | 正本worktreeの分離 | 汚れた旧cloneを直接rebaseせず、`origin/main` から新しいローカルworktreeを切る。 | `git status` と `git rev-list --left-right --count HEAD...origin/main` で同期状態を見る。 | `codex/recover-discord-bridge-local-20260702` は `origin/main` 起点で作成済み。 |
 | P1 | 完了 (2026-07-04) | 旧clone / 親repo削除状態の整理 | `_codex_work/discord-context-bridge-public-safe-events` と `Documents/nexus_ai/public/discord-context-bridge` の役割を分ける。 | 旧cloneの未整理差分、親repoの削除差分、専用repoの最新mainを比較する。 | Windows 側で実施。親repo内旧snapshotは全79 fileをblob検証 (75は専用repo履歴に存在、残4は旧cloneの未merge commitと一致=データロストゼロ) して retained 置き場へ退避。未merge commit は最新mainへrebaseし PR #34 として merge。専用repo main を唯一の正本に統一。 |
-| P1 | 未着手 | status dashboard の運用正本化 | `now / done / broken / blocked / next / github / residual` を1コマンドで安全に出す。 | dashboard script のfixtureとsecret/path/raw text非表示テストを追加する。 | raw本文、参加者名、secret、local path を出さない運用表示にする。 |
+| P1 | 完了 | status dashboard の運用正本化 | `now / done / broken / blocked / next / github / residual` を1コマンドで安全に出す。 | dashboard script のfixtureとsecret/path/raw text非表示テストを追加する。 | `discord_inventory_dashboard.py --json` が `operational_status` を返す。working tree / origin/main 差分 / open PR / next action を public-safe に表示し、raw本文、参加者名、secret、local path を出さない。 |
 | P1 | 未着手 | private adapter 実機probeの失敗理由標準化 | `adapter_failed` を `failure_stage` と人間語reasonに分類する。 | timeout、permission、empty、dependency_missing のfixtureを追加する。 | 実Discord本文を出さず `text_output=omitted` を維持。 |
-| P2 | 未着手 | 13工程E2Eの回帰保証拡張 | 13工程fixtureを中心に、review artifact、human gate、handoffの欠落を検出する。 | `fixture_13_step_e2e.py --json` のschema検査を増やす。 | `ops_check.py` のgreenをMVP closeout条件として維持。 |
+| P2 | 完了 | 13工程E2Eの回帰保証拡張 | 13工程fixtureを中心に、review artifact、human gate、handoffの欠落を検出する。 | `fixture_13_step_e2e.py --json` のschema検査を増やす。 | `regression_contract` で review artifact / human gate / handoff packet の確認状態を固定。`ops_check.py` に status dashboard smoke も接続し、greenをMVP closeout条件として維持。 |
 
 ## 今回の実行結果
 
