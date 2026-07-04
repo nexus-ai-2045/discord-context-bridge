@@ -50,7 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-chars", type=int, default=1, help="空読み扱いにする最小文字数")
     parser.add_argument("--timeout", type=float, default=15.0, help="local command / Accessibility 取得の最大秒数")
     parser.add_argument("--focused-only", action="store_true", help="macOS Accessibility で focused element だけを読む。重い window 全走査を避ける")
-    parser.add_argument("--no-focus", action="store_true", help="macOS Accessibility で Discord を前面化せずに読む")
+    parser.add_argument("--focus-app", action="store_true", help="macOS Accessibility で Discord を前面化して読む。通常は使わない")
+    parser.add_argument("--no-focus", action="store_true", help="互換用。macOS Accessibility は既定で Discord を前面化しません")
     parser.add_argument("--show-window-names", action="store_true", help="window 診断で raw window 名も出す。通常は使わない")
     parser.add_argument(
         "--allow-unsafe",
@@ -490,6 +491,7 @@ def build_macos_accessibility_probe_payload(
 
 
 def read_visible_text(args: argparse.Namespace) -> str:
+    focus_app = args.focus_app and not args.no_focus
     if args.input:
         return args.input.read_text(encoding="utf-8")
     if args.from_clipboard:
@@ -503,7 +505,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
             window_index=args.window_index,
             timeout=args.timeout,
             focused_only=args.focused_only,
-            focus_app=not args.no_focus,
+            focus_app=focus_app,
         )
     if args.macos_accessibility_auto:
         preflight_macos_window_selection(
@@ -516,7 +518,7 @@ def read_visible_text(args: argparse.Namespace) -> str:
             args.window_name_contains,
             window_index=args.window_index,
             timeout=args.timeout,
-            focus_app=not args.no_focus,
+            focus_app=focus_app,
         )
     if not sys.stdin.isatty():
         return sys.stdin.read()
@@ -541,13 +543,14 @@ def normalize_visible_text(text: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    focus_app = args.focus_app and not args.no_focus
     try:
         if args.probe_macos_accessibility:
             try:
                 rows, any_ready = probe_macos_accessibility_routes(
                     args.process_name,
                     timeout=args.timeout,
-                    focus_app=not args.no_focus,
+                    focus_app=focus_app,
                     limit=args.probe_limit,
                 )
             except Exception as exc:
@@ -555,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_stage = safe_probe_source_stage(exc, operation="window_preflight")
                 payload = build_macos_accessibility_probe_payload(
                     [],
-                    focus_app=not args.no_focus,
+                    focus_app=focus_app,
                     reason=reason,
                     source_stage=source_stage,
                 )
@@ -565,10 +568,10 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Discord Accessibility route probe failed: {reason}", file=sys.stderr)
                 return 2
             if args.json:
-                payload = build_macos_accessibility_probe_payload(rows, focus_app=not args.no_focus)
+                payload = build_macos_accessibility_probe_payload(rows, focus_app=focus_app)
                 print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
                 return 0 if payload["ok"] else 2
-            print_macos_accessibility_probe(rows, focus_app=not args.no_focus)
+            print_macos_accessibility_probe(rows, focus_app=focus_app)
             return 0 if any_ready else 2
         if args.list_macos_windows:
             try:
