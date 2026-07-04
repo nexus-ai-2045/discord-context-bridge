@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -134,15 +135,29 @@ def run_context_operating_mode_smoke(env: dict[str, str]) -> CheckResult:
     )
 
 
+def smoke_store_paths() -> tuple[Path, Path]:
+    run_id = f"{os.getpid()}-{time.time_ns()}"
+    smoke_dir = Path(tempfile.gettempdir()) / "discord-context-bridge-smoke"
+    return (
+        smoke_dir / f"dcb-local-smoke-{run_id}.ndjson",
+        smoke_dir / f"dcb-context-library-smoke-{run_id}.json",
+    )
+
+
 def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult]]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    smoke_store, context_store = smoke_store_paths()
     smoke_command = [
         sys.executable,
         "scripts/local_smoke.py",
         "--reset",
         "--port",
         str(args.port),
+        "--store",
+        str(smoke_store),
+        "--context-store",
+        str(context_store),
     ]
     if not args.http:
         smoke_command.append("--skip-http")
