@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,128 @@ MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ogg", ".mp3", ".mp
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=ROOT, check=False, capture_output=True, text=True)
+
+
+def parse_ahead_behind(raw: str) -> tuple[int, int]:
+    parts = raw.strip().split()
+    if len(parts) != 2:
+        return 0, 0
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return 0, 0
+
+
+def load_open_prs() -> tuple[list[dict[str, Any]], str | None]:
+    completed = run_command(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,mergeStateStatus,isDraft,url",
+            "--limit",
+            "50",
+        ]
+    )
+    if completed.returncode != 0:
+        return [], "gh_pr_list_failed"
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return [], "gh_pr_list_invalid_json"
+    return payload if isinstance(payload, list) else [], None
+
+
+def build_operational_status() -> dict[str, Any]:
+    status = run_command(["git", "status", "--short"]).stdout.strip()
+    branch = run_command(["git", "branch", "--show-current"]).stdout.strip()
+    ahead_behind = run_command(["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"])
+    ahead, behind = parse_ahead_behind(ahead_behind.stdout)
+    open_prs, pr_error = load_open_prs()
+
+    residual: list[dict[str, Any]] = []
+    broken: list[str] = []
+    blocked: list[str] = []
+    done = [
+        "public-safe inventory",
+        "metadata-only store/timing summary",
+        "secret/path/raw-text omission",
+    ]
+    next_actions: list[str] = []
+
+    if status:
+        residual.append({"code": "working_tree_dirty", "label": "未commitの差分があります。"})
+        next_actions.append("差分を確認し、必要なものだけ commit / push します。")
+    if behind:
+        residual.append({"code": "main_behind_origin", "label": f"local branch は origin/main から {behind} commit 遅れています。"})
+        next_actions.append("local main を fast-forward します。")
+    if ahead:
+        residual.append({"code": "local_commits_unpushed", "label": f"local branch は origin/main より {ahead} commit 進んでいます。"})
+        next_actions.append("GitHub account と remote owner を確認して push します。")
+    if open_prs:
+        residual.append({"code": "open_pull_requests", "label": f"open PR が {len(open_prs)} 件あります。"})
+        next_actions.append("open PR の CI / merge state を確認し、merge または close 判断をします。")
+    if pr_error:
+        blocked.append("GitHub PR 状態を取得できませんでした。")
+        residual.append({"code": pr_error, "label": "GitHub PR 状態の確認が未完了です。"})
+        next_actions.append("gh auth / network を確認して PR 状態を再測します。")
+
+    if residual:
+        state = "attention_required"
+        now_label = "残務があります。"
+    elif blocked:
+        state = "blocked"
+        now_label = "確認不能な残務があります。"
+    else:
+        state = "done"
+        now_label = "ローカル観測範囲では残務ゼロです。"
+
+    return {
+        "schema": "discord_inventory_operational_status.v1",
+        "now": {
+            "state": state,
+            "label": now_label,
+            "branch": branch,
+            "working_tree": "clean" if not status else "dirty",
+            "origin_main_ahead": ahead,
+            "origin_main_behind": behind,
+        },
+        "done": done,
+        "broken": broken,
+        "blocked": blocked,
+        "next": sorted(set(next_actions)),
+        "github": {
+            "open_pr_count": len(open_prs),
+            "open_prs": [
+                {
+                    "number": item.get("number"),
+                    "head_ref": item.get("headRefName"),
+                    "merge_state": item.get("mergeStateStatus"),
+                    "is_draft": item.get("isDraft"),
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                }
+                for item in open_prs
+            ],
+            "error": pr_error,
+        },
+        "residual": residual,
+        "residual_count": len(residual),
+        "safety_boundary": {
+            "raw_discord_text_output": "omitted",
+            "participant_names_output": "omitted",
+            "token_output": "omitted",
+            "local_paths_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+    }
 
 
 def count_suffixes(root: Path, suffixes: set[str]) -> dict[str, int]:
@@ -117,9 +240,11 @@ def timing_inventory(tmp_dir: Path) -> list[dict[str, Any]]:
 def build_inventory(channel_dir: Path, tmp_dir: Path, *, store_limit: int) -> dict[str, Any]:
     stores = store_inventory(tmp_dir, limit=store_limit)
     unsafe_stores = [store["name"] for store in stores if store.get("readable") and not store.get("safe_for_tunnel")]
+    operational = build_operational_status()
     return {
         "schema": "discord_inventory_dashboard.v1",
-        "ok": True,
+        "ok": operational["residual_count"] == 0 and not operational["blocked"],
+        "operational_status": operational,
         "channel_dir": {
             "configured": channel_dir.exists(),
             "path_output": "omitted",
@@ -156,7 +281,10 @@ def build_parser() -> argparse.ArgumentParser:
 def print_human(payload: dict[str, Any]) -> None:
     inbox = payload["inbox"]
     stores = payload["stores"]
+    operational = payload["operational_status"]
     print("Discord inventory dashboard")
+    print(f"now: {operational['now']['state']} - {operational['now']['label']}")
+    print(f"residual_count: {operational['residual_count']}")
     print(f"text_event_candidates: {inbox['text_event_candidates']}")
     print(f"media_inbox_count: {inbox['media_inbox_count']}")
     print(f"stores_shown: {stores['shown_count']}")

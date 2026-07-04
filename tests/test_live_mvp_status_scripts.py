@@ -365,6 +365,16 @@ def test_fixture_13_step_e2e_passes_without_private_output(tmp_path: Path):
     assert payload["ok"] is True
     assert payload["step_count"] == 13
     assert payload["passed"] == 13
+    assert payload["regression_contract"] == {
+        "schema": "discord_13_step_regression_contract.v1",
+        "required_step_count": 13,
+        "review_artifact_checked": True,
+        "human_gate_checked": True,
+        "handoff_packet_checked": True,
+        "missing_required_checks": [],
+        "raw_text_output": "omitted",
+        "outbound_actions": "disabled",
+    }
     assert [item["name"] for item in payload["steps"]] == [
         "01_observation_entry",
         "02_ssot_registry_lookup",
@@ -770,6 +780,10 @@ def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path):
     assert payload["inbox"]["media_inbox_count"] == 1
     assert payload["stores"]["shown_count"] == 1
     assert payload["timing_logs"][0]["entry_count"] == 1
+    assert payload["operational_status"]["schema"] == "discord_inventory_operational_status.v1"
+    assert payload["operational_status"]["now"]["working_tree"] in {"clean", "dirty"}
+    assert payload["operational_status"]["safety_boundary"]["raw_discord_text_output"] == "omitted"
+    assert payload["operational_status"]["safety_boundary"]["local_paths_output"] == "omitted"
     assert payload["safety_boundary"]["inbox_file_names_output"] == "omitted"
     assert "synthetic-secret" not in rendered
     assert "123456789012345678-sensitive.png" not in rendered
