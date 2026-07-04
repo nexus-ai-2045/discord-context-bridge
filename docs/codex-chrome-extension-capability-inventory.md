@@ -126,7 +126,7 @@ blocked reason は、少なくとも次のように分けます。
 - `socket_preflight=true`
 - `target_url_verified=true`
 - `socket_after_navigation=true`
-- `latest_visible_snapshot_confirmed=true`
+- `latest_target_snapshot_confirmed=true`
 - `mode=reply` では `reply_ui_candidates=1`
 - `mode=mention` では `message_box_candidates=1`
 - `draft_matches_copy_block=true`

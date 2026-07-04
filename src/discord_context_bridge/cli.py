@@ -290,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     chrome_fill.add_argument("--socket-preflight", action="store_true", help="Chrome 拡張 socket preflight が通った")
     chrome_fill.add_argument("--target-url-verified", action="store_true", help="対象 URL が一致した")
     chrome_fill.add_argument("--socket-after-navigation", action="store_true", help="遷移後 socket / DOM 確認が通った")
-    chrome_fill.add_argument("--latest-visible-snapshot-confirmed", action="store_true", help="ユーザー操作直前に最新可視 snapshot を取得・確認した")
+    chrome_fill.add_argument("--latest-target-snapshot-confirmed", action="store_true", help="ユーザー操作直前に最新対象 snapshot を取得・確認した")
     chrome_fill.add_argument("--reply-ui-candidates", type=int, default=0, help="検出した reply UI 候補数")
     chrome_fill.add_argument("--message-box-candidates", type=int, default=0, help="検出した通常 message box 候補数")
     chrome_fill.add_argument("--draft-matches-copy-block", action="store_true", help="入力予定 draft が copy block と一致した")
@@ -870,7 +870,7 @@ def _cmd_verify_chrome_fill_dry_run(args: argparse.Namespace) -> int:
         socket_preflight=args.socket_preflight,
         target_url_verified=args.target_url_verified,
         socket_after_navigation=args.socket_after_navigation,
-        latest_visible_snapshot_confirmed=args.latest_visible_snapshot_confirmed,
+        latest_target_snapshot_confirmed=args.latest_target_snapshot_confirmed,
         reply_ui_candidates=args.reply_ui_candidates,
         message_box_candidates=args.message_box_candidates,
         draft_matches_copy_block=args.draft_matches_copy_block,
