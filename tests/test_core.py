@@ -3419,7 +3419,7 @@ def test_visible_text_adapter_no_focus_does_not_fallback_to_front_window(monkeyp
     assert calls == [{"focused_only": False, "focus_app": False, "window_index": 2}]
 
 
-def test_visible_text_adapter_cli_uses_macos_auto_fallback(capsys, monkeypatch):
+def test_visible_text_adapter_cli_uses_macos_auto_without_focus_by_default(capsys, monkeypatch):
     adapter = load_script_module(
         "visible_text_adapter_macos_auto_cli_for_test",
         ROOT / "scripts" / "read_visible_discord_text.py",
@@ -3437,11 +3437,33 @@ def test_visible_text_adapter_cli_uses_macos_auto_fallback(capsys, monkeypatch):
     output = capsys.readouterr().out
 
     assert result == 0
+    assert calls == [("Discord", "", 2, 3.0, False)]
+    assert output == "member-a: 画面に見えている本文です\n"
+
+
+def test_visible_text_adapter_cli_can_focus_macos_auto_with_explicit_opt_in(capsys, monkeypatch):
+    adapter = load_script_module(
+        "visible_text_adapter_macos_auto_cli_no_focus_for_test",
+        ROOT / "scripts" / "read_visible_discord_text.py",
+    )
+    calls = []
+
+    def fake_auto(process_name, window_name_contains="", *, window_index=0, timeout=None, focus_app=True):
+        calls.append((process_name, window_name_contains, window_index, timeout, focus_app))
+        return "member-a: 画面に見えている本文です\n"
+
+    monkeypatch.setattr(adapter, "preflight_macos_window_selection", lambda *args, **kwargs: [(2, "Discord")])
+    monkeypatch.setattr(adapter, "read_macos_accessibility_auto", fake_auto)
+
+    result = adapter.main(["--macos-accessibility-auto", "--focus-app", "--window-index", "2", "--timeout", "3"])
+    output = capsys.readouterr().out
+
+    assert result == 0
     assert calls == [("Discord", "", 2, 3.0, True)]
     assert output == "member-a: 画面に見えている本文です\n"
 
 
-def test_visible_text_adapter_cli_can_use_macos_auto_without_focus(capsys, monkeypatch):
+def test_visible_text_adapter_no_focus_flag_remains_backward_compatible(capsys, monkeypatch):
     adapter = load_script_module(
         "visible_text_adapter_macos_auto_cli_no_focus_for_test",
         ROOT / "scripts" / "read_visible_discord_text.py",
@@ -3480,7 +3502,7 @@ def test_visible_text_adapter_probe_reports_safe_route_without_body(capsys, monk
 
     monkeypatch.setattr(adapter, "read_macos_accessibility_auto", fake_auto)
 
-    result = adapter.main(["--probe-macos-accessibility", "--no-focus", "--timeout", "3"])
+    result = adapter.main(["--probe-macos-accessibility", "--timeout", "3"])
     output = capsys.readouterr().out
 
     assert result == 0
