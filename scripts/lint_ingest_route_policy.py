@@ -17,6 +17,9 @@ REQUIRED_PHRASES = (
     "cic",
     "Discord Desktop cache",
     "macOS Accessibility",
+    "ai-party",
+    "外部 MCP",
+    "自動探索しない",
 )
 
 
