@@ -203,14 +203,28 @@ def build_fixture_e2e_payload(
         ),
     ]
     ok = all(item["ok"] for item in steps)
+    regression_contract = {
+        "schema": "discord_13_step_regression_contract.v1",
+        "required_step_count": 13,
+        "review_artifact_checked": any(item["name"] == "08_markdown_review_artifact" and item["ok"] for item in steps),
+        "human_gate_checked": any(item["name"] == "10_human_gate" and item["ok"] for item in steps),
+        "handoff_packet_checked": any(item["name"] == "13_handoff_packet" and item["ok"] for item in steps),
+        "missing_required_checks": [],
+        "raw_text_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+    for key in ("review_artifact_checked", "human_gate_checked", "handoff_packet_checked"):
+        if not regression_contract[key]:
+            regression_contract["missing_required_checks"].append(key)
     return {
         "schema": "discord_13_step_fixture_e2e.v1",
         "language": "ja",
-        "ok": ok,
+        "ok": ok and not regression_contract["missing_required_checks"],
         "stage": "done" if ok else "blocked",
         "step_count": len(steps),
         "passed": sum(1 for item in steps if item["ok"]),
         "steps": steps,
+        "regression_contract": regression_contract,
         "safety_boundary": {
             "raw_discord_text_output": "omitted",
             "participant_names_output": "omitted",
