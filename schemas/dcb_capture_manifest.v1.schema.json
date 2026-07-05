@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_capture_manifest.v1.schema.json",
+  "title": "DCB capture manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "capture_id",
+    "site",
+    "adapter_id",
+    "status",
+    "raw_json",
+    "markdown",
+    "source_url_hash",
+    "review_required",
+    "outbound_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dcb.capture_manifest.v1"
+    },
+    "capture_id": {
+      "type": "string"
+    },
+    "site": {
+      "const": "discord"
+    },
+    "adapter_id": {
+      "const": "discord.v1"
+    },
+    "status": {
+      "enum": [
+        "captured",
+        "partial",
+        "drift_detected",
+        "blocked"
+      ]
+    },
+    "raw_json": {
+      "type": "string"
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "source_url_hash": {
+      "type": "string"
+    },
+    "title_safe_label": {
+      "type": "string"
+    },
+    "attachment_mapping_status": {
+      "enum": [
+        "complete",
+        "partial",
+        "unattributed"
+      ]
+    },
+    "review_required": {
+      "const": true
+    },
+    "outbound_actions": {
+      "const": "disabled"
+    }
+  },
+  "additionalProperties": true
+}

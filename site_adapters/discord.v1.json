@@ -1,0 +1,123 @@
+{
+  "schema": "dcb.site_adapter.v1",
+  "adapter_id": "discord.v1",
+  "site": "discord",
+  "status": "adopted-design",
+  "purpose": "Discord SPA の可視文脈を local-first に抽出し、raw snapshot と drift manifest へ保存するための軽量 adapter 定義。",
+  "url_patterns": [
+    "https://discord.com/channels/*",
+    "https://canary.discord.com/channels/*",
+    "https://ptb.discord.com/channels/*"
+  ],
+  "read_only": true,
+  "outbound_actions": "disabled",
+  "capture_order": [
+    {
+      "method": "structured_dom",
+      "description": "message container から message 単位で author、timestamp、body、attachment を抽出する。"
+    },
+    {
+      "method": "body_inner_text",
+      "description": "domSnapshot 失敗時に evaluate(document.body.innerText) 相当の可視テキストを保存する。"
+    },
+    {
+      "method": "message_container_text",
+      "description": "body 全体が過剰または空の時に、候補 container の innerText を順に保存する。"
+    }
+  ],
+  "selectors": {
+    "page_title_candidates": [
+      "[aria-label][role=\"heading\"]",
+      "h1",
+      "[data-list-item-id^=\"channels___\"]"
+    ],
+    "message_list_candidates": [
+      "[data-list-id=\"chat-messages\"]",
+      "[aria-label*=\"Messages\"]",
+      "[role=\"log\"]"
+    ],
+    "message_item_candidates": [
+      "[id^=\"chat-messages-\"]",
+      "[class*=\"messageListItem\"]",
+      "[role=\"article\"]"
+    ],
+    "author_candidates": [
+      "[class*=\"username\"]",
+      "[data-author-id]",
+      "h3 span"
+    ],
+    "timestamp_candidates": [
+      "time[datetime]",
+      "[class*=\"timestamp\"]"
+    ],
+    "body_candidates": [
+      "[class*=\"markup\"]",
+      "[id^=\"message-content-\"]",
+      "[data-slate-node=\"element\"]"
+    ],
+    "attachment_candidates": [
+      "a[href*=\"cdn.discordapp.com\"]",
+      "a[href*=\"media.discordapp.net\"]",
+      "img[src*=\"cdn.discordapp.com\"]",
+      "img[src*=\"media.discordapp.net\"]"
+    ],
+    "reply_reference_candidates": [
+      "[class*=\"repliedMessage\"]",
+      "[class*=\"replying\"]"
+    ]
+  },
+  "required_extraction_fields": [
+    "source_url",
+    "captured_at",
+    "site",
+    "adapter_id",
+    "adapter_version",
+    "capture_method",
+    "read_scope",
+    "messages",
+    "messages.ordinal",
+    "messages.visible_timestamp",
+    "messages.author_label",
+    "messages.body_text",
+    "messages.attachments",
+    "messages.extraction_confidence"
+  ],
+  "optional_extraction_fields": [
+    "channel_or_thread_title",
+    "viewport_state",
+    "selector_hits",
+    "fallback_used",
+    "redaction_status",
+    "unattributed_cache_candidates",
+    "warnings"
+  ],
+  "drift_checks": [
+    "adapter_url_pattern_miss",
+    "message_container_zero_hits",
+    "structured_dom_empty_but_body_text_present",
+    "timestamp_or_author_or_body_missing_repeatedly",
+    "attachment_url_unmapped_to_message",
+    "selector_hit_rate_drop",
+    "viewport_bottom_unconfirmed",
+    "multiple_primary_selectors_failed"
+  ],
+  "storage": {
+    "raw_json_schema": "schemas/dcb_raw_capture.v1.schema.json",
+    "manifest_schema": "schemas/dcb_capture_manifest.v1.schema.json",
+    "raw_default_dir": ".local/discord-context-bridge/inbox/raw",
+    "sanitized_default_dir": ".local/discord-context-bridge/inbox/sanitized",
+    "markdown_default_dir": ".local/discord-context-bridge/inbox/sanitized",
+    "manifest_default_dir": ".local/discord-context-bridge/inbox/manifests"
+  },
+  "cache_policy": {
+    "attachment_candidates_without_message_match": "unattributed_cache_candidates",
+    "promote_to_attachment": "本文またはDOM近傍から同じ message ordinal に紐づいた時だけ promoted にする。"
+  },
+  "safety": {
+    "raw_discord_text_output": "local_private_only",
+    "participant_names_output": "omit_from_public_reports",
+    "tokens_cookies_webhooks": "never_read_or_output",
+    "external_share_allowed": false,
+    "human_review_required_before_publication": true
+  }
+}

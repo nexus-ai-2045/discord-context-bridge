@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_raw_capture.v1.schema.json",
+  "title": "DCB raw capture",
+  "type": "object",
+  "required": [
+    "schema",
+    "site",
+    "adapter_id",
+    "source_url",
+    "captured_at",
+    "capture_method",
+    "read_scope",
+    "messages",
+    "drift",
+    "safety"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dcb.raw_capture.v1"
+    },
+    "site": {
+      "const": "discord"
+    },
+    "adapter_id": {
+      "const": "discord.v1"
+    },
+    "adapter_version": {
+      "type": "string"
+    },
+    "source_url": {
+      "type": "string"
+    },
+    "captured_at": {
+      "type": "string"
+    },
+    "capture_method": {
+      "enum": [
+        "structured_dom",
+        "body_inner_text",
+        "message_container_text",
+        "clipboard",
+        "local_file",
+        "source_command"
+      ]
+    },
+    "read_scope": {
+      "type": "string"
+    },
+    "channel_or_thread_title": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ordinal",
+          "body_text",
+          "attachments",
+          "extraction_confidence"
+        ],
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "visible_timestamp": {
+            "type": "string"
+          },
+          "author_label": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array"
+          },
+          "nearby_attachment_urls": {
+            "type": "array"
+          },
+          "reply_reference_text": {
+            "type": "string"
+          },
+          "extraction_confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "attachments": {
+      "type": "array"
+    },
+    "unattributed_cache_candidates": {
+      "type": "array"
+    },
+    "drift": {
+      "type": "object",
+      "required": [
+        "detected",
+        "items"
+      ],
+      "properties": {
+        "detected": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "outbound_actions",
+        "raw_contains_private_text"
+      ],
+      "properties": {
+        "outbound_actions": {
+          "const": "disabled"
+        },
+        "raw_contains_private_text": {
+          "type": "boolean"
+        },
+        "external_share_allowed": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
