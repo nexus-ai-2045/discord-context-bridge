@@ -2763,5 +2763,150 @@ def build_discord_post_send_closeout_packet(
     }
 
 
+def _operation_check(
+    name: str,
+    ok: bool,
+    *,
+    evidence: str,
+    blocker: str | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": name,
+        "status": "ok" if ok else "pending",
+        "evidence": evidence,
+    }
+    if blocker:
+        payload["blocker"] = blocker
+    if next_action:
+        payload["next_action"] = next_action
+    return payload
+
+
+def build_discord_send_operation_status(
+    *,
+    staging_packet: dict[str, Any] | None = None,
+    dry_run_report: dict[str, Any] | None = None,
+    closeout_report: dict[str, Any] | None = None,
+    target_label: str = "",
+    target_environment: str = "test",
+    rollback_plan_reviewed: bool = False,
+    production_runbook_fixed: bool = False,
+) -> dict[str, Any]:
+    """Summarize a human-assisted Discord send workflow from existing logs.
+
+    This function deliberately consumes metadata-only gate reports. It does not
+    send to Discord, and it does not echo raw URLs, snowflakes, or message text.
+    """
+    safe_target_label = redact_artifact_text(target_label.strip()) if target_label.strip() else ""
+    environment = target_environment.strip().casefold() or "test"
+    if environment not in {"test", "production"}:
+        environment = "test"
+
+    staging_ready = bool(
+        staging_packet
+        and staging_packet.get("schema") == "discord_send_staging_packet.v1"
+        and staging_packet.get("staging_status") == "ready_to_fill"
+    )
+    staging_target_known = bool(
+        staging_packet
+        and staging_packet.get("target_kind") in {"message", "channel_or_message"}
+        and staging_packet.get("target_url_output") == "omitted"
+    )
+    copy_block_ready = bool(
+        staging_packet
+        and (staging_packet.get("copy_block") or {}).get("status") in {"ready", "split"}
+    )
+    dry_run_ready = bool(
+        dry_run_report
+        and dry_run_report.get("schema") == "chrome_extension_fill_only_dry_run.v1"
+        and dry_run_report.get("dry_run_status") == "ready_to_fill"
+        and dry_run_report.get("fill_permitted") is True
+    )
+    closeout_closed = bool(
+        closeout_report
+        and closeout_report.get("schema") == "discord_post_send_closeout_packet.v1"
+        and closeout_report.get("closeout_status") == "closed"
+        and closeout_report.get("recommended_next_state") == "done"
+    )
+    closeout_unread_clear = bool(closeout_report and closeout_report.get("unread_check_status") == "none_unread")
+
+    checks = [
+        _operation_check(
+            "target_destination_declared",
+            bool(safe_target_label and staging_target_known),
+            evidence="target_label + staging_packet.target_kind",
+            blocker=None if safe_target_label else "target_label_missing",
+            next_action="対象チャンネル/投稿先を safe label で指定する" if not safe_target_label else None,
+        ),
+        _operation_check(
+            "draft_reviewed",
+            bool(staging_ready and copy_block_ready),
+            evidence="stage-discord-send review/copy_block",
+            blocker=None if staging_ready and copy_block_ready else "staging_packet_not_ready",
+            next_action="review-draft と stage-discord-send を通す" if not (staging_ready and copy_block_ready) else None,
+        ),
+        _operation_check(
+            "dry_run_or_preview_ready",
+            dry_run_ready,
+            evidence="verify-chrome-fill-dry-run",
+            blocker=None if dry_run_ready else "dry_run_not_ready",
+            next_action="Chrome fill-only dry-run を ready_to_fill にする" if not dry_run_ready else None,
+        ),
+        _operation_check(
+            "test_channel_send_observed",
+            bool(environment == "test" and closeout_closed),
+            evidence="closeout-discord-send on test target",
+            blocker=None if environment == "test" and closeout_closed else "test_send_closeout_missing",
+            next_action="テスト用チャンネルで人間送信し closeout-discord-send を closed にする"
+            if not (environment == "test" and closeout_closed)
+            else None,
+        ),
+        _operation_check(
+            "send_log_and_failure_recovery_checked",
+            bool(closeout_closed and closeout_unread_clear and rollback_plan_reviewed),
+            evidence="closeout-discord-send + rollback_plan_reviewed",
+            blocker=None
+            if closeout_closed and closeout_unread_clear and rollback_plan_reviewed
+            else "send_log_or_recovery_plan_missing",
+            next_action="送信後 closeout と、失敗時の修正投稿/停止/人間確認手順を確認する"
+            if not (closeout_closed and closeout_unread_clear and rollback_plan_reviewed)
+            else None,
+        ),
+        _operation_check(
+            "production_send_procedure_fixed",
+            bool(production_runbook_fixed),
+            evidence="docs/discord-send-operation-runbook.md",
+            blocker=None if production_runbook_fixed else "production_runbook_not_confirmed",
+            next_action="本番送信前の固定手順をレビュー済みにする" if not production_runbook_fixed else None,
+        ),
+    ]
+    ok = all(check["status"] == "ok" for check in checks)
+    return {
+        "schema": "discord_send_operation_status.v1",
+        "language": DEFAULT_LANGUAGE,
+        "ok": ok,
+        "state": "ready_for_production_human_send" if ok else "attention_required",
+        "target": {
+            "label": safe_target_label or "not_provided",
+            "environment": environment,
+            "url_output": "omitted",
+        },
+        "checks": checks,
+        "summary": {
+            "ready_count": sum(1 for check in checks if check["status"] == "ok"),
+            "total_count": len(checks),
+            "next": [check["next_action"] for check in checks if check.get("next_action")],
+        },
+        "safety_boundary": {
+            "discord_send_executed_by_this_tool": False,
+            "raw_discord_text_output": "omitted",
+            "target_url_output": "omitted",
+            "snowflake_values_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+    }
+
+
 def send_message(*_: Any, **__: Any) -> None:
     raise DisabledCapability("Discord への送信機能は、この public nucleus では意図的に無効です。")
