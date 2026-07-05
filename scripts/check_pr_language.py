@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--pr", help="gh pr view で確認する PR 番号または URL")
     source.add_argument("--body-file", type=Path, help="PR body markdown file")
     parser.add_argument("--title", help="PR title。--body-file の場合は必須")
+    parser.add_argument("--json", action="store_true", help="JSON で出力する。互換性のため既定出力も JSON です。")
     return parser
 
 
