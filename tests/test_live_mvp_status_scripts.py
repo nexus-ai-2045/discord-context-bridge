@@ -883,6 +883,121 @@ def test_ops_check_includes_status_dashboard():
     assert "status dashboard" in checks
 
 
+def test_repo_goal_status_reports_done_when_dashboard_is_clean(monkeypatch):
+    import repo_goal_status
+
+    monkeypatch.setattr(
+        repo_goal_status.discord_inventory_dashboard,
+        "build_inventory",
+        lambda channel_dir, tmp_dir, store_limit: {
+            "ok": True,
+            "operational_status": {
+                "now": {
+                    "state": "done",
+                    "working_tree": "clean",
+                    "origin_main_ahead": 0,
+                    "origin_main_behind": 0,
+                },
+                "github": {"open_pr_count": 0, "error": None},
+                "residual_count": 0,
+                "residual": [],
+                "next": [],
+            },
+            "safety_boundary": {
+                "raw_discord_text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        },
+    )
+
+    payload = repo_goal_status.build_goal_status()
+
+    assert payload["ok"] is True
+    assert payload["state"] == "done"
+    assert payload["dashboard"]["residual_count"] == 0
+    assert payload["external_actions_performed"] is False
+
+
+def test_repo_goal_status_blocks_dirty_or_open_pr(monkeypatch):
+    import repo_goal_status
+
+    monkeypatch.setattr(
+        repo_goal_status.discord_inventory_dashboard,
+        "build_inventory",
+        lambda channel_dir, tmp_dir, store_limit: {
+            "ok": False,
+            "operational_status": {
+                "now": {
+                    "state": "attention_required",
+                    "working_tree": "dirty",
+                    "origin_main_ahead": 1,
+                    "origin_main_behind": 0,
+                },
+                "github": {"open_pr_count": 1, "error": None},
+                "residual_count": 2,
+                "residual": [{"code": "working_tree_dirty"}, {"code": "open_pull_requests"}],
+                "next": ["review open PR"],
+            },
+            "safety_boundary": {
+                "raw_discord_text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        },
+    )
+
+    payload = repo_goal_status.build_goal_status()
+
+    assert payload["ok"] is False
+    assert payload["state"] == "attention_required"
+    assert {item["name"]: item["status"] for item in payload["requirements"]}["repo_sync_clean"] == "blocked"
+    assert {item["name"]: item["status"] for item in payload["requirements"]}["no_open_pr"] == "blocked"
+
+
+def test_repo_goal_status_includes_ops_smoke_failure(monkeypatch):
+    import repo_goal_status
+
+    monkeypatch.setattr(
+        repo_goal_status.discord_inventory_dashboard,
+        "build_inventory",
+        lambda channel_dir, tmp_dir, store_limit: {
+            "ok": True,
+            "operational_status": {
+                "now": {
+                    "state": "done",
+                    "working_tree": "clean",
+                    "origin_main_ahead": 0,
+                    "origin_main_behind": 0,
+                },
+                "github": {"open_pr_count": 0, "error": None},
+                "residual_count": 0,
+                "residual": [],
+                "next": [],
+            },
+            "safety_boundary": {
+                "raw_discord_text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        repo_goal_status,
+        "run_smoke",
+        lambda: {
+            "command": "python scripts/ops_check.py",
+            "exit_code": 2,
+            "ok": False,
+            "stdout": "failed",
+            "stderr": "",
+        },
+    )
+
+    payload = repo_goal_status.build_goal_status(run_ops_smoke=True)
+
+    assert payload["ok"] is False
+    assert payload["smoke"]["ok"] is False
+    assert {item["name"]: item["status"] for item in payload["requirements"]}["ops_smoke"] == "blocked"
+
+
 def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
