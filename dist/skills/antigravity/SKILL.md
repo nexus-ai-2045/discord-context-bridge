@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 71205517e060e804896e78c636006f1995dc13dd
+ssot_commit: 12d5c2693458b325a7c4e9fc8b4fd72b800d7635
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: e45d44c2e0849518ab35f002c2677491a03c429aefe78b07ddb4160e416c0639
-contract_checksum: 38e9dd52d5264157610d93b897043eb0ee7e3c62656d98fd0ccce7e49d231d22
-generated_at: 2026-07-05T04:43:15+00:00
+contract_checksum: cee6c82fa256c518fd8d42dc517f9116b5b06328637ff8c8afca15f396e39f27
+generated_at: 2026-07-05T14:00:15+00:00
 runtime_target: antigravity
 ---
 
@@ -27,14 +27,27 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - raw Discord 本文、実 guild/channel/message ID、handle、token、cookie、local absolute path を visible output に出さない。
 - 取得経路は local-first / read-only とし、可視テキスト・clipboard・private adapter のいずれも outbound action を持たない。
 - Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
+- `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 
 ## 標準フロー
 
-1. 可視テキストを local file または stdin から `import-visible-text` に渡す。
-2. `context-passport` で文脈カードを作る。
-3. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
-4. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
+2. API / bot inbox / private adapter / clipboard / visible fallback の DCB 内順序で本文取得経路を確認する。
+3. 可視テキストを local file または stdin から `import-visible-text` に渡す。
+4. `context-passport` で文脈カードを作る。
+5. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
+6. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+
+本文取得の既定順序:
+
+1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
+2. `discord_route_retry_decider.py`: `gateway_live_event`、`rest_backfill`、`bot_text_event_inbox` の順に確認。
+3. `private_adapter_probe.py`: `DISCORD_CONTEXT_BRIDGE_PRIVATE_ADAPTER` / `DISCORD_CONTEXT_BRIDGE_PRIVATE_COMMAND` の状態を確認。
+4. `read_visible_discord_text.py --from-clipboard` または明示された local file / source command。
+5. Chrome visible fallback / OCR region は、DCB 内の safe fallback reason を返した後、ユーザーが明示した場合だけ使う。
+
+この順序から外れて別 repository や別 Discord bot workflow へ行った場合は、作業を止めて DCB スコープに戻す。
 
 ## Codex chat title reflection
 

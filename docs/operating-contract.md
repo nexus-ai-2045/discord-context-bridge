@@ -9,14 +9,27 @@
 - raw Discord 本文、実 guild/channel/message ID、handle、token、cookie、local absolute path を visible output に出さない。
 - 取得経路は local-first / read-only とし、可視テキスト・clipboard・private adapter のいずれも outbound action を持たない。
 - Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
+- `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 
 ## 標準フロー
 
-1. 可視テキストを local file または stdin から `import-visible-text` に渡す。
-2. `context-passport` で文脈カードを作る。
-3. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
-4. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
+2. API / bot inbox / private adapter / clipboard / visible fallback の DCB 内順序で本文取得経路を確認する。
+3. 可視テキストを local file または stdin から `import-visible-text` に渡す。
+4. `context-passport` で文脈カードを作る。
+5. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
+6. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+
+本文取得の既定順序:
+
+1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
+2. `discord_route_retry_decider.py`: `gateway_live_event`、`rest_backfill`、`bot_text_event_inbox` の順に確認。
+3. `private_adapter_probe.py`: `DISCORD_CONTEXT_BRIDGE_PRIVATE_ADAPTER` / `DISCORD_CONTEXT_BRIDGE_PRIVATE_COMMAND` の状態を確認。
+4. `read_visible_discord_text.py --from-clipboard` または明示された local file / source command。
+5. Chrome visible fallback / OCR region は、DCB 内の safe fallback reason を返した後、ユーザーが明示した場合だけ使う。
+
+この順序から外れて別 repository や別 Discord bot workflow へ行った場合は、作業を止めて DCB スコープに戻す。
 
 ## Codex chat title reflection
 
