@@ -15,6 +15,9 @@
 
 ## P1
 
+- 送信テスト運転表を実ログで閉じる。
+  - done when: `stage-discord-send`、`verify-chrome-fill-dry-run`、`closeout-discord-send` のJSONログを `send-operation-status` に渡し、対象safe label、本文レビュー、dry-run、テスト用チャンネルでの人間送信、送信後closeout、失敗時回復方針、本番手順固定が1つのJSONで確認できる。
+  - current: `send-operation-status` と `docs/discord-send-operation-runbook.md` は実装済み。実チャンネルでの人間送信ログは次フェーズ。
 - release version 採番を運用チェックへ入れる。
   - done when: `scripts/bump_version.py --part patch|minor|major --write` で `pyproject.toml` と `CHANGELOG.md` を同時更新でき、`scripts/bump_version.py --check` が `ops_check.py` に含まれる。
 - human gate と copy block を作る。

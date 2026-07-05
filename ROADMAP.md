@@ -55,6 +55,34 @@ MVP done は、次をすべて満たす状態です。
 - `python -m pytest tests -q`、`python -m compileall src tests scripts`、`scripts/bump_version.py --check`、public-safe grep が green。
 - release 前の version は `scripts/bump_version.py --part patch|minor|major --write` で採番し、`pyproject.toml` と `CHANGELOG.md` を同時更新する。
 
+## 次フェーズ: 送信テスト運転表
+
+MVP後の送信テストは、Discord自動送信の実装ではなく、人間送信の前後を安全に閉じる運転表として扱います。
+
+```mermaid
+flowchart TD
+  target["対象safe label"] --> draft["送信本文レビュー"]
+  draft --> stage["stage-discord-send"]
+  stage --> dry["verify-chrome-fill-dry-run"]
+  dry --> test["テスト用チャンネルで人間送信"]
+  test --> closeout["closeout-discord-send"]
+  closeout --> status["send-operation-status"]
+  status --> prod["本番手順レビュー"]
+
+  guard["send/reaction/edit/deleteは自動化しない"] -. "stopline" .-> stage
+  guard -. "stopline" .-> dry
+  guard -. "stopline" .-> closeout
+```
+
+| 項目 | 現状 | 残TODO |
+|---|---|---|
+| 対象チャンネル/投稿先の明示 | `target-label` でsafe label化 | 実テスト対象のsafe labelを決める |
+| 送信本文レビュー | `review-draft` / `stage-discord-send` | 実チャンネル文脈で確認する |
+| dry-run / preview | `verify-chrome-fill-dry-run` | Chrome拡張実環境の観測ログを残す |
+| テスト用チャンネルで実送信 | 人間送信後closeoutの受け口あり | テストチャンネルで実送信してcloseoutする |
+| 送信ログ/失敗時回復 | `send-operation-status` に吸い上げ可能 | 修正投稿/停止/再送の回復方針をレビュー済みにする |
+| 本番送信手順固定 | `docs/discord-send-operation-runbook.md` | 本番前チェックリストとして運用する |
+
 ## 13工程の受け入れマトリクス
 
 | # | 工程 | done condition | smoke | preflight | E2E |
