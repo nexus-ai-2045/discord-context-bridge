@@ -486,6 +486,68 @@ def build_coverage_report(
     }
 
 
+def build_url_intake_fast_path(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    hook_snapshot_status: str = "",
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    latest = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
+    url_shape = analyze_discord_forum_url_shape(url)
+    snapshot_ready = bool(latest.get("ok"))
+    decision = "snapshot_metadata_ready" if snapshot_ready else "need_visible_text"
+    next_step = "use_saved_snapshot_metadata" if snapshot_ready else "ask_for_visible_text_or_paste"
+    observed_snapshot_status = "ready" if snapshot_ready else str(latest.get("reason") or hook_snapshot_status or "snapshot_missing")
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_url_intake_fast_path.v1",
+        "generated_at": generated,
+        "message": "Discord URL intake の最短判定を作成しました。",
+        "decision": decision,
+        "next_step": next_step,
+        "recommended_command": "report-latest",
+        "command_budget": {
+            "when_hook_status_present": "zero_extra_commands",
+            "when_measurement_requested": "report-latest_once",
+            "full_intake_policy_check": "verify-url-intake_once",
+        },
+        "hook_snapshot_status": hook_snapshot_status or "not_provided",
+        "observed_snapshot_status": observed_snapshot_status,
+        "text_required_tools_allowed": False,
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": url_shape,
+        "latest_snapshot_report": {
+            "ok": bool(latest.get("ok")),
+            "reason": str(latest.get("reason") or ""),
+            "requested_filter": str(latest.get("requested_filter") or ""),
+            "raw_text_returned": bool(latest.get("raw_text_returned")),
+            "path_output": "omitted",
+        },
+        "operations": {
+            "discord_outbound_actions": "disabled",
+            "browser_access": "not_performed",
+            "new_capture": False,
+            "raw_text_returned": False,
+            "paths_output": "omitted",
+        },
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "paths_output": "omitted",
+        "outbound_actions": "disabled",
+        "route_failure": "none",
+    }
+
+
 def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     if not path.exists():
         return []

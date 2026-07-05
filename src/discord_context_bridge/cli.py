@@ -28,6 +28,7 @@ from .core import (
     build_handoff_packet,
     build_latest_snapshot_report,
     build_review_artifact_markdown,
+    build_url_intake_fast_path,
     context_passport_from_text,
     context_operating_mode_from_text,
     digest_context_from_text,
@@ -173,6 +174,17 @@ def build_parser() -> argparse.ArgumentParser:
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
     report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     report_latest.set_defaults(handler=_cmd_report_latest)
+
+    fast_path = sub.add_parser(
+        "url-intake-fast-path",
+        help="Discord URL intake の最短 read-only 判定を metadata-only で返す",
+    )
+    fast_path.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    fast_path.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    fast_path.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
+    fast_path.add_argument("--hook-snapshot-status", default="", help="hook が既に出した snapshot status")
+    fast_path.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    fast_path.set_defaults(handler=_cmd_url_intake_fast_path)
 
     snapshot_url = sub.add_parser(
         "snapshot-discord-url-text",
@@ -651,6 +663,27 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
         print(f"reason: {report['reason']}")
     print("outbound: disabled")
     return 0 if report["ok"] else 2
+
+
+def _cmd_url_intake_fast_path(args: argparse.Namespace) -> int:
+    payload = build_url_intake_fast_path(
+        url=args.url,
+        snapshot_store=args.snapshot_store,
+        target_key=args.target_key,
+        hook_snapshot_status=args.hook_snapshot_status,
+    )
+    if args.json:
+        print(_json(payload))
+        return 0 if payload["decision"] == "snapshot_metadata_ready" else 2
+    print(payload["message"])
+    print(f"decision: {payload['decision']}")
+    print(f"next_step: {payload['next_step']}")
+    print(f"recommended_command: {payload['recommended_command']}")
+    print(f"text_required_tools_allowed: {str(payload['text_required_tools_allowed']).lower()}")
+    print(f"raw_text_returned: {str(payload['raw_text_returned']).lower()}")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0 if payload["decision"] == "snapshot_metadata_ready" else 2
 
 
 def _cmd_snapshot_discord_url_text(args: argparse.Namespace) -> int:

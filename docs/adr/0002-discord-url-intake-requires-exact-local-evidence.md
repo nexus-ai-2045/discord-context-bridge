@@ -60,8 +60,10 @@ diagnostic JSON は、機械が判断できる reason / freshness / recency / st
 
 現在の実装では、次の CLI / helper がこの ADR を担う。
 
+- `url-intake-fast-path`
 - `verify-url-intake`
 - `coverage-report`
+- `build_url_intake_fast_path`
 - `analyze_discord_forum_url_shape`
 - `build_url_intake_gate`
 - `build_coverage_report`
@@ -92,6 +94,11 @@ diagnostic JSON は、機械が判断できる reason / freshness / recency / st
 - diagnostic JSON に raw text / Discord URL / local path を出さない
 
 ## Operational Note
+
+hook が既に `snapshot_missing` / exact `target_key` / `snapshot_count=0` を出している時は、
+ユーザー応答では追加 CLI を走らせずに「本文未取得、可視テキストが必要」で停止するのが最短経路。
+実測が必要な時だけ `url-intake-fast-path` を 1 回使う。
+`context-passport` / `guide-reply` / `snapshot-discord-url-text` は、可視テキストまたは messages がある時だけ呼ぶ。
 
 ローカル環境では、互換用の README pointer directory と実装用の git worktree / clone が分かれる場合がある。
 実装と検証は、実際の git worktree / clone で行う。
