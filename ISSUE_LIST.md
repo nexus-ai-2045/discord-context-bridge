@@ -2,6 +2,9 @@
 
 ## P0
 
+- Discordで対象を見つけた後の bridge intake を主導線にする。
+  - done when: 対象URLまたは可視snapshotを渡すだけで、保存、coverage、context passport、reply guide、review draft へ進む最短導線が分かる。
+  - current: 個別コマンドはあるが、理想体験としての M1 導線はまだROADMAP上で次フェーズ。
 - `references/initial-thread-ruleset.md` を MVP 正本として固定する。
   - done when: 入口指定から handoff までの13工程が読め、任意割り込みと stopline が分かる。
 - 13工程の validation plan を ROADMAP に固定する。
@@ -15,6 +18,9 @@
 
 ## P1
 
+- 速度・精度・軽量化の指標を計測できるようにする。
+  - done when: intake、report、context-passport、review、stage の実行時間、入力サイズ、parsed件数、cache利用、read-more理由がmetadata-onlyで確認できる。
+  - target: intake 1秒以内、保存済みsnapshot文脈整理 3秒以内、送信前gate 1秒以内、full smoke 10秒以内、raw/private漏えい 0件、outbound誤許可 0件。
 - 送信テスト運転表を実ログで閉じる。
   - done when: `stage-discord-send`、`verify-chrome-fill-dry-run`、`closeout-discord-send` のJSONログを `send-operation-status` に渡し、対象safe label、本文レビュー、dry-run、テスト用チャンネルでの人間送信、送信後closeout、失敗時回復方針、本番手順固定が1つのJSONで確認できる。
   - current: `send-operation-status` と `docs/discord-send-operation-runbook.md` は実装済み。実チャンネルでの人間送信ログは次フェーズ。
@@ -39,6 +45,8 @@
 
 - 運用 UI / ログ表示を整える。
   - logs: implementation, live probe, GitHub, residual, blocker, safety.
+- conversation parser quality を実サンプルで上げる。
+  - done when: 周辺会話から目的、前提、参加者ロール、温度感、ルール、返信前の一点確認が安定して返る。
 - スレッド選択とルール紐付けを追加する。
   - first route: manual rule registration + thread key.
 - Context Budget Gate と handoff template を追加する。
