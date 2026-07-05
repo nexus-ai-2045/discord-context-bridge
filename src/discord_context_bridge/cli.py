@@ -25,6 +25,7 @@ from .core import (
     build_coverage_report,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
+    build_discord_send_operation_status,
     build_handoff_packet,
     build_latest_snapshot_report,
     build_review_artifact_markdown,
@@ -333,6 +334,22 @@ def build_parser() -> argparse.ArgumentParser:
     closeout_send.add_argument("--note-label", default="", help="任意: closeout 用の短い安全ラベル")
     closeout_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     closeout_send.set_defaults(handler=_cmd_closeout_discord_send)
+
+    send_status = sub.add_parser("send-operation-status", help="既存ログからDiscord送信テスト運転表を作る")
+    send_status.add_argument("--staging-packet", type=Path, help="任意: stage-discord-send が出した JSON packet")
+    send_status.add_argument("--dry-run-report", type=Path, help="任意: verify-chrome-fill-dry-run が出した JSON report")
+    send_status.add_argument("--closeout-report", type=Path, help="任意: closeout-discord-send が出した JSON report")
+    send_status.add_argument("--target-label", default="", help="対象チャンネル/投稿先の安全な表示名。実IDやURLは避ける")
+    send_status.add_argument(
+        "--target-environment",
+        choices=["test", "production"],
+        default="test",
+        help="対象がテスト用か本番用か",
+    )
+    send_status.add_argument("--rollback-plan-reviewed", action="store_true", help="失敗時の修正投稿/停止/人間確認手順を確認済み")
+    send_status.add_argument("--production-runbook-fixed", action="store_true", help="本番送信手順を固定・レビュー済み")
+    send_status.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    send_status.set_defaults(handler=_cmd_send_operation_status)
 
     guide = sub.add_parser("guide-reply", help="Discord 可視テキストと返信下書きから会話ガイドを作る")
     guide.add_argument("--input", type=Path, help="読み込むテキストファイル")
@@ -945,6 +962,39 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
     if packet["blockers"]:
         print("blockers: " + " / ".join(packet["blockers"]))
     print(packet["send_capability_label"])
+    return exit_code
+
+
+def _read_json_file(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _cmd_send_operation_status(args: argparse.Namespace) -> int:
+    packet = build_discord_send_operation_status(
+        staging_packet=_read_json_file(args.staging_packet),
+        dry_run_report=_read_json_file(args.dry_run_report),
+        closeout_report=_read_json_file(args.closeout_report),
+        target_label=args.target_label,
+        target_environment=args.target_environment,
+        rollback_plan_reviewed=args.rollback_plan_reviewed,
+        production_runbook_fixed=args.production_runbook_fixed,
+    )
+    exit_code = 0 if packet["ok"] else 2
+    if args.json:
+        print(_json(packet))
+        return exit_code
+    print("Discord送信テスト運転表")
+    print(f"state: {packet['state']}")
+    print(f"target: {packet['target']['label']} ({packet['target']['environment']})")
+    for check in packet["checks"]:
+        line = f"- {check['status']}: {check['name']}"
+        if check.get("blocker"):
+            line += f" / blocker={check['blocker']}"
+        print(line)
+    for action in packet["summary"]["next"]:
+        print(f"next: {action}")
     return exit_code
 
 
