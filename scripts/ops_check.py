@@ -57,7 +57,7 @@ def run_command(name: str, command: list[str], *, env: dict[str, str] | None = N
 
 
 def run_secret_scan() -> CheckResult:
-    pattern = (
+    credential_pattern = (
         r"(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|"
         r"discord(app)?\.com/api/webhooks|"
         "Author" + r"ization|"
@@ -65,11 +65,21 @@ def run_secret_scan() -> CheckResult:
         r"mfa\.|"
         r"[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27})"
     )
+    personal_path_pattern = (
+        r"(C:\\\\Users\\\\[^\\\\\s]+|"
+        r"C:\\Users\\[^\\\s]+|"
+        r"C:/Users/[^/\s]+|"
+        r"/Users/[^/\s]+)"
+    )
+    pattern = f"{credential_pattern}|{personal_path_pattern}"
     result = run_command("秘密情報スキャン", ["rg", "-n", pattern, "."])
     allowed_prefixes = (
         "./PUBLIC_RELEASE_CHECKLIST.md:",
         "./SECURITY.md:",
+        "./src/discord_context_bridge/core.py:",
         "./scripts/lint_runtime_skill_sync.py:",
+        "./scripts/ops_check.py:",
+        "./scripts/pr_scope_guard.py:",
         "./scripts/read_visible_discord_text.py:",
         "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
@@ -77,6 +87,17 @@ def run_secret_scan() -> CheckResult:
     unexpected = []
     for line in result.output.splitlines():
         normalized = line.replace("\\", "/") if line.startswith(".\\") else line
+        if any(
+            safe in line
+            for safe in (
+                "C:\\Users\\example",
+                "C:\\\\Users\\\\example",
+                "C:/Users/example",
+                "/Users/example",
+                "/Users/Shared",
+            )
+        ):
+            continue
         if line.strip() and not normalized.startswith(allowed_prefixes):
             unexpected.append(line)
     output = result.output

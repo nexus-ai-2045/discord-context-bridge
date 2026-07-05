@@ -32,7 +32,7 @@ external_action: none
 | 優先 | 論点 | 批判的見立て | 解決案 |
 |---|---|---|---|
 | P0 | 修正を守るテストが弱い | 初回TODOはgreen結果を記録していたが、`--skip-http` と `cleanup_elapsed_ms` を直接守るテストがなかった。 | `ops_check.parse_args(["--skip-http"])` と timeout payload の `cleanup_elapsed_ms` をテスト化。実装済み。 |
-| P0 | 正本の範囲が曖昧 | 専用repo単体を正本にする前提なら解消済み。親repo側の状態は別lane。 | DCB closeoutでは `C:\Users\example\Projects\Documents\discord-context-bridge` の `main` / `origin/main` 同期を正本条件にする。 |
+| P0 | 正本の範囲が曖昧 | 専用repo単体を正本にする前提なら解消済み。親repo側の状態は別lane。 | DCB closeoutでは `<DCB_SSOT>` の `main` / `origin/main` 同期を正本条件にする。 |
 | P1 | TODOが実装PR向けに寄りすぎ | live Discord運用まで保証したように読める余地があった。 | 運用保証範囲を「local fixture / smoke / safe inventory / metadata-only dashboard」までと明記。live送信や実Discord取得は別実行タスク。 |
 | P1 | 旧cloneがまだ残る | DCB 専用repoスコープでは残務に含めない。 | 旧cloneや親repo snapshotは、必要なら別laneのアーカイブ/移管判断として扱う。 |
 | P2 | status dashboardの次実装が曖昧 | `discord_inventory_dashboard.py` が `now/done/broken/blocked/next/github/residual` を返す状態になった。 | dashboard JSON を closeout の運用正本にする。 |
