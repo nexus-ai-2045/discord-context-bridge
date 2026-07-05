@@ -18,6 +18,7 @@ from discord_context_bridge import (
     build_copy_block,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
+    build_discord_send_operation_status,
     build_coverage_report,
     build_handoff_packet,
     build_human_gate,
@@ -972,6 +973,68 @@ def test_build_discord_post_send_closeout_packet_blocks_missing_unread_check():
     assert closeout["closeout_status"] == "blocked"
     assert "unread_not_checked" in closeout["blockers"]
     assert closeout["recommended_next_state"] == "check_unread_items"
+
+
+def test_build_discord_send_operation_status_summarizes_existing_logs():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_message_id="423456789012345678",
+        observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+    )
+
+    status = build_discord_send_operation_status(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        closeout_report=closeout,
+        target_label="test-channel",
+        rollback_plan_reviewed=True,
+        production_runbook_fixed=True,
+    )
+    serialized = json.dumps(status, ensure_ascii=False)
+
+    assert status["schema"] == "discord_send_operation_status.v1"
+    assert status["ok"] is True
+    assert status["state"] == "ready_for_production_human_send"
+    assert status["summary"]["ready_count"] == 6
+    assert status["target"]["label"] == "test-channel"
+    assert status["safety_boundary"]["discord_send_executed_by_this_tool"] is False
+    assert "discord.com/channels" not in serialized
+    assert "423456789012345678" not in serialized
+
+
+def test_build_discord_send_operation_status_shows_next_actions_when_logs_missing():
+    status = build_discord_send_operation_status()
+
+    assert status["ok"] is False
+    assert status["state"] == "attention_required"
+    assert status["summary"]["ready_count"] == 0
+    blockers = {check["blocker"] for check in status["checks"] if check.get("blocker")}
+    assert "target_label_missing" in blockers
+    assert "dry_run_not_ready" in blockers
+    assert "test_send_closeout_missing" in blockers
 
 
 def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
@@ -2431,6 +2494,65 @@ def test_cli_closeout_discord_send_blocks_unread_items(capsys):
     assert '"closeout_status": "blocked"' in output
     assert '"unread_items_remaining"' in output
     assert '"recommended_next_state": "review_unread_items"' in output
+
+
+def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+    )
+    staging_path = tmp_path / "staging.json"
+    dry_run_path = tmp_path / "dry-run.json"
+    closeout_path = tmp_path / "closeout.json"
+    staging_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+    dry_run_path.write_text(json.dumps(dry_run, ensure_ascii=False), encoding="utf-8")
+    closeout_path.write_text(json.dumps(closeout, ensure_ascii=False), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "send-operation-status",
+            "--staging-packet",
+            str(staging_path),
+            "--dry-run-report",
+            str(dry_run_path),
+            "--closeout-report",
+            str(closeout_path),
+            "--target-label",
+            "test-channel",
+            "--rollback-plan-reviewed",
+            "--production-runbook-fixed",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_send_operation_status.v1"' in output
+    assert '"ok": true' in output
+    assert '"ready_count": 6' in output
+    assert '"discord_send_executed_by_this_tool": false' in output
 
 
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
