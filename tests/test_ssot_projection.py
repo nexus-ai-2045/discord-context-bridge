@@ -130,7 +130,10 @@ def test_lint_ingest_route_policy_requires_playwright_default_ban(tmp_path):
     module = load_script_module("lint_ingest_route_policy_ok", ROOT / "scripts" / "lint_ingest_route_policy.py")
     generated = tmp_path / "dist" / "skills" / "codex"
     generated.mkdir(parents=True)
-    required = "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility"
+    required = (
+        "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility "
+        "ai-party 外部 MCP 自動探索しない"
+    )
     contract = tmp_path / "operating-contract.md"
     contract.write_text(required, encoding="utf-8")
     (generated / "SKILL.md").write_text(required, encoding="utf-8")

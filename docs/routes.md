@@ -21,6 +21,11 @@
 4. bot route が使えない時だけ、Computer Use で画面状態を確認する。
 5. それでも足りない時だけ、OCR region fallback を使う。
 
+Discord URL / 返信下書きの通常 ingress では、別 repository の Discord bot、ai-party、
+ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が未設定なら
+`not_configured` / `control_plane_not_ready` / `dependency_missing` の reason を返し、
+スコープを広げる場合はユーザーの明示承認を取る。
+
 ## status command
 
 ```bash
