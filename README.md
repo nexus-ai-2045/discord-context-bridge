@@ -277,7 +277,7 @@ python3 scripts/ops_check.py --gh --gh-account-only
 PR 作成前には、title / body が日本語既定に沿っていることも確認します。
 
 ```bash
-python3 scripts/check_pr_language.py --title "<PR title>" --body-file .github/pull_request_template.md
+python3 scripts/check_pr_language.py --title "<PR title>" --body-file .github/pull_request_template.md --json
 ```
 
 PR差分に別スコープやローカル保持物が混ざっていないかは、scope guard で確認します。
