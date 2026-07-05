@@ -83,6 +83,94 @@ flowchart TD
 | 送信ログ/失敗時回復 | `send-operation-status` に吸い上げ可能 | 修正投稿/停止/再送の回復方針をレビュー済みにする |
 | 本番送信手順固定 | `docs/discord-send-operation-runbook.md` | 本番前チェックリストとして運用する |
 
+## 理想体験ロードマップ
+
+理想体験は、Discord側では対象メッセージ / スレッド / チャンネルを見つけるだけにし、
+その後の文脈取得、パース、返信前判断、下書き、送信前後の確認を bridge 側で扱うことです。
+
+```mermaid
+flowchart TD
+  found["Discordで対象を見つける"] --> capture["周辺会話をbridgeへ渡す"]
+  capture --> parse["会話をパースする"]
+  parse --> context["目的・前提・温度感・ルールを整理"]
+  context --> review["返信してよいか / 何を返すかを判断"]
+  review --> stage["下書き入力gate"]
+  stage --> human["最後の送信だけ人間が判断"]
+  human --> closeout["送信後closeout / 残TODO更新"]
+
+  capture -. "足りない時" .-> read_more["もっと上を読む / thread先頭が必要"]
+  stage -. "禁止" .-> auto_send["自動送信 / reaction / edit / delete"]
+```
+
+| Milestone | 名前 | 目的 | 完了条件 | 優先 |
+|---|---|---|---|---|
+| M0 | Public-safe core closeout | 既存の文脈処理、ゲート、運用チェックを壊さない | `repo_goal_status --run-smoke` が `ok: true` | 完了 |
+| M1 | Message found -> bridge intake | Discordで見つけた対象を最小操作でbridgeへ渡す | URL / visible snapshot / safe label から `snapshot-discord-url-text` と `report-latest` に接続できる | 次 |
+| M2 | Lightweight upstream loop | intakeからparserまでを速く、軽く、測れる形にする | parse時間、入力サイズ、失敗理由、cache利用がmetadataで見える | 次 |
+| M3 | Conversation parser quality | 周辺会話から目的、前提、参加者ロール、温度感、ルールを安定抽出する | 実サンプルとfixtureで `context-passport` / `guide-reply` が期待fieldを返す | 次 |
+| M4 | Refactor for maintainability | core / CLI / docs / tests の責務を整理する | 既存挙動を変えず、共通処理とgate判定が読みやすく分離される | M2-M3と並行 |
+| M5 | Send rehearsal E2E | テスト用チャンネルで、人間送信前後の6点チェックを実ログで閉じる | `send-operation-status` が実ログで `ok: true` | M1-M4後 |
+| M6 | Operator UX | README/runbookだけで迷わず使える | READMEの最短手順、図、残TODOが実運用と一致する | 進行中 |
+| M7 | Production send runbook | 本番チャンネルで送る前の固定手順を作る | 対象safe label、失敗時回復、送信後確認者が決まる | M5後 |
+| M8 | Optional capture adapters | Chrome拡張、private adapter、bot routeなど入力経路を増やす | credential/raw本文をpublic出力せず、失敗理由を分類できる | M1-M5後 |
+| M9 | Release/package | バージョン、CHANGELOG、tag、公開物レビューを揃える | `bump_version --write --tag` と公開チェックが通る | 後段 |
+
+## 残っている開発
+
+1. Discordで見つけた対象から、周辺会話をbridgeへ渡す入口を実運用で固める。
+2. `snapshot-discord-url-text` から `context-passport` / `guide-reply` / `review-draft` へ進む一連の導線を短縮する。
+3. 上流処理を軽量化する。大きい本文を毎回全部処理せず、snapshot差分、safe metadata、cache、早期blockerで止める。
+4. 速度と精度を測る。parse時間、入力行数、抽出件数、read-more発生理由を出し、fixtureと実サンプルで比較する。
+5. 実チャンネル文脈で parser 品質を確認し、足りない時の `read-more` blocker を人間語で出す。
+6. リファクタリングする。coreのgate判定、CLI入出力、docs/runbook、test fixtureを責務ごとに分け、同じ安全境界を重複実装しない。
+7. テスト用チャンネルで人間送信し、`closeout-discord-send` と `send-operation-status` を実ログで閉じる。
+8. 失敗時回復方針を固定する。誤送信の自動削除やeditではなく、停止、修正投稿、追記、再送を人間判断にする。
+9. 本番送信前チェックリストを `docs/discord-send-operation-runbook.md` に寄せる。
+10. release 採番、CHANGELOG、tag、公開レビューを実運用と同期する。
+
+## 軽量化・速度・精度UPの方針
+
+上流を軽くする目的は、Discordで対象を見つけてからbridge側の判断が返るまでの待ち時間を短くし、
+同時に文脈の取り違えを減らすことです。
+
+```mermaid
+flowchart LR
+  raw["visible snapshot"] --> trim["差分/範囲を絞る"]
+  trim --> cache["既存snapshot/cache確認"]
+  cache --> parse["parser"]
+  parse --> quality["品質メトリクス"]
+  quality --> gate["read-more / review / stage"]
+
+  cache -. "同一なら再利用" .-> gate
+  quality -. "不足" .-> read_more["不足範囲を人間語で返す"]
+```
+
+| 改善対象 | 具体策 | 完了条件 |
+|---|---|---|
+| 速度 | snapshot差分、cache、早期blocker、不要な再parse削減 | 同じ入力で無駄に再処理しない |
+| 精度 | thread目的、ルール、温度感、返信前一点確認をfixture化 | 実サンプルで期待fieldが安定する |
+| 観測性 | parse時間、入力サイズ、抽出件数、blocker理由をmetadata化 | 遅い/外した原因が人間語で分かる |
+| リファクタリング | gate判定、redaction、安全境界、CLI表示を共通化 | テストを増やして挙動を変えずに整理できる |
+
+## 指針となる数字
+
+この数字は初期SLOではなく、開発時の目安です。実ログが増えたら見直します。
+
+| 領域 | 指針 | 測り方 |
+|---|---:|---|
+| URL / snapshot intake の応答 | 1秒以内 | `url-intake-fast-path` / `report-latest` の実行時間 |
+| 保存済みsnapshotからの文脈整理 | 3秒以内 | `context-passport` / `guide-reply` の実行時間 |
+| 送信前 gate 判定 | 1秒以内 | `review-draft` / `stage-discord-send` の実行時間 |
+| full smoke | 10秒以内 | `scripts/ops_check.py` の合計時間 |
+| 入力サイズ | 直近50-100発言相当を標準 | snapshot行数 / parsed event count |
+| cache再利用率 | 同一targetで80%以上 | target_key一致時の再parse回避率 |
+| parser必須field充足率 | fixtureで95%以上 | thread purpose / rules / missing premise / one check |
+| read-more誤停止率 | 実サンプルで10%未満を目標 | 人間が「追加読取不要」と判定したblocked件数 |
+| raw/private漏えい | 0件 | secret scan / public-safe grep / tests |
+| outbound誤許可 | 0件 | `send_capability=disabled` / forbidden action tests |
+| PR差分サイズ | 原則12ファイル以内 | `pr_scope_guard.py` |
+| 回帰テスト | 変更ごとに100% green | `python -m pytest -q` |
+
 ## 13工程の受け入れマトリクス
 
 | # | 工程 | done condition | smoke | preflight | E2E |
