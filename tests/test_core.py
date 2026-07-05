@@ -22,6 +22,7 @@ from discord_context_bridge import (
     build_handoff_packet,
     build_human_gate,
     build_latest_snapshot_report,
+    build_url_intake_fast_path,
     build_review_artifact_markdown,
     write_attachment_ocr_log,
     build_url_intake_gate,
@@ -383,6 +384,60 @@ def test_url_intake_gate_splits_forum_parent_missing_from_raw_cache_miss(tmp_pat
     assert payload["blocked_reason"] == "forum_parent_channel_missing"
     assert payload["url_shape"]["parent_channel_id_present"] is False
     assert payload["url_shape"]["same_guild_fuzzy_match_allowed"] is False
+
+
+def test_url_intake_fast_path_stops_at_missing_snapshot_without_text_tools(tmp_path):
+    url = "https://discord.com/channels/1/10/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text("", encoding="utf-8")
+
+    payload = build_url_intake_fast_path(
+        url=url,
+        snapshot_store=snapshot_store,
+        target_key=key,
+        hook_snapshot_status="snapshot_missing",
+        generated_at="2026-07-05T00:00:00+00:00",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema"] == "discord_url_intake_fast_path.v1"
+    assert payload["decision"] == "need_visible_text"
+    assert payload["recommended_command"] == "report-latest"
+    assert payload["text_required_tools_allowed"] is False
+    assert payload["next_step"] == "ask_for_visible_text_or_paste"
+    assert payload["operations"]["discord_outbound_actions"] == "disabled"
+    assert payload["target"]["target_key"] == key
+    assert str(snapshot_store) not in rendered
+    assert url not in rendered
+
+
+def test_cli_url_intake_fast_path_outputs_metadata_only_missing_snapshot(tmp_path, capsys):
+    url = "https://discord.com/channels/1/10/20"
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text("", encoding="utf-8")
+
+    result = cli_main(
+        [
+            "url-intake-fast-path",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--hook-snapshot-status",
+            "snapshot_missing",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 2
+    assert payload["decision"] == "need_visible_text"
+    assert payload["raw_text_returned"] is False
+    assert payload["paths_output"] == "omitted"
+    assert str(snapshot_store) not in output
+    assert url not in output
 
 
 def test_coverage_report_marks_stale_snapshot_recency_and_policy(tmp_path):

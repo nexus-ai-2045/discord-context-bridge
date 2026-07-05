@@ -213,6 +213,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/report_latest_schema_check.py", "--json"],
             env=env,
         ),
+        "url-intake-fast-path smoke": lambda: run_command(
+            "url-intake-fast-path smoke",
+            [sys.executable, "scripts/url_intake_fast_path_smoke.py", "--json"],
+            env=env,
+        ),
         "SSOT projection": lambda: run_command(
             "SSOT projection",
             [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
