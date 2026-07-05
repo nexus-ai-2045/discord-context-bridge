@@ -149,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app-name", default="Discord")
     parser.add_argument("--capture-profile", choices=["macos-screencapture-region"], default="")
     parser.add_argument("--capture-region", default="", help="x,y,w,h。region 必須、full-screen capture は使わない。")
+    parser.add_argument("--json", action="store_true", help="JSON で出力する。互換性のため既定出力も JSON です。")
     return parser
 
 
