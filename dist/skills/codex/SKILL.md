@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 02d407cda1c2abff4ec3e0e8a80cb889ba10dd6b
+ssot_commit: 71205517e060e804896e78c636006f1995dc13dd
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: e45d44c2e0849518ab35f002c2677491a03c429aefe78b07ddb4160e416c0639
-contract_checksum: 640e8397df3eccfbd53071c63ad39d0393c932a4b7f693ae42d04727866f204b
-generated_at: 2026-07-03T18:56:13+00:00
+contract_checksum: 38e9dd52d5264157610d93b897043eb0ee7e3c62656d98fd0ccce7e49d231d22
+generated_at: 2026-07-05T04:43:15+00:00
 runtime_target: codex
 ---
 
@@ -35,6 +35,27 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 2. `context-passport` で文脈カードを作る。
 3. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
 4. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+
+## Codex chat title reflection
+
+Discord URL の内容確認、スレッド名確認、または「スレタイをチャットタイトルに反映」の依頼では、
+Codex chat/thread title 自体を更新対象にする。ファイル名、Discord 側タイトル、投稿タイトルではない。
+
+title evidence は次の順で扱う。
+
+1. 認証済み browser / trusted local capture から現在読める Discord visible title。
+2. 同一 URL / thread / channel と明確に対応する saved snapshot、posted-record、extract manifest、prior rollout record。
+3. 実 title が未取得の場合だけ `Discord channel ...` のような safe route label。
+
+実 title が分かっている場合は generic fallback label を残さない。title には verified-state suffix を付ける。
+
+- `｜Ingress確認済み・本文未取得`
+- `｜本文未完了・要追加読取`
+- `｜Review待ち・送信なし`
+
+suffix は intent ではなく確認済み状態を表す。title が fresh live read ではなく prior local record 由来の場合は、
+final status でその根拠を明示する。title に raw message text、participant names、token、webhook URL、
+browser profile path、private local path を入れない。
 
 ## Runtime skill projection
 
