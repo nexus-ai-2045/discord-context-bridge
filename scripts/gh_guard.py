@@ -12,8 +12,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_OWNER = "nexus-ai-2045"
 EXPECTED_REPOSITORY = "discord-context-bridge"
-EXPECTED_GIT_USER_NAME = "nexus-ai-2045"
-EXPECTED_GIT_USER_EMAIL = "273569186+nexus-ai-2045@users.noreply.github.com"
+EXPECTED_GIT_AUTHORS = (
+    ("nexus-ai-2045", "273569186+nexus-ai-2045@users.noreply.github.com"),
+    ("nexus_ai", "nexus.ai.2045@gmail.com"),
+)
 FORBIDDEN_IDENTITIES_ENV = "DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES"
 
 
@@ -149,7 +151,7 @@ def build_report(
     account_matches = after == owner
     owner_matches = owner == expected_owner
     repository_matches = repository == expected_repository
-    git_author_matches = git_user_name == EXPECTED_GIT_USER_NAME and git_user_email == EXPECTED_GIT_USER_EMAIL
+    git_author_matches = (git_user_name, git_user_email) in EXPECTED_GIT_AUTHORS
     forbidden_sources = {
         "remote_url": remote_url,
         "active_account": after,

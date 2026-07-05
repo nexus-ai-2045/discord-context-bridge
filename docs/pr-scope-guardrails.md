@@ -15,7 +15,7 @@ PR作成前に次を実行する。
 ```bash
 python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json
 python3 scripts/pr_readiness_preflight.py --fetch --json
-python3 scripts/check_pr_language.py --title "<PR title>" --body-file <body.md>
+python3 scripts/check_pr_language.py --title "<PR title>" --body-file <body.md> --json
 ```
 
 `pr_scope_guard.py` は次を止める。
