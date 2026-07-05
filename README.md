@@ -289,6 +289,13 @@ python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json
 この guard は、`extracts/`、`.local/`、local absolute path、説明のない新規 `scripts/` / `tests/` / `docs/`、
 スコープ外キーワードを検出します。詳細は [`docs/pr-scope-guardrails.md`](docs/pr-scope-guardrails.md) を参照してください。
 
+リポ全体を閉じられるか確認する時は、goal status を見ます。`--run-smoke` を付けると
+`ops_check.py` も実行し、残務ゼロ判定の証跡に含めます。
+
+```bash
+python3 scripts/repo_goal_status.py --run-smoke --json
+```
+
 HTTP MCP 起動スモークまで含める場合は、MCP 依存を入れた Python を指定して実行します。
 
 ```bash
