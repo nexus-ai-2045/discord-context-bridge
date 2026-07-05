@@ -3727,6 +3727,26 @@ def test_gh_guard_rejects_wrong_repository_and_unexpected_identity(monkeypatch):
     assert report["git_author_matches"] is False
 
 
+def test_gh_guard_accepts_current_nexus_ai_author(monkeypatch):
+    gh_guard = load_script_module("gh_guard_current_author_for_test", ROOT / "scripts" / "gh_guard.py")
+
+    monkeypatch.setattr(gh_guard, "get_remote_url", lambda remote: "https://github.com/nexus-ai-2045/discord-context-bridge.git")
+    monkeypatch.setattr(gh_guard, "get_active_gh_account", lambda: ("nexus-ai-2045", True, ""))
+    monkeypatch.setattr(
+        gh_guard,
+        "get_git_config",
+        lambda key: {
+            "user.name": "nexus_ai",
+            "user.email": "nexus.ai.2045@gmail.com",
+        }.get(key, ""),
+    )
+
+    report = gh_guard.build_report("origin", switch=False)
+
+    assert report["ok"] is True
+    assert report["git_author_matches"] is True
+
+
 def test_gh_guard_rejects_configured_forbidden_identity_without_echoing_value(monkeypatch):
     gh_guard = load_script_module("gh_guard_forbidden_identity_for_test", ROOT / "scripts" / "gh_guard.py")
 
@@ -3799,6 +3819,14 @@ def test_pr_language_gate_accepts_japanese_pr_metadata():
     body = "## 概要\n- 変更内容です。\n\n## 検証\n- テスト済みです。\n\n## 境界\n- 送信操作は対象外です。\n\n## 日本語レビュー\n- 日本語レビュー承認済み。\n\njapanese_pr_ok: yes\n"
 
     assert gate.validate_pr_language(title, body) == []
+
+
+def test_pr_language_gate_accepts_json_flag_for_cli_consistency():
+    gate = load_script_module("check_pr_language_json_arg_for_test", ROOT / "scripts" / "check_pr_language.py")
+
+    args = gate.build_parser().parse_args(["--title", "日本語PR", "--body-file", "body.md", "--json"])
+
+    assert args.json is True
 
 
 def test_pr_language_gate_allows_dependabot_dependency_updates():
