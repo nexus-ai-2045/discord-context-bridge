@@ -6,6 +6,65 @@ AI アシスタントが安全に扱える文脈フィードへ変換する loca
 目的は Discord アカウントの自動操作ではありません。人間のユーザーが、現在の会話を理解し、
 抜けている前提を見つけ、返信する前に自分の返信意図を確認できるようにすることです。
 
+## まず知ってほしいこと
+
+- **読むための道具です。** Discord の可視テキストを、文脈カード、返信前ゲート、metadata-only report に変換します。
+- **送信する道具ではありません。** Discord への投稿、返信、reaction、delete、edit は既定で禁止です。
+- **秘密を扱いません。** token、cookie、webhook、browser profile、実 guild/channel ID、private 本文を公開出力に含めません。
+- **local-first です。** raw 本文は private/local の保存先に閉じ、README や公開ログには safe label、件数、状態だけを出します。
+
+## 何に使うか
+
+| やりたいこと | 使う入口 | 出力 |
+|---|---|---|
+| いま見えている Discord 会話を取り込む | `import-visible-text` / `snapshot-discord-url-text` | local event / snapshot |
+| スレッドの目的や前提を掴む | `context-passport` | 文脈パスポート |
+| 返信前にズレや不足を確認する | `review-draft` / `guide-reply` | verdict / reason codes / copy block |
+| 保存済み snapshot の状態を見る | `coverage-report` / `report-latest` | metadata-only report |
+| 添付の扱いを整理する | `attachment-ledger` / `attachment-ocr-log` | safe metadata / private OCR log |
+| MCP から使う | `discord-context-bridge-mcp` / `discord-context-bridge-mcp-http` | 同じ安全境界の tool 群 |
+
+## 最短の使い方
+
+### 1. 可視テキストを取り込む
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  import-visible-text \
+  --input /path/to/visible-discord-text.txt \
+  --guild example-community \
+  --channel planning
+```
+
+### 2. 文脈パスポートを見る
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  context-passport \
+  --input /path/to/visible-discord-text.txt \
+  --guild example-community \
+  --channel planning
+```
+
+### 3. 返信前に下書きを確認する
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  review-draft \
+  --draft "まず前提を確認してから返事します。"
+```
+
+このコマンドも Discord へ送信しません。人間が送信前に判断するための gate です。
+
+## 安全境界
+
+| 領域 | 既定 | 公開してよいもの | 公開しないもの |
+|---|---|---|---|
+| 入力 | read-only visible context | safe label、件数、状態 | raw 本文、参加者名、実 ID |
+| adapter | private / local | stdout 契約、failure_stage | token、cookie、profile |
+| public package | 文脈処理 | passport、gate verdict | Discord 認証情報 |
+| outbound | disabled | copy/paste 前の確認結果 | send、reaction、delete |
+
 ## 全体像
 
 ```mermaid
@@ -22,14 +81,7 @@ flowchart LR
   gate -. "禁止" .-> outbound["Discord send / reaction / delete"]
 ```
 
-| 領域 | 既定 | 公開してよいもの | 公開しないもの |
-|---|---|---|---|
-| 入力 | read-only visible context | safe label、件数、状態 | raw 本文、参加者名、実 ID |
-| adapter | private / local | stdout 契約、failure_stage | token、cookie、profile |
-| public package | 文脈処理 | passport、gate verdict | Discord 認証情報 |
-| outbound | disabled | copy/paste 前の確認結果 | send、reaction、delete |
-
-## MVP の正本
+## 判断正本
 
 MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initial-thread-ruleset.md)
 の13工程です。レビューしやすい補助表示として
@@ -40,7 +92,7 @@ MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initi
 実機 capture、Discord 自動操作は、既存実装があっても MVP の成立条件にはしません。
 これらは必要な時だけ使う任意 adapter / developer verification として扱います。
 
-## Codex から始める Discord ingress
+## Codex から始める場合
 
 本命の入口は、ねくが最初にスレッドURLやDiscord本文を渡す形ではありません。
 「Discordチェックしたい」と言ったら、コデたんが Chrome で Discord を開き、
@@ -129,16 +181,15 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ## できること
 
-- 見えている、またはコピーした Discord テキストを一時的に解析し、本文なしの local append-only event store に取り込みます。
-- 直近メッセージから短い briefing を作ります。
-- スレッドの目的、流れ、前提、ルール注意、温度感を文脈パスポートとして確認します。
-- local command で取得した可視テキストを監視し、文脈パスポートを自動更新します。
-- 返信を書く前に、足りない前提や文脈ズレを検出します。
-- ユーザーの返信意図を直近会話と照合します。
-- local command で取得した可視テキストを監視し、会話ガイドを自動更新します。
-- 保存済み snapshot から、本文なしの最新 metadata report を作ります。
-- 保存済み raw cache / snapshot から、添付の metadata ledger と private OCR log を作ります。
-- Discord への送信は既定で禁止します。
+- 可視 Discord テキストを一時解析し、本文なしの local append-only event store に取り込む。
+- 直近メッセージから短い briefing を作る。
+- スレッドの目的、流れ、前提、ルール注意、温度感を文脈パスポートとして確認する。
+- local command で取得した可視テキストを監視し、文脈パスポートや会話ガイドを更新する。
+- 返信を書く前に、足りない前提や文脈ズレを検出する。
+- ユーザーの返信意図を直近会話と照合する。
+- 保存済み snapshot から、本文なしの最新 metadata report を作る。
+- 保存済み raw cache / snapshot から、添付の metadata ledger と private OCR log を作る。
+- Discord への送信を既定で禁止する。
 
 ## しないこと
 
