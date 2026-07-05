@@ -1,0 +1,18 @@
+{
+  "schema": "dcb.site_adapters.index.v1",
+  "default_site": "discord",
+  "adapters": [
+    {
+      "adapter_id": "discord.v1",
+      "site": "discord",
+      "definition": "site_adapters/discord.v1.json",
+      "notes": "docs/site-adapters.md",
+      "url_patterns": [
+        "https://discord.com/channels/*",
+        "https://canary.discord.com/channels/*",
+        "https://ptb.discord.com/channels/*"
+      ],
+      "outbound_actions": "disabled"
+    }
+  ]
+}
