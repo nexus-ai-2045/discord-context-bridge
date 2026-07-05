@@ -525,6 +525,13 @@ def test_ops_preflight_accepts_region_capture_profile(monkeypatch):
     assert payload["capture_profile"]["text_output"] == "omitted"
 
 
+def test_ops_preflight_accepts_json_flag_for_cli_consistency():
+    args = ops_preflight.build_parser().parse_args(["--app-name", "Discord", "--json"])
+
+    assert args.app_name == "Discord"
+    assert args.json is True
+
+
 def test_live_mvp_status_builds_capture_source_command_without_fullscreen():
     command = live_mvp_status.build_capture_source_command(
         capture_profile="macos-screencapture-region",
