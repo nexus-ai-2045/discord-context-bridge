@@ -1049,6 +1049,24 @@ def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSH
     return None
 
 
+def snapshot_observation_event_id(
+    *,
+    captured_at: str,
+    target_key: str,
+    content_hash: str,
+    source: str,
+    stream_sequence: int,
+) -> str:
+    return stable_text_hash("|".join([captured_at, target_key, content_hash, source, str(stream_sequence)]))
+
+
+def canonical_event_hash(record: dict[str, Any]) -> str:
+    payload = {key: value for key, value in record.items() if key != "event_hash"}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def source_kind_from_source(source: str) -> str:
     lowered = source.casefold()
     if "chrome" in lowered or "dom" in lowered or "browser" in lowered:
@@ -1286,32 +1304,68 @@ def snapshot_visible_text(
     content_hash = stable_text_hash(content)
     previous = latest_snapshot_for_target(target_key, path)
     previous_hash = str(previous.get("content_hash") or "") if previous else None
+    previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
+    snapshot_count_before = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
+    previous_stream_sequence = (
+        int(previous.get("stream_sequence") or previous.get("observation_index_for_target") or snapshot_count_before)
+        if previous
+        else 0
+    )
     changed = previous_hash != content_hash
+    stream_sequence = snapshot_count_before + 1
+    captured_at = utc_now()
     snapshot = {
-        "captured_at": utc_now(),
+        "schema": "discord_context_bridge_text_snapshot_observation.v1",
+        "event_id": snapshot_observation_event_id(
+            captured_at=captured_at,
+            target_key=target_key,
+            content_hash=content_hash,
+            source=source,
+            stream_sequence=stream_sequence,
+        ),
+        "event_type": "discord.visible_text.snapshot_observed",
+        "stream_id": target_key,
+        "stream_sequence": stream_sequence,
+        "expected_previous_stream_sequence": previous_stream_sequence,
+        "specversion": "1.0",
+        "type": "discord.visible_text.snapshot_observed",
+        "subject": target_key,
+        "time": captured_at,
+        "datacontenttype": "text/plain; charset=utf-8",
+        "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
+        "captured_at": captured_at,
+        "observed_at": captured_at,
+        "ingested_at": captured_at,
         "source": source,
         "url": url.strip(),
         "title": title.strip(),
         "target_key": target_key,
         "content_hash": content_hash,
+        "previous_content_hash": previous_hash,
+        "previous_event_hash": previous_event_hash,
+        "changed": changed,
+        "duplicate_content": not changed,
+        "observation_index_for_target": stream_sequence,
         "acquisition_context": acquisition_context_for_source(source),
         "text": content,
         "private_local_only": True,
         "external_share_allowed": False,
         "outbound_actions": "disabled",
     }
-    if changed:
-        append_text_snapshot(snapshot, path)
+    snapshot["event_hash"] = canonical_event_hash(snapshot)
+    append_text_snapshot(snapshot, path)
     snapshot_count = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
     return {
         "language": DEFAULT_LANGUAGE,
-        "message": "Discord 可視テキスト snapshot を保存しました。" if changed else "同一内容の snapshot は保存済みです。",
-        "saved": changed,
+        "message": "Discord 可視テキスト snapshot observation を追記しました。",
+        "saved": True,
         "changed": changed,
+        "duplicate_content": not changed,
         "snapshot_store": str(path),
         "target_key": target_key,
         "content_hash": content_hash,
         "previous_content_hash": previous_hash,
+        "observation_index_for_target": snapshot_count,
         "snapshot_count_for_target": snapshot_count,
         "private_local_only": True,
         "external_share_allowed": False,

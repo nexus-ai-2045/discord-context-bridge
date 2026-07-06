@@ -154,7 +154,7 @@ def test_plan_discord_url_read_keeps_browser_visible_boundary():
     assert plan["outbound_actions"] == "disabled"
 
 
-def test_snapshot_visible_text_saves_changed_content_only(tmp_path):
+def test_snapshot_visible_text_appends_every_observation(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
 
     first = snapshot_visible_text(
@@ -169,9 +169,66 @@ def test_snapshot_visible_text_saves_changed_content_only(tmp_path):
     )
 
     assert first["saved"] is True
-    assert second["saved"] is False
-    assert second["snapshot_count_for_target"] == 1
-    assert load_text_snapshots(snapshot_store)[0]["private_local_only"] is True
+    assert first["changed"] is True
+    assert first["duplicate_content"] is False
+    assert second["saved"] is True
+    assert second["changed"] is False
+    assert second["duplicate_content"] is True
+    assert second["snapshot_count_for_target"] == 2
+    assert second["observation_index_for_target"] == 2
+    stored = load_text_snapshots(snapshot_store)
+    assert len(stored) == 2
+    assert stored[0]["schema"] == "discord_context_bridge_text_snapshot_observation.v1"
+    assert stored[0]["event_type"] == "discord.visible_text.snapshot_observed"
+    assert stored[0]["stream_id"] == stored[0]["target_key"]
+    assert stored[0]["stream_sequence"] == 1
+    assert stored[0]["expected_previous_stream_sequence"] == 0
+    assert stored[0]["specversion"] == "1.0"
+    assert stored[0]["type"] == "discord.visible_text.snapshot_observed"
+    assert stored[0]["subject"] == stored[0]["target_key"]
+    assert stored[0]["time"] == stored[0]["captured_at"]
+    assert stored[0]["datacontenttype"] == "text/plain; charset=utf-8"
+    assert stored[0]["dataschema"] == "discord_context_bridge_text_snapshot_observation.v1"
+    assert stored[0]["event_id"]
+    assert stored[0]["previous_event_hash"] == ""
+    assert stored[0]["event_hash"]
+    assert stored[0]["private_local_only"] is True
+    assert stored[1]["stream_sequence"] == 2
+    assert stored[1]["expected_previous_stream_sequence"] == 1
+    assert stored[1]["previous_content_hash"] == stored[0]["content_hash"]
+    assert stored[1]["previous_event_hash"] == stored[0]["event_hash"]
+    assert stored[1]["event_hash"] != stored[0]["event_hash"]
+    assert stored[1]["duplicate_content"] is True
+
+
+def test_snapshot_visible_text_uses_legacy_count_as_previous_sequence(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    url = "https://discord.com/channels/1/2/3"
+    legacy = {
+        "captured_at": "2026-07-01T00:00:00Z",
+        "source": "manual_visible_text",
+        "url": url,
+        "title": "",
+        "target_key": target_key_for_url(url),
+        "content_hash": "legacy-hash",
+        "text": "member-a: old visible text",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    snapshot_store.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    result = snapshot_visible_text(
+        text="member-a: new visible text",
+        url=url,
+        path=snapshot_store,
+    )
+
+    stored = load_text_snapshots(snapshot_store)
+    assert result["observation_index_for_target"] == 2
+    assert stored[1]["stream_sequence"] == 2
+    assert stored[1]["expected_previous_stream_sequence"] == 1
+    assert stored[1]["previous_event_hash"]
 
 
 def test_snapshot_visible_text_saves_acquisition_context(tmp_path):

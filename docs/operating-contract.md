@@ -25,18 +25,25 @@
 
 Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後追跡を行う時は、作業完了より先にローカル保存を閉じる。
 
+この領域は event sourcing / structured logging の考え方に寄せる。append-only store を system of record とし、Markdown、latest report、context reconstruction、TODO は projection / view として扱う。
+
 標準順序:
 
 1. `target`: URL / safe label / title evidence / read scope を確定する。
-2. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。
-3. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
-4. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。
-5. `todo`: active TODO / checklist / handoff に、新規artifact path、現状態、次の安全な一手、未取得点を追記する。
-6. `closeout`: 最後に、Discord writeなし / human sent / blocked reason / next action を報告する。
+2. `ledger`: 一度でも取得した可視テキスト観測は、重複でも append-only snapshot store に追記する。DCB の既定台帳は `.local/discord-context-bridge/text-snapshots.ndjson`。同一内容でも保存を省略せず、`changed=false` / `duplicate_content=true` のように差分状態を metadata で表す。各行には `schema`、`event_id`、`event_type`、`stream_id`、`stream_sequence`、`expected_previous_stream_sequence`、`time`、`content_hash`、`previous_content_hash`、`previous_event_hash`、`event_hash`、`acquisition_context` を持たせる。
+3. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。Markdown や画像フォルダは読みやすい view / bundle であり、履歴正本は append-only ledger とする。
+4. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
+5. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。
+6. `todo`: active TODO / checklist / handoff に、新規artifact path、現状態、次の安全な一手、未取得点を追記する。
+7. `closeout`: 最後に、Discord writeなし / human sent / blocked reason / next action を報告する。
 
 保証:
 
-- 可視本文を読めた場合、`capture` と `manifest` を保存する前に「取得完了」と言わない。
+- 可視本文を読めた場合、append-only ledger、`capture`、`manifest` を保存する前に「取得完了」と言わない。
+- 同一内容の再取得でも、観測した事実は ledger に追記する。重複排除は保存停止ではなく `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
+- 追記 ledger の 1 行は immutable event として扱う。訂正が必要な場合は既存行を書き換えず、補正・再取得・metadata 補足を新しい observation として追記する。
+- `stream_id` は target 単位の履歴を再生するキー、`stream_sequence` は target 内の順序、`event_id` は観測行そのものの一意識別子として使う。
+- `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
 - full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。

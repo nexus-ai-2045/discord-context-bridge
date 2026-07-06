@@ -131,8 +131,19 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 ### Discord URL 可視 snapshot 保存
 
 `snapshot-discord-url-text` は、既に取得済みの可視テキストを Discord URL に紐づけて
-local snapshot store へ保存します。Chrome 接続や Discord 操作は行わず、stdin、
+local snapshot store へ追記します。Chrome 接続や Discord 操作は行わず、stdin、
 clipboard、または `--source-command` が返した可視テキストを保存するだけです。
+
+snapshot store は append-only の観測台帳です。同じ内容を再取得した場合でも行を積み、
+`changed=false` / `duplicate_content=true` / `previous_content_hash` で差分状態を表します。
+Markdown や capture bundle は読みやすい view であり、後から coverage / freshness / 差分を
+見るための履歴正本は `text-snapshots.ndjson` です。
+
+各行は structured event として、`schema`、`event_id`、`event_type`、`stream_id`、
+`stream_sequence`、`expected_previous_stream_sequence`、`time`、`content_hash`、
+`previous_content_hash`、`previous_event_hash`、`event_hash`、`acquisition_context`
+を持ちます。既存行の書き換えではなく、新しい observation を足して履歴を進めます。
+`previous_event_hash` / `event_hash` は target stream 内の軽い tamper-evident hash chain です。
 
 CLI の見える出力には raw 本文、実 URL、local path を出しません。本文は指定した
 snapshot store にだけ残し、後続の `coverage-report` / `report-latest` / post-send
