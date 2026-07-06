@@ -10,7 +10,14 @@ scope_route: public-discord-context-bridge / report-latest / architecture-contex
 
 `report-latest` は「最新の Discord を読む」コマンドではありません。
 保存済み snapshot store を読み、最後に保存された可視 message の metadata と coverage を返す report コマンドです。
-
+snapshot store は append-only の観測台帳であり、同一内容の再取得も 1 行の観測として残します。
+重複かどうかは保存を止める理由ではなく、`content_hash`、`previous_content_hash`、`changed`、
+`duplicate_content` などの metadata で扱います。
+各観測行は structured event として、`schema`、`event_id`、`event_type`、`stream_id`、
+`stream_sequence`、`expected_previous_stream_sequence`、`time`、`dataschema` を持ちます。
+また `previous_event_hash` / `event_hash` で target stream 内の hash chain を作ります。
+これは CloudEvents、structured log、GitHub上の append-only audit log 実装の発想を借りた
+local-private な envelope であり、外部送信や broker 連携を意味しません。
 実行時に Chrome へ接続しません。DOM を再取得しません。新しい capture を作りません。
 `source_kind=Chrome DOM` が出る場合、それは snapshot 保存時の取得元を表す metadata であり、report 実行時の live access ではありません。
 report 実行そのものの方法は `report_acquisition_context.mode=existing_saved_snapshot` で別枠に保持します。
