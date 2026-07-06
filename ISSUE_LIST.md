@@ -1,73 +1,76 @@
-# Discord context bridge issue list
+# Discord Context Bridge active TODO
 
-## P0
+Updated: 2026-07-07
 
-- Discordで対象を見つけた後の bridge intake を主導線にする。
-  - done when: 対象URLまたは可視snapshotを渡すだけで、保存、coverage、context passport、reply guide、review draft へ進む最短導線が分かる。
-  - current: 個別コマンドはあるが、理想体験としての M1 導線はまだROADMAP上で次フェーズ。
-- `references/initial-thread-ruleset.md` を MVP 正本として固定する。
-  - done when: 入口指定から handoff までの13工程が読め、任意割り込みと stopline が分かる。
-- 13工程の validation plan を ROADMAP に固定する。
-  - done when: smoke、preflight、fixture E2E の役割が分かれ、MVP done 条件が読める。
-- CLI / MCP / plugin / ChatGPT connector / 実機 capture を MVP 条件から外す。
-  - done when: README / PROCESS_BOUNDARY / ROADMAP が任意 adapter / developer verification として説明し、MVP 必須経路にしない。
-- Markdown review artifact skeleton を作る。
-  - done when: 文脈理解、仮下書き、risk review、unknown、選択肢、copy block が1つの `.md` に保存され、人間が直接編集できる。
-- 13工程 fixture E2E を作る。
-  - done when: 合成 fixture だけで入口 metadata から handoff packet まで通り、Discord send / reaction / edit / delete が実行されない。
+このファイルを、リポジトリ内の active TODO 正本にする。
+過去の `docs/chat-context-*.md` と `docs/2026-07-01-*` は履歴証跡であり、現在の残務判断ではこのファイルと `ROADMAP.md` を優先する。
 
-## P1
+## 最終目的
 
-- 速度・精度・軽量化の指標を計測できるようにする。
-  - done when: intake、report、context-passport、review、stage の実行時間、入力サイズ、parsed件数、cache利用、read-more理由がmetadata-onlyで確認できる。
-  - target: intake 1秒以内、保存済みsnapshot文脈整理 3秒以内、送信前gate 1秒以内、full smoke 10秒以内、raw/private漏えい 0件、outbound誤許可 0件。
-- 送信テスト運転表を実ログで閉じる。
-  - done when: `stage-discord-send`、`verify-chrome-fill-dry-run`、`closeout-discord-send` のJSONログを `send-operation-status` に渡し、対象safe label、本文レビュー、dry-run、テスト用チャンネルでの人間送信、送信後closeout、失敗時回復方針、本番手順固定が1つのJSONで確認できる。
-  - current: `send-operation-status` と `docs/discord-send-operation-runbook.md` は実装済み。実チャンネルでの人間送信ログは次フェーズ。
-- release version 採番を運用チェックへ入れる。
-  - done when: `scripts/bump_version.py --part patch|minor|major --write` で `pyproject.toml` と `CHANGELOG.md` を同時更新でき、`scripts/bump_version.py --check` が `ops_check.py` に含まれる。
-- human gate と copy block を作る。
-  - done when: `final_candidate` を作っても自動送信せず、`copy_block` と `human_decision_required=true` が残る。
-- Context SSOT update と handoff packet を作る。
-  - done when: safe metadata と判断結果だけを temp registry に保存し、current state / read scope / stopline / next action を返す。
-- 文脈カードの最小 schema と fixture を作る。
-  - fields: thread purpose, recent flow, participant roles, rules, drift, safe opening, NG tone, missing premise, one check before reply.
-  - done when: raw 本文と実参加者名を出さず、safe label / role / 要約だけで `discord_context_card.v1` を返す。
-- 返信前ゲート quick verdict を作る。
-  - values: `go`, `wait`, `ask-context`, `risky`。
-  - done when: 1-3 秒で短い日本語 verdict と一点確認だけを返し、send / reaction / delete を実行しない。
-  - current: `review-draft` / `guide-reply` が `quick_verdict` と `one_check_before_reply` を返す。
-- status dashboard command を作る。
-  - output: `now`, `done`, `broken`, `blocked`, `next`, `github`, `residual`。
-  - done when: raw 本文、参加者名、secret、local path を出さず、運用状態を日本語で返す。
+Discord 側では対象メッセージ、スレッド、チャンネルを見つけるだけにし、DCB 側で保存済み文脈、差分、返信前判断、下書きレビュー、人間送信後 closeout を高速に扱う。
 
-## P2
+既定境界は read-only / local-first / public-safe。Discord send、reaction、edit、delete、repo visibility 変更、外部投稿は、この repo の自動経路に含めない。
 
-- 運用 UI / ログ表示を整える。
-  - logs: implementation, live probe, GitHub, residual, blocker, safety.
-- conversation parser quality を実サンプルで上げる。
-  - done when: 周辺会話から目的、前提、参加者ロール、温度感、ルール、返信前の一点確認が安定して返る。
-- スレッド選択とルール紐付けを追加する。
-  - first route: manual rule registration + thread key.
-- Context Budget Gate と handoff template を追加する。
-- `adapter_failed` を人間語 / JSON で分類する。
-  - done when: `failure_stage`, `reason`, `source_ready`, `gate_verdict`, `text_output=omitted`, `outbound_actions=disabled` が出る。
+## 現在の実測
 
-## P3
+| 項目 | 状態 | 根拠 |
+|---|---|---|
+| repo sync | ok | `main...origin/main`, ahead/behind `0 0` |
+| open PR | ok | open PR `[]` |
+| residual dashboard | ok | `repo_goal_status.py --run-smoke --json` が `state=done`, `residual_count=0` |
+| full tests | ok | `python -m pytest tests -q --durations=20`: `274 passed` |
+| ops check | ok but slow | `python scripts/ops_check.py --skip-http`: 約16-17秒 |
+| fastest blocker | active | ROADMAP の full smoke 10秒目標に実測が届いていない |
+| local WIP | parked | cache backfill 試作は stash に退避中。active roadmap にはまだ入れない |
 
-- 送信自動化を検討する。
-  - stopline: Discord send, auto reply, reaction, delete, external posting require explicit GO.
-- 実機 probe を private adapter として検討する。
-  - done when: public repo に credential、browser profile、raw 本文を入れず、失敗理由だけを返す。
-- macOS OCR private command を repo 外 adapter で検討する。
-  - done when: public package には stdout contract だけを渡す。
-- `@discord` bot route preflight を検討する。
-  - done when: token値、snowflake値、local path を出さずに token有無、dmPolicy、allow/group/pending件数だけを返す。
+## P0: 表に出ている問題
 
-## Cross-cutting guards
+| ID | 状態 | TODO | 完了条件 | 検証 |
+|---|---|---|---|---|
+| P0-1 | active | README / ROADMAP / 旧closeout docs の残務表現を揃える | README の残TODO、ROADMAP、過去closeout文書が「現在のactive TODOは ISSUE_LIST」と読める | `rg "残TODO|残務|次MVP"` で矛盾が増えていない |
+| P0-2 | active | full smoke を現実的に速くする | fast gate と full gate を分け、通常開発では fast gate が5秒以内、full gate が20秒以内 | `ops_check.py --profile fast|full` または同等の分割が green |
+| P0-3 | active | message found -> bridge intake を一本化する | URL / visible text / safe label から、snapshot 保存、coverage、context passport、reply guide までの最短コマンドが1つに見える | fixture と CLI smoke |
+| P0-4 | active | append-only snapshot ledger を active docs に反映する | snapshot は重複でも観測eventとして追記し、latest report は projection だと ROADMAP / README から分かる | `snapshot_visible_text` tests と report docs |
+| P0-5 | active | stale closeout の「残務0」を誤読させない | `docs/2026-07-01-*` は historical closeout と明示され、active TODO と混ざらない | docs grep |
 
-- public repo は token, cookie, webhook, browser profile を扱わない。
-- raw Discord 本文、参加者名、local username、local path、secret-like 文字列を visible output に出さない。
-- Discord send、auto reply、reaction、delete、Git push、PR 公開、外部投稿は明示 GO まで禁止する。
-- README / PR / docs / developer smoke output は日本語を既定にする。
-- GitHub 作業前に auth / permission / PR state / merge state / branch cleanup permission を確認する。
+## P1: 高速化と品質
+
+| ID | 状態 | TODO | 完了条件 | 検証 |
+|---|---|---|---|---|
+| P1-1 | active | `ops_check.py` に profile を入れる | `fast`: compile / diff / boundary / targeted tests / smoke、`full`: 全pytest / dashboard / projection を分離 | fast は5秒以内目標、full は20秒以内目標 |
+| P1-2 | active | slow tests を短縮する | `test_discord_inventory_dashboard_omits_sensitive_values` など上位slow testsの待ち時間をfixture化・分離 | `pytest --durations=20` の最上位が1秒台以下 |
+| P1-3 | active | context parser quality を測る | `context-passport` / `guide-reply` の必須field充足率を fixture で測る | metadata-only quality report |
+| P1-4 | active | cache再利用率を測る | target_key一致時に再parse回避率が出る | `cache_reuse_rate` metadata |
+| P1-5 | active | read-more 誤停止を測る | blocker reason と人間判断結果を保存できる | sample ledger / fixture |
+
+## P2: 保守性と設計負債
+
+| ID | 状態 | TODO | 完了条件 | 検証 |
+|---|---|---|---|---|
+| P2-1 | active | `core.py` を責務ごとに分割する | URL intake、snapshot ledger、context/reply、send closeout が別moduleに分かれる | public API互換のまま tests green |
+| P2-2 | active | `test_core.py` をfeature別に分割する | slow / failure-localization が改善する | `pytest --durations=20` とCIログ |
+| P2-3 | active | local-private cache backfill を別設計にする | stash中の試作は実ID風fixtureとlocal path保存方針を見直してから採用判断 | separate PR、secret/path scan |
+| P2-4 | active | docsの階層を整理する | README =入口、ROADMAP =順序、ISSUE_LIST =active TODO、chat-context =履歴、full-reference =詳細 | link checker / grep |
+
+## P3: 送信 rehearsal と任意 adapter
+
+| ID | 状態 | TODO | 完了条件 | 検証 |
+|---|---|---|---|---|
+| P3-1 | blocked by human/live env | テスト用チャンネルで人間送信 rehearsal を行う | `stage-discord-send`、dry-run、human send、closeout、send-operation-status が1本の実ログで閉じる | human-approved live log |
+| P3-2 | later | production send runbook を実運用で固定する | safe label、失敗時回復、送信後確認者が決まる | runbook review |
+| P3-3 | later | optional private adapters を採用判断する | public repoにcredential/raw本文を入れず、failure reason だけを出す | private adapter smoke |
+
+## すぐ直す順序
+
+1. P0-1 / P0-5: TODO正本と古いcloseoutのズレを潰す。
+2. P0-2 / P1-1: `ops_check` を fast/full に分ける。
+3. P0-3 / P1-3: message found -> bridge intake の最短導線を作る。
+4. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
+5. P3-1: live rehearsal は人間承認と実チャンネル準備後に別実行する。
+
+## Stopline
+
+- active TODO を「残務0」と言わない。`repo_goal_status` の residual zero は現在実装の安全状態であり、将来roadmap完了ではない。
+- Discord send、reaction、edit、delete は自動化しない。
+- repository public 化、release、外部告知は別の明示承認まで実行しない。
+- raw Discord text、参加者名、実URL、snowflake、local absolute path、secret-like 文字列は public-safe docs / stdout / PR本文に出さない。
