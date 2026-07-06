@@ -21,6 +21,27 @@
 5. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
 6. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
 
+## 更新・保存・完了保証
+
+Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後追跡を行う時は、作業完了より先にローカル保存を閉じる。
+
+標準順序:
+
+1. `target`: URL / safe label / title evidence / read scope を確定する。
+2. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。
+3. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
+4. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。
+5. `todo`: active TODO / checklist / handoff に、新規artifact path、現状態、次の安全な一手、未取得点を追記する。
+6. `closeout`: 最後に、Discord writeなし / human sent / blocked reason / next action を報告する。
+
+保証:
+
+- 可視本文を読めた場合、`capture` と `manifest` を保存する前に「取得完了」と言わない。
+- 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
+- ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
+- full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。
+- snapshot 保存と closeout は混ぜない。本文保存は private snapshot / capture bundle、完了確認は metadata-only closeout として扱う。
+
 本文取得の既定順序:
 
 1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
