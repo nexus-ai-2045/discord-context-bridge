@@ -244,6 +244,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
             env=env,
         ),
+        "boundary logic": lambda: run_command(
+            "boundary logic",
+            [sys.executable, "scripts/boundary_logic_check.py", "--json"],
+            env=env,
+        ),
         "文脈運用モード smoke": lambda: run_context_operating_mode_smoke(env),
         "runtime skill sync lint": lambda: run_command(
             "runtime skill sync lint",
