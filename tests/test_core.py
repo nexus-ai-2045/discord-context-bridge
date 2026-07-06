@@ -1545,6 +1545,98 @@ def test_cli_snapshot_discord_url_text_json_is_metadata_only(tmp_path, capsys):
     assert "discord.com/channels" not in output
 
 
+def test_cli_url_intake_fast_path_refreshes_before_saved_snapshot_decision(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    visible_text = tmp_path / "visible.txt"
+    visible_text.write_text("member-c: latest reply context stays private", encoding="utf-8")
+    url = "https://discord.com/channels/7/8/9"
+
+    result = cli_main(
+        [
+            "url-intake-fast-path",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--input",
+            str(visible_text),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["refresh_attempted_before_decision"] is True
+    assert payload["refresh_snapshot"]["saved"] is True
+    assert payload["refresh_snapshot"]["raw_text_returned"] is False
+    assert payload["decision"] == "snapshot_metadata_ready"
+    assert payload["operations"]["new_capture"] is True
+    assert payload["operations"]["browser_access"] == "refresh_source_command_or_input"
+    assert "latest reply context" not in output
+    assert "member-c" not in output
+    assert url not in output
+
+    records = load_jsonl_records(snapshot_store)
+    assert len(records) == 1
+    assert records[0]["text"] == "member-c: latest reply context stays private"
+    assert records[0]["source"] == "discord_url_visible_text_refresh"
+
+
+def test_cli_url_intake_fast_path_refreshes_stale_snapshot_and_compares_raw_cache(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    raw_cache = tmp_path / "raw-cache.ndjson"
+    visible_text = tmp_path / "visible.txt"
+    url = "https://discord.com/channels/7/8/10"
+    key = target_key_for_url(url)
+    stale_record = {
+        "url": url,
+        "target_key": key,
+        "text": "member-d: old cache text stays private",
+        "captured_at": "2026-07-01T00:00:00+00:00",
+        "content_hash": "old-cache-hash",
+        "outbound_actions": "disabled",
+    }
+    snapshot_store.write_text(json.dumps(stale_record, ensure_ascii=False) + "\n", encoding="utf-8")
+    raw_cache.write_text(json.dumps(stale_record, ensure_ascii=False) + "\n", encoding="utf-8")
+    visible_text.write_text("member-d: latest downloaded text stays private", encoding="utf-8")
+
+    result = cli_main(
+        [
+            "url-intake-fast-path",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--raw-cache",
+            str(raw_cache),
+            "--input",
+            str(visible_text),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["initial_recency"]["status"] == "stale"
+    assert payload["refresh_needed_before_decision"] is True
+    assert payload["refresh_attempted_before_decision"] is True
+    assert payload["final_recency"]["status"] == "recent"
+    assert payload["cache_comparison"]["raw_cache_checked"] is True
+    assert payload["cache_comparison"]["snapshot_match_count"] == 2
+    assert payload["cache_comparison"]["raw_cache_match_count"] == 1
+    assert payload["cache_comparison"]["content_hash_match"] is False
+    assert "old cache text" not in output
+    assert "latest downloaded text" not in output
+    assert "member-d" not in output
+    assert url not in output
+
+    records = load_jsonl_records(snapshot_store)
+    assert len(records) == 2
+    assert records[-1]["text"] == "member-d: latest downloaded text stays private"
+
+
 def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(tmp_path, capsys):
     store = tmp_path / "events.ndjson"
     artifact_path = tmp_path / "review.md"

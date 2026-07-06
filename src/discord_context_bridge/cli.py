@@ -40,6 +40,7 @@ from .core import (
     import_visible_text,
     list_context_documents,
     load_events,
+    matching_snapshot_records,
     ops_view_summary,
     review_reply_intent,
     resolve_context_bindings,
@@ -182,8 +183,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fast_path.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
     fast_path.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    fast_path.add_argument("--raw-cache", type=Path, help="突合する raw cache / local snapshot ndjson")
     fast_path.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
     fast_path.add_argument("--hook-snapshot-status", default="", help="hook が既に出した snapshot status")
+    fast_path.add_argument("--input", type=Path, help="判定前に取り込む可視テキストファイル")
+    fast_path.add_argument("--from-clipboard", action="store_true", help="判定前に clipboard の可視テキストを取り込む")
+    fast_path.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
+    fast_path.add_argument("--source-command", help="判定前に実行する Discord 可視テキスト取得コマンド")
+    fast_path.add_argument(
+        "--refresh-source",
+        default="discord_url_visible_text_refresh",
+        help="判定前 refresh snapshot の取得元 label",
+    )
+    fast_path.add_argument("--title", default="", help="任意の安全な短い label。実 channel 名や private 名は避ける")
     fast_path.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     fast_path.set_defaults(handler=_cmd_url_intake_fast_path)
 
@@ -682,17 +694,118 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
     return 0 if report["ok"] else 2
 
 
+def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:
+    matches = matching_snapshot_records(path, url=url, target_key=target_key)
+    latest = matches[-1] if matches else {}
+    return {
+        "exists": path.exists(),
+        "match_count": len(matches),
+        "latest_captured_at": str(latest.get("captured_at") or ""),
+        "latest_content_hash": str(latest.get("content_hash") or ""),
+        "raw_text_returned": False,
+        "path_output": "omitted",
+    }
+
+
 def _cmd_url_intake_fast_path(args: argparse.Namespace) -> int:
+    target_key = args.target_key or ""
+    initial_coverage = build_coverage_report(
+        url=args.url,
+        target_key=target_key,
+        raw_cache_path=args.raw_cache,
+        ai_log_path=args.snapshot_store,
+    )
+    source_available = bool(args.input or args.from_clipboard or args.source_command)
+    refresh_needed = initial_coverage["recency"]["status"] in {"stale", "missing", "unknown"}
+    refresh_requested = source_available and refresh_needed
+    refresh_payload: dict[str, Any] | None = None
+    if refresh_requested:
+        refresh_payload = snapshot_visible_text(
+            text=read_visible_text_arg(args),
+            url=args.url,
+            title=args.title,
+            source=args.refresh_source,
+            path=args.snapshot_store,
+        )
     payload = build_url_intake_fast_path(
         url=args.url,
         snapshot_store=args.snapshot_store,
         target_key=args.target_key,
         hook_snapshot_status=args.hook_snapshot_status,
     )
+    key = payload["target"]["target_key"]
+    final_coverage = build_coverage_report(
+        url=args.url,
+        target_key=key,
+        raw_cache_path=args.raw_cache,
+        ai_log_path=args.snapshot_store,
+        source_kind="saved_log",
+    )
+    snapshot_meta = latest_match_metadata(args.snapshot_store, url=args.url, target_key=key)
+    raw_cache_meta = (
+        latest_match_metadata(args.raw_cache, url=args.url, target_key=key)
+        if args.raw_cache
+        else {
+            "exists": False,
+            "match_count": 0,
+            "latest_captured_at": "",
+            "latest_content_hash": "",
+            "raw_text_returned": False,
+            "path_output": "omitted",
+        }
+    )
+    cache_hash_match = bool(
+        snapshot_meta["latest_content_hash"]
+        and raw_cache_meta["latest_content_hash"]
+        and snapshot_meta["latest_content_hash"] == raw_cache_meta["latest_content_hash"]
+    )
+    payload["refresh_attempted_before_decision"] = refresh_requested
+    payload["refresh_needed_before_decision"] = refresh_needed
+    payload["refresh_source_available"] = source_available
+    payload["initial_recency"] = initial_coverage["recency"]
+    payload["final_recency"] = final_coverage["recency"]
+    payload["operations"]["new_capture"] = refresh_requested
+    if refresh_requested:
+        payload["operations"]["browser_access"] = "refresh_source_command_or_input"
+    payload["cache_comparison"] = {
+        "raw_cache_checked": args.raw_cache is not None,
+        "snapshot_match_count": snapshot_meta["match_count"],
+        "raw_cache_match_count": raw_cache_meta["match_count"],
+        "snapshot_latest_captured_at": snapshot_meta["latest_captured_at"],
+        "raw_cache_latest_captured_at": raw_cache_meta["latest_captured_at"],
+        "content_hash_match": cache_hash_match,
+        "raw_text_returned": False,
+        "path_output": "omitted",
+    }
+    payload["refresh_snapshot"] = (
+        {
+            "saved": bool(refresh_payload.get("saved")),
+            "changed": bool(refresh_payload.get("changed")),
+            "target_key": str(refresh_payload.get("target_key") or ""),
+            "content_hash": str(refresh_payload.get("content_hash") or ""),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+        if refresh_payload
+        else {
+            "saved": False,
+            "changed": False,
+            "target_key": "",
+            "content_hash": "",
+            "raw_text_returned": False,
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    )
     if args.json:
         print(_json(payload))
         return 0 if payload["decision"] == "snapshot_metadata_ready" else 2
     print(payload["message"])
+    print(f"refresh_attempted_before_decision: {str(refresh_requested).lower()}")
+    if refresh_payload:
+        print(f"refresh_saved: {str(refresh_payload['saved']).lower()}")
+        print(f"refresh_changed: {str(refresh_payload['changed']).lower()}")
     print(f"decision: {payload['decision']}")
     print(f"next_step: {payload['next_step']}")
     print(f"recommended_command: {payload['recommended_command']}")
