@@ -11,6 +11,10 @@ external_action: none
 
 # Discord Context Bridge 高インパクトTODO棚卸し
 
+> Historical note: このファイルは 2026-07-01 時点の closeout 証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、現在の順序正本は `ROADMAP.md` です。
+> このファイルの「残務0」は当時の local closeout 範囲を指し、現在の高速化・intake・parser品質ロードマップ完了を意味しません。
+
 ## 判断軸
 
 1. public-safe / read-only 境界を壊す事故を減らす。
