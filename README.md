@@ -127,8 +127,9 @@ PR前には次も確認します。
 
 ```bash
 python3 scripts/gh_guard.py --json
-python3 scripts/pr_readiness_preflight.py --fetch --json
+python3 scripts/pr_readiness_preflight.py --fetch --gh-switch --json
 python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json
+python3 scripts/boundary_logic_check.py --json
 ```
 
 ## 詳しい資料

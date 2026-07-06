@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -12,6 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_OWNER = "nexus-ai-2045"
 EXPECTED_REPOSITORY = "discord-context-bridge"
+GH_GUARD_PATH = ROOT / "scripts" / "gh_guard.py"
 
 
 def run(command: list[str], cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -39,11 +41,23 @@ def parse_github_remote(remote_url: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def gh_login() -> tuple[str | None, str | None]:
-    completed = run(["gh", "api", "user", "--jq", ".login"])
-    if completed.returncode == 0 and completed.stdout.strip():
-        return completed.stdout.strip(), None
-    return None, (completed.stderr or "gh api user failed").strip()
+def load_gh_guard_module():
+    spec = importlib.util.spec_from_file_location("discord_context_bridge_gh_guard", GH_GUARD_PATH)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"gh_guard を読み込めません: {GH_GUARD_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def account_boundary_report(remote: str, *, switch: bool = False) -> dict[str, Any]:
+    guard = load_gh_guard_module()
+    return guard.build_report(
+        remote,
+        switch=switch,
+        expected_owner=EXPECTED_OWNER,
+        expected_repository=EXPECTED_REPOSITORY,
+    )
 
 
 def default_branch(owner: str, repository: str) -> tuple[str, str | None]:
@@ -69,7 +83,7 @@ def rev_parse(ref: str) -> str | None:
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
-def build_report(remote: str = "origin", *, fetch: bool = False) -> dict[str, Any]:
+def build_report(remote: str = "origin", *, fetch: bool = False, gh_switch: bool = False) -> dict[str, Any]:
     checks: dict[str, dict[str, str | None]] = {}
     if fetch:
         fetched = run(["git", "fetch", remote, "--prune"])
@@ -91,8 +105,21 @@ def build_report(remote: str = "origin", *, fetch: bool = False) -> dict[str, An
     status = run(["git", "status", "--short"]).stdout.strip()
     checks["working_tree"] = check("ok" if not status else "error", "clean" if not status else status)
 
-    login, login_error = gh_login()
-    checks["gh_login"] = check("ok" if login == EXPECTED_OWNER else "error", login, login_error)
+    try:
+        account_report = account_boundary_report(remote, switch=gh_switch)
+        active_account = account_report.get("active_account_after") or ""
+        account_detail = None if account_report["ok"] else account_report["message"]
+        checks["account_boundary"] = check(
+            "ok" if account_report["ok"] else "error",
+            str(active_account),
+            account_detail,
+        )
+    except SystemExit as exc:
+        checks["account_boundary"] = check("error", None, str(exc))
+        account_report = {"ok": False}
+    except Exception as exc:
+        checks["account_boundary"] = check("error", None, str(exc))
+        account_report = {"ok": False}
 
     base_name = "main"
     if owner and repository:
@@ -124,6 +151,7 @@ def build_report(remote: str = "origin", *, fetch: bool = False) -> dict[str, An
         "remote": remote,
         "branch": branch,
         "checks": checks,
+        "account_boundary": account_report,
     }
 
 
@@ -131,9 +159,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Discord Context Bridge 専用の PR readiness preflight")
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--fetch", action="store_true", help="確認前に git fetch --prune を実行する")
+    parser.add_argument("--gh-switch", action="store_true", help="GitHub account 不一致時に remote owner へ切り替える")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    report = build_report(args.remote, fetch=args.fetch)
+    report = build_report(args.remote, fetch=args.fetch, gh_switch=args.gh_switch)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     else:
