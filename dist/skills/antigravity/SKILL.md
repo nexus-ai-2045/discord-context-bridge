@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 12d5c2693458b325a7c4e9fc8b4fd72b800d7635
+ssot_commit: 51d02878afa6d83fa84b57e04a81823842bb25ea
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: e45d44c2e0849518ab35f002c2677491a03c429aefe78b07ddb4160e416c0639
-contract_checksum: cee6c82fa256c518fd8d42dc517f9116b5b06328637ff8c8afca15f396e39f27
-generated_at: 2026-07-05T14:00:15+00:00
+contract_checksum: 410760d3eecd3dd429f7cddae568e3081be8160a086c1abd23dc9c7ca1ea362d
+generated_at: 2026-07-06T12:12:59+00:00
 runtime_target: antigravity
 ---
 
@@ -38,6 +38,27 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 4. `context-passport` で文脈カードを作る。
 5. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
 6. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+
+## 更新・保存・完了保証
+
+Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後追跡を行う時は、作業完了より先にローカル保存を閉じる。
+
+標準順序:
+
+1. `target`: URL / safe label / title evidence / read scope を確定する。
+2. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。
+3. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
+4. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。
+5. `todo`: active TODO / checklist / handoff に、新規artifact path、現状態、次の安全な一手、未取得点を追記する。
+6. `closeout`: 最後に、Discord writeなし / human sent / blocked reason / next action を報告する。
+
+保証:
+
+- 可視本文を読めた場合、`capture` と `manifest` を保存する前に「取得完了」と言わない。
+- 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
+- ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
+- full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。
+- snapshot 保存と closeout は混ぜない。本文保存は private snapshot / capture bundle、完了確認は metadata-only closeout として扱う。
 
 本文取得の既定順序:
 
