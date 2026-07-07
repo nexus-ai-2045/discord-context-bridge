@@ -877,10 +877,14 @@ def test_discord_inventory_dashboard_reports_zero_residual_operational_state(mon
             self.stderr = stderr
 
     def fake_run(command: list[str]):
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed("{}")
         if command[:3] == ["git", "status", "--short"]:
             return Completed("")
         if command[:3] == ["git", "branch", "--show-current"]:
             return Completed("main\n")
+        if command[:5] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return Completed("", returncode=1)
         if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
             return Completed("0\t0\n")
         if command[:3] == ["gh", "pr", "list"]:
@@ -905,10 +909,14 @@ def test_discord_inventory_dashboard_reports_actionable_residuals(monkeypatch):
             self.stderr = stderr
 
     def fake_run(command: list[str]):
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed("{}")
         if command[:3] == ["git", "status", "--short"]:
             return Completed(" M README.md\n")
         if command[:3] == ["git", "branch", "--show-current"]:
             return Completed("codex/example\n")
+        if command[:5] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return Completed("", returncode=1)
         if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
             return Completed("1\t2\n")
         if command[:3] == ["gh", "pr", "list"]:
@@ -937,12 +945,125 @@ def test_discord_inventory_dashboard_reports_actionable_residuals(monkeypatch):
     assert payload["residual_count"] == 4
     assert {item["code"] for item in payload["residual"]} == {
         "working_tree_dirty",
-        "main_behind_origin",
+        "branch_behind_upstream",
         "local_commits_unpushed",
         "open_pull_requests",
     }
     assert payload["github"]["open_pr_count"] == 1
     assert "synthetic-secret" not in rendered
+
+
+def test_discord_inventory_dashboard_checks_gh_account_before_pr_lookup(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed('{"active_account_after":"nexus-ai-2045","ok":true}')
+        if command[:3] == ["git", "status", "--short"]:
+            return Completed("")
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return Completed("main\n")
+        if command[:5] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return Completed("", returncode=1)
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
+            return Completed("0\t0\n")
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed("[]")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
+
+    payload = discord_inventory_dashboard.build_operational_status()
+
+    assert payload["github"]["error"] is None
+    assert payload["residual_count"] == 0
+    assert calls.index([sys.executable, "scripts/gh_guard.py", "--account-only", "--json"]) < calls.index(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,mergeStateStatus,isDraft,url",
+            "--limit",
+            "50",
+        ]
+    )
+
+
+def test_discord_inventory_dashboard_blocks_pr_lookup_on_gh_account_mismatch(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed('{"account_matches":false,"ok":false}', returncode=2)
+        if command[:3] == ["git", "status", "--short"]:
+            return Completed("")
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return Completed("main\n")
+        if command[:5] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return Completed("", returncode=1)
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"]:
+            return Completed("0\t0\n")
+        if command[:3] == ["gh", "pr", "list"]:
+            raise AssertionError("gh pr list should not run when account boundary fails")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
+
+    payload = discord_inventory_dashboard.build_operational_status()
+
+    assert payload["github"]["error"] == "gh_account_boundary_failed"
+    assert {item["code"] for item in payload["residual"]} == {"gh_account_boundary_failed"}
+    assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
+
+
+def test_discord_inventory_dashboard_uses_upstream_for_feature_branch_sync(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    def fake_run(command: list[str]):
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed("{}")
+        if command[:3] == ["git", "status", "--short"]:
+            return Completed("")
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return Completed("codex/example\n")
+        if command[:5] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return Completed("origin/codex/example\n")
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"] and command[4] == "HEAD...origin/main":
+            return Completed("1\t0\n")
+        if command[:4] == ["git", "rev-list", "--left-right", "--count"] and command[4] == "HEAD...origin/codex/example":
+            return Completed("0\t0\n")
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed("[]")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
+
+    payload = discord_inventory_dashboard.build_operational_status()
+
+    assert payload["residual_count"] == 0
+    assert payload["now"]["branch_upstream"] == "origin/codex/example"
+    assert payload["now"]["origin_main_ahead"] == 1
 
 
 def test_ops_check_includes_status_dashboard():
@@ -986,6 +1107,42 @@ def test_repo_goal_status_reports_done_when_dashboard_is_clean(monkeypatch):
     assert payload["state"] == "done"
     assert payload["dashboard"]["residual_count"] == 0
     assert payload["external_actions_performed"] is False
+
+
+def test_repo_goal_status_blocks_when_feature_upstream_is_clean_but_origin_main_differs(monkeypatch):
+    import repo_goal_status
+
+    monkeypatch.setattr(
+        repo_goal_status.discord_inventory_dashboard,
+        "build_inventory",
+        lambda channel_dir, tmp_dir, store_limit: {
+            "ok": True,
+            "operational_status": {
+                "now": {
+                    "state": "done",
+                    "working_tree": "clean",
+                    "branch_upstream_ahead": 0,
+                    "branch_upstream_behind": 0,
+                    "origin_main_ahead": 1,
+                    "origin_main_behind": 0,
+                },
+                "github": {"open_pr_count": 0, "error": None},
+                "residual_count": 0,
+                "residual": [],
+                "next": [],
+            },
+            "safety_boundary": {
+                "raw_discord_text_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        },
+    )
+
+    payload = repo_goal_status.build_goal_status()
+
+    assert payload["ok"] is False
+    assert payload["state"] == "attention_required"
+    assert {item["name"]: item["status"] for item in payload["requirements"]}["repo_sync_clean"] == "blocked"
 
 
 def test_repo_goal_status_blocks_dirty_or_open_pr(monkeypatch):
