@@ -15,6 +15,9 @@ DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
 DEFAULT_TEXT_SNAPSHOT_STORE = Path(".local/discord-context-bridge/text-snapshots.ndjson")
 DEFAULT_ATTACHMENT_LEDGER = Path(".local/discord-context-bridge/attachment-ledger.md")
+DEFAULT_SHARED_RAW_SNAPSHOT_ROOT = Path.home() / "Projects/Documents/discord/raw-snapshots"
+DEFAULT_REST_BACKFILL_RAW_OUTPUT = Path(".local/discord-context-bridge/inbox/raw/rest-backfill.ndjson")
+DEFAULT_REST_BACKFILL_MANIFEST = Path(".local/discord-context-bridge/inbox/manifests/rest-backfill.manifest.json")
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
@@ -38,6 +41,10 @@ DISCORD_TOKEN_RE = re.compile(
 DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
 LOCAL_ABSOLUTE_PATH_RE = re.compile(
     r"(?:/Users/[^ \n]+|/home/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
+)
+CHROME_PROFILE_RE = re.compile(
+    r"(?:Chrome[\\/](?:User Data|Default|Profile)|User Data[\\/]Default|Local State|Cookies|localStorage)",
+    re.IGNORECASE,
 )
 TOPIC_KEYWORDS = {
     "公開時期": ("公開時期", "リリース", "launch", "launch timing"),
@@ -1283,6 +1290,458 @@ def plan_discord_url_read(url: str) -> dict[str, Any]:
         "private_local_only": True,
         "external_share_allowed": False,
         "outbound_actions": "disabled",
+    }
+
+
+def plan_full_thread_capture(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    raw_cache_path: Path | None = None,
+    gateway_configured: bool = False,
+    rest_configured: bool = False,
+    bot_inbox_ready: bool = False,
+    private_adapter_configured: bool = False,
+    visible_dom_available: bool = False,
+) -> dict[str, Any]:
+    """Return a metadata-only plan for capturing an entire Discord thread.
+
+    A visible DOM snapshot is useful evidence, but it is not a full-thread
+    capture mechanism because Discord virtualizes long timelines. Full capture
+    requires a backfill/export route or a configured private adapter that can
+    traverse the whole target safely.
+    """
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_full_thread_capture_plan.v1",
+            "ok": False,
+            "state": "blocked",
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "message": "Discord full thread capture plan を作成できませんでした。",
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+
+    target_key = target_key_for_url(url)
+    saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
+    full_routes = {
+        "rest_backfill": {
+            "configured": rest_configured,
+            "required_for_full_thread": True,
+            "role": "履歴 backfill で対象スレッド全体を取る主経路",
+        },
+        "gateway_live_event": {
+            "configured": gateway_configured,
+            "required_for_full_thread": False,
+            "role": "今後流れてくる live event の補完。過去全文は保証しません。",
+        },
+        "bot_text_event_inbox": {
+            "configured": bot_inbox_ready,
+            "required_for_full_thread": False,
+            "role": "bot/inbox に届いた範囲の補完。履歴全体は別途 backfill が必要です。",
+        },
+        "private_adapter": {
+            "configured": private_adapter_configured,
+            "required_for_full_thread": True,
+            "role": "ユーザー許可済み private adapter で全範囲を走査する代替主経路",
+        },
+        "raw_export_or_cache": {
+            "configured": bool(raw_matches),
+            "required_for_full_thread": True,
+            "role": "既存 export/cache が対象 URL に exact match する場合の主経路",
+        },
+        "visible_dom": {
+            "configured": visible_dom_available or bool(saved_matches),
+            "required_for_full_thread": False,
+            "role": "現在表示中の補助 snapshot。Discord の仮想リストにより全文保証には使えません。",
+        },
+    }
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches)
+    state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
+    blockers = [] if primary_available else [
+        "rest_backfill_not_configured",
+        "private_adapter_not_configured",
+        "raw_export_or_cache_missing",
+    ]
+    next_actions = (
+        [
+            "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
+            "visible DOM は差分確認と最新表示補完としてだけ使います。",
+        ]
+        if primary_available
+        else [
+            "rest_backfill または private adapter を配線する。",
+            "既存の raw export/cache がある場合は target_key exact match で取り込む。",
+            "Chrome visible DOM だけで全文取得済みとは扱わない。",
+        ]
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_full_thread_capture_plan.v1",
+        "ok": primary_available,
+        "state": state,
+        "message": "Discord full thread capture plan を作成しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": True,
+            "url_output": "omitted",
+            "thread_like_route": bool(base.get("message_or_thread_id")),
+        },
+        "coverage_now": {
+            "saved_snapshot_count": len(saved_matches),
+            "raw_cache_match_count": len(raw_matches),
+            "visible_dom_is_full_thread_proof": False,
+            "full_thread_confirmed": primary_available and bool(raw_matches),
+            "reason": (
+                "full thread 主経路が利用可能です。"
+                if primary_available
+                else "保存済み visible snapshot は可視範囲の証拠であり、全文スレッド取得の証明ではありません。"
+            ),
+        },
+        "route_allocation": full_routes,
+        "blockers": blockers,
+        "next_actions": next_actions,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def _cache_channel_dir(cache_root: Path, *, guild_id: str, channel_id: str) -> Path:
+    return cache_root / "discord" / "servers" / guild_id / "channels" / channel_id
+
+
+def discover_discord_local_cache(url: str, *, cache_root: Path = DEFAULT_SHARED_RAW_SNAPSHOT_ROOT) -> dict[str, Any]:
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_local_cache_discovery.v1",
+            "ok": False,
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    guild_id = str(base.get("guild_id") or "")
+    channel_id = str(base.get("channel_id") or "")
+    exact_dir = _cache_channel_dir(cache_root, guild_id=guild_id, channel_id=channel_id)
+    server_dir = cache_root / "discord" / "servers" / guild_id / "channels"
+    exact_files = [item for item in exact_dir.rglob("*") if item.is_file()] if exact_dir.exists() else []
+    nearby_dirs = [item for item in server_dir.iterdir() if item.is_dir()] if server_dir.exists() else []
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_local_cache_discovery.v1",
+        "ok": exact_dir.exists(),
+        "cache_root_present": cache_root.exists(),
+        "server_cache_present": server_dir.exists(),
+        "exact_channel_cache_present": exact_dir.exists(),
+        "exact_file_count": len(exact_files),
+        "nearby_channel_cache_count": len(nearby_dirs),
+        "url_output": "omitted",
+        "path_output": "omitted",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def render_snapshot_book_markdown(
+    *,
+    records: list[dict[str, Any]],
+    target_key: str,
+    status: str,
+    source_label: str,
+) -> str:
+    generated_at = utc_now()
+    lines = [
+        "---",
+        "schema: discord_context_bridge_snapshot_book.v1",
+        f"generated_at: {generated_at}",
+        f"target_key: {target_key}",
+        f"status: {status}",
+        f"source: {source_label}",
+        f"snapshot_count: {len(records)}",
+        "private_local_only: true",
+        "outbound_actions: disabled",
+        "---",
+        "",
+        "# Discord Local Snapshot Book",
+        "",
+        f"- status: {status}",
+        f"- source: {source_label}",
+        f"- snapshot_count: {len(records)}",
+        "- full_thread_confirmed: false",
+        "- note: local private projection from cache/snapshot records; not for public sharing",
+        "",
+    ]
+    for index, record in enumerate(records, start=1):
+        captured_at = str(record.get("captured_at") or record.get("observed_at") or record.get("time") or "")
+        content_hash = str(record.get("content_hash") or "")
+        text = str(record.get("text") or "")
+        lines.extend(
+            [
+                f"## Snapshot {index}",
+                "",
+                f"- captured_at: {captured_at}",
+                f"- content_hash: {content_hash}",
+                "",
+                "```text",
+                text,
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def build_cache_first_intake(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    cache_root: Path = DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
+    book_output: Path | None = None,
+) -> dict[str, Any]:
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_cache_first_intake.v1",
+            "ok": False,
+            "state": "blocked",
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "raw_text_returned": False,
+            "outbound_actions": "disabled",
+        }
+    target_key = target_key_for_url(url)
+    discovery = discover_discord_local_cache(url, cache_root=cache_root)
+    guild_id = str(base.get("guild_id") or "")
+    channel_id = str(base.get("channel_id") or "")
+    exact_dir = _cache_channel_dir(cache_root, guild_id=guild_id, channel_id=channel_id)
+    raw_cache_path = exact_dir / "text-snapshots.ndjson"
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path.exists() else []
+    saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
+    records = raw_matches or saved_matches
+    source_label = "raw_cache" if raw_matches else "saved_snapshot" if saved_matches else "none"
+    book_created = False
+    if records and book_output:
+        book_output.parent.mkdir(parents=True, exist_ok=True)
+        status = "raw_cache_book" if raw_matches else "partial_visible_snapshot_book"
+        book_output.write_text(
+            render_snapshot_book_markdown(
+                records=records,
+                target_key=target_key,
+                status=status,
+                source_label=source_label,
+            ),
+            encoding="utf-8",
+        )
+        book_created = True
+    state = "book_created" if book_created else "snapshot_ready" if records else "cache_missing"
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_cache_first_intake.v1",
+        "ok": bool(records),
+        "state": state,
+        "message": "Discord cache-first intake を実行しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": True,
+            "url_output": "omitted",
+        },
+        "cache": {
+            "cache_root_present": discovery.get("cache_root_present", False),
+            "server_cache_present": discovery.get("server_cache_present", False),
+            "exact_channel_cache_present": discovery.get("exact_channel_cache_present", False),
+            "exact_file_count": discovery.get("exact_file_count", 0),
+            "nearby_channel_cache_count": discovery.get("nearby_channel_cache_count", 0),
+            "raw_cache_match_count": len(raw_matches),
+        },
+        "snapshot": {
+            "saved_snapshot_match_count": len(saved_matches),
+            "source_selected": source_label,
+        },
+        "book": {
+            "created": book_created,
+            "record_count": len(records),
+            "full_thread_confirmed": bool(raw_matches),
+            "status": "raw_cache_book" if raw_matches else "partial_visible_snapshot_book" if saved_matches else "not_created",
+            "path_output": "omitted",
+        },
+        "next_actions": (
+            ["book を local private projection として使い、必要なら context-passport / review-draft に渡します。"]
+            if records
+            else ["exact local cache がないため、rest_backfill / private adapter / visible capture の順で補完します。"]
+        ),
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def rest_backfill_config_safety(value: str) -> dict[str, Any]:
+    """Classify unsafe REST backfill configuration without returning secrets."""
+    text = value or ""
+    blockers: list[str] = []
+    if DISCORD_TOKEN_RE.search(text):
+        blockers.append("user_token_or_raw_token_in_config")
+    if re.search(r"\b" + "Author" + r"ization\s*:", text, re.IGNORECASE):
+        blockers.append("authorization_header_in_config")
+    if re.search(r"\bcookie\b", text, re.IGNORECASE):
+        blockers.append("cookie_reference_in_config")
+    if CHROME_PROFILE_RE.search(text):
+        blockers.append("chrome_profile_or_storage_reference_in_config")
+    if LOCAL_ABSOLUTE_PATH_RE.search(text) and ("chrome" in text.casefold() or "discord" in text.casefold()):
+        blockers.append("credential_bearing_local_path_in_config")
+    return {
+        "schema": "discord_rest_backfill_config_safety.v1",
+        "ok": not blockers,
+        "blockers": blockers,
+        "value_output": "omitted",
+        "token_output": "omitted",
+        "cookie_output": "omitted",
+        "path_output": "omitted",
+    }
+
+
+def attachment_candidate_count(messages: Iterable[dict[str, Any]]) -> int:
+    count = 0
+    for message in messages:
+        attachments = message.get("attachments") or []
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if isinstance(attachments, list):
+            count += len(attachments)
+    return count
+
+
+def normalize_rest_backfill_record(message: dict[str, Any], *, url: str, target_key: str, captured_at: str) -> dict[str, Any]:
+    return {
+        "schema": "discord_rest_backfill_message.v1",
+        "captured_at": captured_at,
+        "url": url,
+        "target_key": target_key,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+        "message": message,
+    }
+
+
+def write_jsonl_records(path: Path, records: Iterable[dict[str, Any]]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            count += 1
+    return count
+
+
+def build_rest_backfill_manifest(
+    *,
+    url: str,
+    messages: list[dict[str, Any]],
+    full_thread_confirmed: bool,
+    rate_limit_status: str = "not_rate_limited",
+    warnings: list[str] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    target_key = target_key_for_url(url)
+    message_count = len(messages)
+    attachment_count = attachment_candidate_count(messages)
+    coverage_ready = bool(full_thread_confirmed and message_count > 0)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_rest_backfill_capture_manifest.v1",
+        "generated_at": generated_at or utc_now(),
+        "ok": message_count > 0,
+        "state": "full_capture_ready" if coverage_ready else "partial_capture_ready" if message_count else "blocked_empty",
+        "message": "Discord REST backfill capture manifest を作成しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "coverage": {
+            "message_count": message_count,
+            "attachment_candidate_count": attachment_count,
+            "full_thread_confirmed": coverage_ready,
+            "freshness": "captured_now" if message_count else "missing",
+            "source_kind": "rest_backfill",
+        },
+        "rate_limit": {
+            "status": rate_limit_status,
+            "retryable": rate_limit_status == "rate_limited_retryable",
+        },
+        "warnings": warnings or [],
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "snowflake_values_returned": False,
+            "token_output": "omitted",
+            "cookie_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+            "send_capability": "disabled",
+        },
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def write_rest_backfill_capture(
+    *,
+    url: str,
+    messages: list[dict[str, Any]],
+    raw_output: Path = DEFAULT_REST_BACKFILL_RAW_OUTPUT,
+    manifest_output: Path = DEFAULT_REST_BACKFILL_MANIFEST,
+    full_thread_confirmed: bool = False,
+    rate_limit_status: str = "not_rate_limited",
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    captured_at = utc_now()
+    target_key = target_key_for_url(url)
+    raw_records = [
+        normalize_rest_backfill_record(message, url=url, target_key=target_key, captured_at=captured_at)
+        for message in messages
+    ]
+    raw_count = write_jsonl_records(raw_output, raw_records)
+    manifest = build_rest_backfill_manifest(
+        url=url,
+        messages=messages,
+        full_thread_confirmed=full_thread_confirmed,
+        rate_limit_status=rate_limit_status,
+        warnings=warnings,
+        generated_at=captured_at,
+    )
+    manifest_output.parent.mkdir(parents=True, exist_ok=True)
+    manifest_output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        **manifest,
+        "artifact": {
+            "raw_record_count": raw_count,
+            "manifest_created": True,
+            "raw_output": "omitted",
+            "manifest_output": "omitted",
+        },
     }
 
 
