@@ -98,6 +98,29 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json
 ```
 
+## 送信済みログの事後closeout
+
+既に人間送信が終わっているログを後から確認する場合は、事前の
+`stage-discord-send`、`verify-chrome-fill-dry-run`、テスト送信gateを
+通ったことにはしません。代わりに、送信後metadataだけを閉じる
+事後closeoutとして扱います。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-operation-status \
+  --closeout-report .local/discord-context-bridge/posted-records/<closeout>.json \
+  --target-label posted-reply \
+  --target-environment production \
+  --rollback-plan-reviewed \
+  --production-runbook-fixed \
+  --post-send-retrospective \
+  --json
+```
+
+このモードが `post_send_retrospective_closed` になっても、次回以降の
+正式送信フローでは通常どおり `stage-discord-send`、dry-run、テスト送信、
+closeout を順に通します。
+
 ## 6点チェック
 
 | チェック | OK条件 | 足りない時 |

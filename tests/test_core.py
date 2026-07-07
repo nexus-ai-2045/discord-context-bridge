@@ -2929,6 +2929,47 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
     assert '"discord_send_executed_by_this_tool": false' in output
 
 
+def test_cli_send_operation_status_closes_post_send_retrospective_without_claiming_pre_gates(tmp_path, capsys):
+    closeout = build_discord_post_send_closeout_packet(
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+    )
+    closeout_path = tmp_path / "closeout.json"
+    closeout_path.write_text(json.dumps(closeout, ensure_ascii=False), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "send-operation-status",
+            "--closeout-report",
+            str(closeout_path),
+            "--target-label",
+            "posted-reply",
+            "--target-environment",
+            "production",
+            "--rollback-plan-reviewed",
+            "--production-runbook-fixed",
+            "--post-send-retrospective",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["mode"] == "post_send_retrospective"
+    assert payload["state"] == "post_send_retrospective_closed"
+    assert payload["retrospective_gaps"] == {
+        "staging_packet_status": "not_provided",
+        "dry_run_report_status": "not_provided",
+        "pre_send_gate_claimed": False,
+        "pre_send_gate_note": "事後closeoutです。過去送信について stage/dry-run/test gate を通過済みとは扱いません。",
+        "future_formal_flow_required": True,
+    }
+    assert payload["safety_boundary"]["discord_send_executed_by_this_tool"] is False
+
+
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
     adapter = load_script_module("visible_text_adapter_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
 

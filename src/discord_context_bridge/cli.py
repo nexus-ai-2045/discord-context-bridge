@@ -389,6 +389,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send_status.add_argument("--rollback-plan-reviewed", action="store_true", help="失敗時の修正投稿/停止/人間確認手順を確認済み")
     send_status.add_argument("--production-runbook-fixed", action="store_true", help="本番送信手順を固定・レビュー済み")
+    send_status.add_argument(
+        "--post-send-retrospective",
+        action="store_true",
+        help="送信済みログを事後closeoutとして扱う。過去の事前gate通過は主張しない",
+    )
     send_status.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     send_status.set_defaults(handler=_cmd_send_operation_status)
 
@@ -1175,6 +1180,7 @@ def _cmd_send_operation_status(args: argparse.Namespace) -> int:
         target_environment=args.target_environment,
         rollback_plan_reviewed=args.rollback_plan_reviewed,
         production_runbook_fixed=args.production_runbook_fixed,
+        post_send_retrospective=args.post_send_retrospective,
     )
     exit_code = 0 if packet["ok"] else 2
     if args.json:
