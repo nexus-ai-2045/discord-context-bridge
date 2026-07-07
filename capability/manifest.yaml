@@ -16,6 +16,7 @@ stoplines:
   - no_tokens_or_cookies
   - no_playwright_default_for_discord_context
   - no_unapproved_visible_ui_automation
+  - no_complete_claim_without_full_local_capture
 required_commands:
   - command: import-visible-text
     purpose: 可視テキストをローカル event store に取り込む
