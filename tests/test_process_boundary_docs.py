@@ -91,3 +91,12 @@ def test_architecture_context_closeout_preserves_public_safe_boundaries():
 
     for term in required_terms:
         assert term in body
+
+
+def test_generated_runtime_skills_include_visible_ui_automation_stopline():
+    for skill in (ROOT / "dist" / "skills").glob("*/SKILL.md"):
+        body = skill.read_text(encoding="utf-8")
+        assert "no_unapproved_visible_ui_automation" in body
+        assert "Computer Use 的な画面操作" in body
+        assert "SendKeys" in body
+        assert "ユーザーの明示許可なしに実行しない" in body
