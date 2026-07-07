@@ -26,6 +26,8 @@ required_commands:
     purpose: ローカル cache / snapshot を先に見て private book を作る
   - command: coverage-report
     purpose: Discord URL / target_key の coverage と freshness を本文なしで確認する
+  - command: chrome-visible-fallback-guard
+    purpose: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
   - command: import-visible-text
     purpose: 可視テキストをローカル event store に取り込む
   - command: context-passport
