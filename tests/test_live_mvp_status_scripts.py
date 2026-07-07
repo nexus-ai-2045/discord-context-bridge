@@ -16,6 +16,7 @@ import discord_channel_event_probe
 import discord_inventory_dashboard
 import discord_live_text_source
 import discord_route_retry_decider
+import discord_rest_backfill
 import e2e_discord_route_check
 import e2e_private_adapter_check
 import codex_discord_ingress_smoke
@@ -67,6 +68,71 @@ def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Pa
 
     assert status == {"exists": True, "token_set": True}
     assert "synthetic-secret" not in str(status)
+
+
+def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch):
+    monkeypatch.delenv("DISCORD_" + "BOT_TOKEN", raising=False)
+
+    result = discord_rest_backfill.main(["--url", "https://discord.com/channels/7/8/9", "--json"])
+
+    assert result == 2
+
+
+def test_rest_backfill_fixture_writes_private_artifacts_without_stdout_text(tmp_path: Path, capsys):
+    fixture = tmp_path / "messages.jsonl"
+    fixture.write_text(
+        json.dumps(
+            {
+                "id": "123456789012345678",
+                "content": "member-h private fixture text should not print",
+                "attachments": [{"filename": "evidence.png"}],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    raw_output = tmp_path / "raw" / "rest.ndjson"
+    manifest_output = tmp_path / "manifest" / "rest.json"
+
+    result = discord_rest_backfill.main(
+        [
+            "--url",
+            "https://discord.com/channels/7/8/9",
+            "--fixture-input",
+            str(fixture),
+            "--raw-output",
+            str(raw_output),
+            "--manifest-output",
+            str(manifest_output),
+            "--full-thread-confirmed",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["route"] == "rest_backfill"
+    assert payload["coverage"]["message_count"] == 1
+    assert payload["coverage"]["attachment_candidate_count"] == 1
+    assert payload["coverage"]["full_thread_confirmed"] is True
+    assert payload["token_output"] == "omitted"
+    assert payload["path_output"] == "omitted"
+    assert "private fixture text" not in output
+    assert "123456789012345678" not in output
+    assert str(raw_output) not in output
+    assert raw_output.exists()
+    assert manifest_output.exists()
+
+
+def test_rest_backfill_rate_limit_payload_is_retryable():
+    payload = discord_rest_backfill.blocked_payload("rate_limited_retryable", retry_after=1.5)
+
+    assert payload["ok"] is False
+    assert payload["rate_limit"]["status"] == "rate_limited_retryable"
+    assert payload["rate_limit"]["retryable"] is True
+    assert payload["raw_text_returned"] is False
 
 
 def test_bot_private_ingest_returns_context_without_text(tmp_path: Path):
@@ -131,13 +197,17 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     rendered = discord_plugin_route_status._json(payload)
 
     assert payload["ok"] is True
-    assert payload["recommended_route"] == "bot_private_ingest"
+    assert payload["recommended_route"] == "rest_backfill"
     assert payload["routes"]["discord_configure"]["route_class"] == "control"
     assert payload["routes"]["discord_access"]["route_class"] == "control"
+    assert payload["routes"]["rest_backfill"]["route_class"] == "main"
     assert payload["routes"]["bot_private_ingest"]["route_class"] == "main"
     assert payload["routes"]["computer_use_discord"]["route_class"] == "visual_fallback"
     assert payload["routes"]["ocr_region"]["route_class"] == "last_fallback"
     assert payload["routes"]["discord_configure"]["token_output"] == "omitted"
+    assert payload["routes"]["rest_backfill"]["token_output"] == "omitted"
+    assert payload["routes"]["rest_backfill"]["raw_text_output"] == "omitted"
+    assert payload["routes"]["rest_backfill"]["outbound_actions"] == "disabled"
     assert payload["routes"]["discord_access"]["snowflake_values_output"] == "omitted"
     assert payload["routes"]["discord_access"]["pending_count"] == 1
     assert payload["routes"]["bot_private_ingest"]["outbound_actions"] == "disabled"
