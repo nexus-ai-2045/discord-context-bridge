@@ -19,6 +19,7 @@ from discord_context_bridge import (
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
+    build_cache_first_intake,
     build_coverage_report,
     build_handoff_packet,
     build_human_gate,
@@ -43,6 +44,8 @@ from discord_context_bridge import (
     ops_view_summary,
     parse_visible_text,
     plan_discord_url_read,
+    plan_full_thread_capture,
+    rest_backfill_config_safety,
     review_reply_intent,
     send_message,
     snapshot_visible_text,
@@ -51,6 +54,7 @@ from discord_context_bridge import (
     upsert_context_document,
     verify_chrome_extension_fill_only_dry_run,
     analyze_discord_forum_url_shape,
+    write_rest_backfill_capture,
     target_key_for_url,
 )
 from discord_context_bridge import cli as cli_module
@@ -1600,6 +1604,227 @@ def test_cli_snapshot_discord_url_text_json_is_metadata_only(tmp_path, capsys):
     assert "raw saved text" not in output
     assert "member-b" not in output
     assert "discord.com/channels" not in output
+
+
+def test_plan_full_thread_capture_blocks_visible_dom_only(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    url = "https://discord.com/channels/4/5/6"
+    snapshot_visible_text(
+        text="member-c: visible range only stays private",
+        url=url,
+        source="chrome_visible_message_nodes",
+        path=snapshot_store,
+    )
+
+    plan = plan_full_thread_capture(
+        url=url,
+        snapshot_store=snapshot_store,
+        visible_dom_available=True,
+    )
+
+    assert plan["schema"] == "discord_full_thread_capture_plan.v1"
+    assert plan["ok"] is False
+    assert plan["state"] == "blocked_missing_full_thread_route"
+    assert plan["coverage_now"]["saved_snapshot_count"] == 1
+    assert plan["coverage_now"]["visible_dom_is_full_thread_proof"] is False
+    assert "rest_backfill_not_configured" in plan["blockers"]
+    assert plan["raw_text_returned"] is False
+
+
+def test_cli_thread_capture_plan_is_metadata_only(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    visible_text = tmp_path / "visible.txt"
+    visible_text.write_text("member-d: private thread text should stay local", encoding="utf-8")
+    url = "https://discord.com/channels/7/8/9"
+    snapshot_visible_text(
+        text=visible_text.read_text(encoding="utf-8"),
+        url=url,
+        path=snapshot_store,
+        source="chrome_visible_message_nodes",
+    )
+
+    result = cli_main(
+        [
+            "thread-capture-plan",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--visible-dom-available",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 2
+    assert payload["state"] == "blocked_missing_full_thread_route"
+    assert payload["route_allocation"]["visible_dom"]["required_for_full_thread"] is False
+    assert payload["route_allocation"]["rest_backfill"]["required_for_full_thread"] is True
+    assert payload["raw_text_returned"] is False
+    assert "private thread text" not in output
+    assert "member-d" not in output
+    assert url not in output
+    assert str(snapshot_store) not in output
+
+
+def test_cli_thread_capture_plan_detects_rest_env_without_claiming_full_capture(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("DISCORD_" + "BOT_TOKEN", "synthetic-secret")
+
+    result = cli_main(
+        [
+            "thread-capture-plan",
+            "--url",
+            "https://discord.com/channels/7/8/9",
+            "--snapshot-store",
+            str(tmp_path / "missing.ndjson"),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["state"] == "ready_for_full_capture"
+    assert payload["route_allocation"]["rest_backfill"]["configured"] is True
+    assert payload["coverage_now"]["full_thread_confirmed"] is False
+    assert "synthetic-secret" not in output
+
+
+def test_cache_first_intake_builds_private_book_from_saved_snapshot(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    book_output = tmp_path / "books" / "target.md"
+    url = "https://discord.com/channels/7/8/9"
+    snapshot_visible_text(
+        text="member-e: private saved snapshot should become a local book",
+        url=url,
+        path=snapshot_store,
+        source="chrome_visible_message_nodes",
+    )
+
+    payload = build_cache_first_intake(
+        url=url,
+        snapshot_store=snapshot_store,
+        cache_root=tmp_path / "missing-raw-cache-root",
+        book_output=book_output,
+    )
+
+    assert payload["ok"] is True
+    assert payload["state"] == "book_created"
+    assert payload["snapshot"]["source_selected"] == "saved_snapshot"
+    assert payload["book"]["created"] is True
+    assert payload["book"]["status"] == "partial_visible_snapshot_book"
+    assert payload["raw_text_returned"] is False
+    assert book_output.exists()
+    assert "private saved snapshot" in book_output.read_text(encoding="utf-8")
+
+
+def test_cli_cache_first_intake_is_metadata_only(tmp_path, capsys):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    book_output = tmp_path / "books" / "target.md"
+    cache_root = tmp_path / "cache"
+    url = "https://discord.com/channels/7/8/10"
+    snapshot_visible_text(
+        text="member-f: raw local book text should not print",
+        url=url,
+        path=snapshot_store,
+        source="chrome_visible_message_nodes",
+    )
+
+    result = cli_main(
+        [
+            "cache-first-intake",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--cache-root",
+            str(cache_root),
+            "--book-output",
+            str(book_output),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["state"] == "book_created"
+    assert payload["book"]["created"] is True
+    assert payload["path_output"] == "omitted"
+    assert "raw local book text" not in output
+    assert "member-f" not in output
+    assert url not in output
+    assert str(book_output) not in output
+    assert str(snapshot_store) not in output
+    assert book_output.exists()
+
+
+def test_write_rest_backfill_capture_saves_private_raw_and_metadata_manifest(tmp_path):
+    raw_output = tmp_path / "raw" / "rest.ndjson"
+    manifest_output = tmp_path / "manifests" / "rest.json"
+    url = "https://discord.com/channels/7/8/9"
+    messages = [
+        {
+            "id": "123456789012345678",
+            "content": "member-g private REST text should stay in private raw artifact",
+            "attachments": [{"filename": "screen.png", "url": "https://cdn.example.invalid/private.png"}],
+        }
+    ]
+
+    payload = write_rest_backfill_capture(
+        url=url,
+        messages=messages,
+        raw_output=raw_output,
+        manifest_output=manifest_output,
+        full_thread_confirmed=True,
+    )
+
+    assert payload["schema"] == "discord_rest_backfill_capture_manifest.v1"
+    assert payload["ok"] is True
+    assert payload["coverage"]["message_count"] == 1
+    assert payload["coverage"]["attachment_candidate_count"] == 1
+    assert payload["coverage"]["full_thread_confirmed"] is True
+    assert payload["raw_text_returned"] is False
+    assert payload["artifact"]["raw_output"] == "omitted"
+    assert raw_output.exists()
+    assert manifest_output.exists()
+    assert "private REST text" in raw_output.read_text(encoding="utf-8")
+    manifest_text = manifest_output.read_text(encoding="utf-8")
+    assert "private REST text" not in manifest_text
+    assert "123456789012345678" not in manifest_text
+    assert url not in json.dumps(payload, ensure_ascii=False)
+    assert str(raw_output) not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_write_rest_backfill_capture_keeps_partial_until_full_confirmed(tmp_path):
+    payload = write_rest_backfill_capture(
+        url="https://discord.com/channels/7/8/9",
+        messages=[{"content": "private partial text"}],
+        raw_output=tmp_path / "raw.ndjson",
+        manifest_output=tmp_path / "manifest.json",
+        full_thread_confirmed=False,
+    )
+
+    assert payload["state"] == "partial_capture_ready"
+    assert payload["coverage"]["full_thread_confirmed"] is False
+
+
+def test_rest_backfill_config_safety_blocks_user_token_cookie_and_chrome_profile():
+    unsafe = (
+        "Author" + "ization: " + "Bear" + "er mfa.syntheticUserToken "
+        "Cookie: session=secret "
+        r"D:\ExampleProfile\Chrome\User Data\Default\Local Storage"
+    )
+
+    result = rest_backfill_config_safety(unsafe)
+
+    assert result["ok"] is False
+    assert "authorization_header_in_config" in result["blockers"]
+    assert "cookie_reference_in_config" in result["blockers"]
+    assert "chrome_profile_or_storage_reference_in_config" in result["blockers"]
+    assert result["value_output"] == "omitted"
+    assert "syntheticUserToken" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_cli_url_intake_fast_path_refreshes_before_saved_snapshot_decision(tmp_path, capsys):
