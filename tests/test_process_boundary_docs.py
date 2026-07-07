@@ -15,7 +15,7 @@ def test_readme_notification_metadata_probe_contract_is_textless():
     probe = section(
         body,
         "### Discord Desktop 通知 metadata probe",
-        "最初の skeleton は、現在見えている Discord 本文を stdout に出すだけ",
+        "## MCP",
     )
 
     required_terms = [

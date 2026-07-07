@@ -11,6 +11,10 @@ external_action: none
 
 # Discord Context Bridge TODO批判的再検証
 
+> Historical note: このファイルは 2026-07-01 時点の批判的 closeout 証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、現在の順序正本は `ROADMAP.md` です。
+> このファイルの Green 判定は、当時の専用repo local verification 範囲に限定されます。
+
 ## 結論
 
 判定: Green (discord-context-bridge 専用repoスコープ)

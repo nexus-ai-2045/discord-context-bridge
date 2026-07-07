@@ -102,10 +102,15 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ## 残TODO
 
-- テスト用チャンネルで人間送信し、`closeout-discord-send` の実ログを残す。
-- そのログを `send-operation-status` に渡し、6点チェックが `ok: true` になることを確認する。
-- 本番送信前の対象safe label、失敗時回復方針、送信後確認者を決める。
-- 送信テストで詰まった blocker を [ISSUE_LIST.md](ISSUE_LIST.md) と [ROADMAP.md](ROADMAP.md) に戻す。
+active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れは [ROADMAP.md](ROADMAP.md) にあります。
+
+今の最優先は次です。
+
+- `ops_check` を fast / full に分け、通常開発の確認を速くする。
+- Discordで対象を見つけた後の `message found -> bridge intake` 導線を短くする。
+- append-only snapshot ledger、coverage、context passport、reply guide を一続きにする。
+- `core.py` と `test_core.py` を責務別に分け、速度と保守性を上げる。
+- テスト用チャンネルでの人間送信 rehearsal は、人間承認と実ログ準備後に別実行する。
 
 ## 安全境界
 
@@ -151,7 +156,7 @@ python3 scripts/boundary_logic_check.py --json
 - blocked reason: `no_notification_observed` / `insufficient_metadata`。
 - safety: `text_output="omitted"`、`raw_payload_read=false`、`outbound_actions="disabled"`。
 
-最初の skeleton は、現在見えている Discord 本文を stdout に出すだけ
+本文を stdout に出すだけの skeleton は採用しません。通知probeは metadata-only の補助として扱います。
 
 ## MCP
 
