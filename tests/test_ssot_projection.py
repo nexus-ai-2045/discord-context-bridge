@@ -25,6 +25,7 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert {"codex", "claude-code", "grok", "antigravity"} <= set(manifest["runtime_targets"])
     assert "no_discord_send" in manifest["stoplines"]
     assert "no_playwright_default_for_discord_context" in manifest["stoplines"]
+    assert "no_unapproved_visible_ui_automation" in manifest["stoplines"]
 
 
 def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
@@ -47,6 +48,8 @@ def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
     assert "manifest_checksum:" in body
     assert "Discord への send / 自動返信 / reaction / delete / edit はしない" in body
     assert "Playwright / headless browser / 新規 browser profile を既定経路にしない" in body
+    assert "no_unapproved_visible_ui_automation" in body
+    assert "Computer Use 的な画面操作" in body
 
 
 def test_verify_projection_detects_stale_generated_skill(tmp_path):
@@ -132,7 +135,9 @@ def test_lint_ingest_route_policy_requires_playwright_default_ban(tmp_path):
     generated.mkdir(parents=True)
     required = (
         "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility "
-        "ai-party 外部 MCP 自動探索しない"
+        "ai-party 外部 MCP 自動探索しない Computer Use 的な画面操作 SendKeys "
+        "AppActivate スクショ取得 Chromeを勝手に開く ユーザーの明示許可なしに実行しない "
+        "no_unapproved_visible_ui_automation"
     )
     contract = tmp_path / "operating-contract.md"
     contract.write_text(required, encoding="utf-8")

@@ -20,6 +20,13 @@ REQUIRED_PHRASES = (
     "ai-party",
     "外部 MCP",
     "自動探索しない",
+    "Computer Use 的な画面操作",
+    "SendKeys",
+    "AppActivate",
+    "スクショ取得",
+    "Chromeを勝手に開く",
+    "ユーザーの明示許可なしに実行しない",
+    "no_unapproved_visible_ui_automation",
 )
 
 
@@ -64,7 +71,7 @@ def lint_ingest_route_policy(
         "overall": overall,
         "checks": checks,
         "read_only": True,
-        "policy": "Playwright is not a default ingest route for Discord context bridge.",
+        "policy": "Playwright and unapproved visible UI automation are not default ingest routes for Discord context bridge.",
     }
 
 
