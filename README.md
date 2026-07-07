@@ -11,6 +11,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | やりたいこと | 入口 |
 |---|---|
 | 可視テキストを取り込む | `import-visible-text` |
+| Bot REST API で履歴を private 保存する | `python scripts/discord_rest_backfill.py --url ... --json` |
 | 文脈を整理する | `context-passport` |
 | 返信前に本文を確認する | `review-draft` / `guide-reply` |
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
@@ -116,6 +117,8 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 
 - 基本言語は日本語です。ユーザーに見える説明、PR本文、運用メモは日本語で意味が分かる形にします。
 - raw Discord text、参加者名、token、cookie、webhook、実ID、local absolute path を公開出力に含めません。
+- Bot REST backfill は bot token 用の環境変数の存在だけを使い、token 値は出力・保存しません。
+- Chrome profile から user token、cookie、localStorage を抽出して API に流用しません。
 - public package は本文処理、metadata-only report、gate、closeout を担当します。
 - Discord送信、reaction、edit、delete、repository visibility変更、外部投稿は、人間レビューと明示承認なしに実行しません。
 - `send_message()` は意図的に無効です。

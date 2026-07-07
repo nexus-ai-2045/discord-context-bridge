@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,18 +18,20 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
     preflight = discord_bot_route_preflight.build_preflight(channel_dir)
     access = preflight["access"]
     bot_ready = bool(preflight["ok"])
-    control_plane_ready = bool(preflight["bot_token"]["set"]) and bool(access.get("readable", True))
+    env_token_set = bool(os.environ.get("DISCORD_" + "BOT_TOKEN", "").strip())
+    bot_token_set = bool(preflight["bot_token"]["set"] or env_token_set)
+    control_plane_ready = bot_token_set and bool(access.get("readable", True))
 
     return {
         "schema": "discord_plugin_route_status.v1",
         "ok": control_plane_ready,
-        "recommended_route": "bot_private_ingest" if bot_ready else "discord_configure_or_access",
+        "recommended_route": "rest_backfill" if bot_token_set else "discord_configure_or_access",
         "routes": {
             "discord_configure": {
                 "route_class": "control",
                 "role": "bot token 設定の入口",
-                "status": "configured" if preflight["bot_token"]["set"] else "needs_token",
-                "token_set": bool(preflight["bot_token"]["set"]),
+                "status": "configured" if bot_token_set else "needs_token",
+                "token_set": bot_token_set,
                 "token_output": "omitted",
                 "mutation": "disabled",
             },
@@ -42,6 +45,16 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "pending_count": int(access.get("pending_count", 0)),
                 "snowflake_values_output": "omitted",
                 "mutation": "disabled",
+            },
+            "rest_backfill": {
+                "route_class": "main",
+                "role": "Bot REST API で履歴を read-only backfill する主経路",
+                "status": "ready" if bot_token_set else "blocked",
+                "next": "run_discord_rest_backfill" if bot_token_set else "set_bot_token_env_or_channel_env",
+                "token_output": "omitted",
+                "raw_text_output": "omitted",
+                "outbound_actions": "disabled",
+                "send_capability": "disabled_by_policy",
             },
             "bot_private_ingest": {
                 "route_class": "main",
@@ -93,6 +106,7 @@ def print_human(payload: dict[str, Any]) -> None:
     for name in (
         "discord_configure",
         "discord_access",
+        "rest_backfill",
         "bot_private_ingest",
         "computer_use_discord",
         "ocr_region",

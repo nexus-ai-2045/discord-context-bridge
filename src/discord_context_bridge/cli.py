@@ -16,6 +16,7 @@ from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
     DEFAULT_ATTACHMENT_LEDGER,
+    DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
     DEFAULT_STORE,
     DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
@@ -26,8 +27,10 @@ from .core import (
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
+    build_cache_first_intake,
     build_handoff_packet,
     build_latest_snapshot_report,
+    plan_full_thread_capture,
     build_review_artifact_markdown,
     build_url_intake_fast_path,
     context_passport_from_text,
@@ -259,6 +262,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="重複判定方針",
     )
     coverage.set_defaults(handler=_cmd_coverage_report)
+
+    full_thread = sub.add_parser(
+        "thread-capture-plan",
+        help="Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する",
+    )
+    full_thread.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    full_thread.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    full_thread.add_argument("--raw-cache", type=Path, help="Discord raw export / cache ndjson")
+    full_thread.add_argument("--gateway-configured", action="store_true", help="gateway live event route が設定済み")
+    full_thread.add_argument("--rest-configured", action="store_true", help="REST/backfill route が設定済み")
+    full_thread.add_argument("--bot-inbox-ready", action="store_true", help="bot text event inbox が利用可能")
+    full_thread.add_argument("--private-adapter-configured", action="store_true", help="private adapter が利用可能")
+    full_thread.add_argument("--visible-dom-available", action="store_true", help="Chrome visible DOM snapshot が利用可能")
+    full_thread.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    full_thread.set_defaults(handler=_cmd_thread_capture_plan)
+
+    cache_first = sub.add_parser(
+        "cache-first-intake",
+        help="ローカル cache / snapshot を先に見て private MD book を作る",
+    )
+    cache_first.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    cache_first.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    cache_first.add_argument("--cache-root", type=Path, default=DEFAULT_SHARED_RAW_SNAPSHOT_ROOT, help="shared raw snapshot root。出力には表示しません")
+    cache_first.add_argument("--book-output", type=Path, default=None, help="生成する private Markdown book。出力には表示しません")
+    cache_first.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    cache_first.set_defaults(handler=_cmd_cache_first_intake)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -895,6 +924,59 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
     )
     print(_json(payload))
     return 0 if payload["coverage"]["exact_coverage"] else 2
+
+
+def _cmd_thread_capture_plan(args: argparse.Namespace) -> int:
+    rest_configured = bool(
+        args.rest_configured
+        or os.environ.get("DISCORD_" + "BOT_TOKEN", "").strip()
+        or os.environ.get("DISCORD_CONTEXT_BRIDGE_REST_COMMAND", "").strip()
+    )
+    payload = plan_full_thread_capture(
+        url=args.url,
+        snapshot_store=args.snapshot_store,
+        raw_cache_path=args.raw_cache,
+        gateway_configured=args.gateway_configured,
+        rest_configured=rest_configured,
+        bot_inbox_ready=args.bot_inbox_ready,
+        private_adapter_configured=args.private_adapter_configured,
+        visible_dom_available=args.visible_dom_available,
+    )
+    if args.json:
+        print(_json(payload))
+        return 0 if payload["ok"] else 2
+    print(payload["message"])
+    print(f"state: {payload['state']}")
+    print(f"ok: {str(payload['ok']).lower()}")
+    print(f"full_thread_confirmed: {str(payload.get('coverage_now', {}).get('full_thread_confirmed', False)).lower()}")
+    print(f"visible_dom_is_full_thread_proof: {str(payload.get('coverage_now', {}).get('visible_dom_is_full_thread_proof', False)).lower()}")
+    print(f"blockers: {', '.join(payload.get('blockers') or []) or 'なし'}")
+    print("raw_text_returned: false")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0 if payload["ok"] else 2
+
+
+def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
+    payload = build_cache_first_intake(
+        url=args.url,
+        snapshot_store=args.snapshot_store,
+        cache_root=args.cache_root,
+        book_output=args.book_output,
+    )
+    if args.json:
+        print(_json(payload))
+        return 0 if payload["ok"] else 2
+    print(payload["message"])
+    print(f"state: {payload['state']}")
+    print(f"ok: {str(payload['ok']).lower()}")
+    print(f"source_selected: {payload['snapshot']['source_selected']}")
+    print(f"book_created: {str(payload['book']['created']).lower()}")
+    print(f"book_status: {payload['book']['status']}")
+    print(f"raw_text_returned: {str(payload['raw_text_returned']).lower()}")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0 if payload["ok"] else 2
 
 
 def _cmd_handoff_packet(args: argparse.Namespace) -> int:

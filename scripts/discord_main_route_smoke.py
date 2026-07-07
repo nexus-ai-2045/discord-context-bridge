@@ -47,8 +47,7 @@ def build_smoke_payload(
     )
     main_route = route_status["routes"]["bot_private_ingest"]
     main_route_ready = (
-        route_status.get("recommended_route") == "bot_private_ingest"
-        and main_route.get("route_class") == "main"
+        main_route.get("route_class") == "main"
         and main_route.get("status") == "ready"
     )
     ingest_ready = bool(ingest.get("ok")) and bool(ingest.get("context_ready"))
@@ -81,7 +80,8 @@ def build_smoke_payload(
 
 
 def failure_stage(route_status: dict[str, Any], ingest: dict[str, Any]) -> str:
-    if route_status.get("recommended_route") != "bot_private_ingest":
+    main_route = route_status.get("routes", {}).get("bot_private_ingest", {})
+    if main_route.get("status") != "ready":
         return "main_route_not_ready"
     if ingest.get("failure_stage"):
         return str(ingest["failure_stage"])
@@ -91,7 +91,8 @@ def failure_stage(route_status: dict[str, Any], ingest: dict[str, Any]) -> str:
 
 
 def failure_reason(route_status: dict[str, Any], ingest: dict[str, Any]) -> str:
-    if route_status.get("recommended_route") != "bot_private_ingest":
+    main_route = route_status.get("routes", {}).get("bot_private_ingest", {})
+    if main_route.get("status") != "ready":
         return "control plane が未準備です。discord:configure / discord:access を確認してください。"
     if ingest.get("reason"):
         return str(ingest["reason"])
