@@ -43,7 +43,23 @@ def parse_ahead_behind(raw: str) -> tuple[int, int]:
         return 0, 0
 
 
+def current_upstream() -> str | None:
+    completed = run_command(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+    upstream = completed.stdout.strip()
+    return upstream if completed.returncode == 0 and upstream else None
+
+
+def ensure_github_account_boundary() -> str | None:
+    completed = run_command([sys.executable, "scripts/gh_guard.py", "--account-only", "--json"])
+    if completed.returncode == 0:
+        return None
+    return "gh_account_boundary_failed"
+
+
 def load_open_prs() -> tuple[list[dict[str, Any]], str | None]:
+    account_error = ensure_github_account_boundary()
+    if account_error:
+        return [], account_error
     completed = run_command(
         [
             "gh",
@@ -69,8 +85,14 @@ def load_open_prs() -> tuple[list[dict[str, Any]], str | None]:
 def build_operational_status() -> dict[str, Any]:
     status = run_command(["git", "status", "--short"]).stdout.strip()
     branch = run_command(["git", "branch", "--show-current"]).stdout.strip()
-    ahead_behind = run_command(["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"])
-    ahead, behind = parse_ahead_behind(ahead_behind.stdout)
+    origin_main = run_command(["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"])
+    origin_main_ahead, origin_main_behind = parse_ahead_behind(origin_main.stdout)
+    upstream = current_upstream()
+    if upstream:
+        upstream_counts = run_command(["git", "rev-list", "--left-right", "--count", f"HEAD...{upstream}"])
+        branch_ahead, branch_behind = parse_ahead_behind(upstream_counts.stdout)
+    else:
+        branch_ahead, branch_behind = origin_main_ahead, origin_main_behind
     open_prs, pr_error = load_open_prs()
 
     residual: list[dict[str, Any]] = []
@@ -86,11 +108,11 @@ def build_operational_status() -> dict[str, Any]:
     if status:
         residual.append({"code": "working_tree_dirty", "label": "未commitの差分があります。"})
         next_actions.append("差分を確認し、必要なものだけ commit / push します。")
-    if behind:
-        residual.append({"code": "main_behind_origin", "label": f"local branch は origin/main から {behind} commit 遅れています。"})
-        next_actions.append("local main を fast-forward します。")
-    if ahead:
-        residual.append({"code": "local_commits_unpushed", "label": f"local branch は origin/main より {ahead} commit 進んでいます。"})
+    if branch_behind:
+        residual.append({"code": "branch_behind_upstream", "label": f"local branch は upstream から {branch_behind} commit 遅れています。"})
+        next_actions.append("local branch を upstream に同期します。")
+    if branch_ahead:
+        residual.append({"code": "local_commits_unpushed", "label": f"local branch は upstream より {branch_ahead} commit 進んでいます。"})
         next_actions.append("GitHub account と remote owner を確認して push します。")
     if open_prs:
         residual.append({"code": "open_pull_requests", "label": f"open PR が {len(open_prs)} 件あります。"})
@@ -117,8 +139,11 @@ def build_operational_status() -> dict[str, Any]:
             "label": now_label,
             "branch": branch,
             "working_tree": "clean" if not status else "dirty",
-            "origin_main_ahead": ahead,
-            "origin_main_behind": behind,
+            "branch_upstream": upstream or "",
+            "branch_upstream_ahead": branch_ahead,
+            "branch_upstream_behind": branch_behind,
+            "origin_main_ahead": origin_main_ahead,
+            "origin_main_behind": origin_main_behind,
         },
         "done": done,
         "broken": broken,
