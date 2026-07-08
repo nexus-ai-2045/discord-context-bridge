@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 import subprocess
@@ -27,6 +28,7 @@ import ops_check
 import ops_preflight
 import route_timing_log
 import fixture_13_step_e2e
+import gh_pr_read
 from discord_context_bridge.cli import safe_command_failure_reason
 
 
@@ -1031,6 +1033,128 @@ def test_discord_inventory_dashboard_blocks_pr_lookup_on_gh_account_mismatch(mon
     assert payload["github"]["error"] == "gh_account_boundary_failed"
     assert {item["code"] for item in payload["residual"]} == {"gh_account_boundary_failed"}
     assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
+
+
+def test_gh_pr_read_checks_account_before_list(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "actual_owner": "nexus-ai-2045",
+                        "actual_repository": "discord-context-bridge",
+                        "active_account_after": "nexus-ai-2045",
+                        "ok": True,
+                    }
+                )
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed("[]")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    payload = gh_pr_read.build_payload(argparse.Namespace(command="list", limit=50, switch=False))
+
+    assert payload["ok"] is True
+    assert payload["prs"] == []
+    assert calls.index([sys.executable, "scripts/gh_guard.py", "--account-only", "--json"]) < calls.index(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,mergeStateStatus,isDraft,url",
+            "--limit",
+            "50",
+        ]
+    )
+
+
+def test_gh_pr_read_blocks_view_on_account_mismatch(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed('{"account_matches":false,"ok":false}', returncode=2)
+        if command[:3] == ["gh", "pr", "view"]:
+            raise AssertionError("gh pr view should not run when account boundary fails")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    try:
+        gh_pr_read.build_payload(argparse.Namespace(command="view", number="4", switch=False))
+    except SystemExit as exc:
+        payload = json.loads(str(exc))
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert payload["ok"] is False
+    assert payload["error"] == "gh_account_boundary_failed"
+    assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
+
+
+def test_gh_pr_read_can_switch_before_view(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:4] == [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "actual_owner": "nexus-ai-2045",
+                        "actual_repository": "discord-context-bridge",
+                        "active_account_after": "nexus-ai-2045",
+                        "ok": True,
+                        "switched": True,
+                    }
+                )
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "number": 4,
+                        "title": "REST backfill",
+                        "url": "https://github.com/nexus-ai-2045/discord-context-bridge/pull/4",
+                    }
+                )
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    payload = gh_pr_read.build_payload(argparse.Namespace(command="view", number="4", switch=True))
+
+    assert payload["ok"] is True
+    assert payload["pr"]["number"] == 4
+    assert [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only", "--json"] in calls
 
 
 def test_discord_inventory_dashboard_uses_upstream_for_feature_branch_sync(monkeypatch):
