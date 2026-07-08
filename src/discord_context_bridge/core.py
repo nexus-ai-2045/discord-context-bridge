@@ -3305,6 +3305,7 @@ def build_discord_send_operation_status(
     target_environment: str = "test",
     rollback_plan_reviewed: bool = False,
     production_runbook_fixed: bool = False,
+    post_send_retrospective: bool = False,
 ) -> dict[str, Any]:
     """Summarize a human-assisted Discord send workflow from existing logs.
 
@@ -3343,6 +3344,78 @@ def build_discord_send_operation_status(
         and closeout_report.get("recommended_next_state") == "done"
     )
     closeout_unread_clear = bool(closeout_report and closeout_report.get("unread_check_status") == "none_unread")
+
+    if post_send_retrospective:
+        checks = [
+            _operation_check(
+                "target_destination_declared",
+                bool(safe_target_label),
+                evidence="target_label",
+                blocker=None if safe_target_label else "target_label_missing",
+                next_action="対象チャンネル/投稿先を safe label で指定する" if not safe_target_label else None,
+            ),
+            _operation_check(
+                "post_send_closeout_closed",
+                closeout_closed,
+                evidence="closeout-discord-send",
+                blocker=None if closeout_closed else "closeout_not_closed",
+                next_action="送信後 closeout を closed にする" if not closeout_closed else None,
+            ),
+            _operation_check(
+                "post_send_unread_clear",
+                closeout_unread_clear,
+                evidence="closeout-discord-send.unread_check_status",
+                blocker=None if closeout_unread_clear else "unread_check_not_clear",
+                next_action="送信後の未読状態を metadata-only で確認する" if not closeout_unread_clear else None,
+            ),
+            _operation_check(
+                "failure_recovery_reviewed",
+                rollback_plan_reviewed,
+                evidence="rollback_plan_reviewed",
+                blocker=None if rollback_plan_reviewed else "rollback_plan_not_reviewed",
+                next_action="失敗時の修正投稿/停止/人間確認手順を確認する" if not rollback_plan_reviewed else None,
+            ),
+            _operation_check(
+                "future_formal_runbook_fixed",
+                production_runbook_fixed,
+                evidence="docs/discord-send-operation-runbook.md",
+                blocker=None if production_runbook_fixed else "production_runbook_not_confirmed",
+                next_action="次回正式フロー用の本番送信手順をレビュー済みにする" if not production_runbook_fixed else None,
+            ),
+        ]
+        ok = all(check["status"] == "ok" for check in checks)
+        return {
+            "schema": "discord_send_operation_status.v1",
+            "mode": "post_send_retrospective",
+            "language": DEFAULT_LANGUAGE,
+            "ok": ok,
+            "state": "post_send_retrospective_closed" if ok else "attention_required",
+            "target": {
+                "label": safe_target_label or "not_provided",
+                "environment": environment,
+                "url_output": "omitted",
+            },
+            "checks": checks,
+            "retrospective_gaps": {
+                "staging_packet_status": "provided" if staging_packet else "not_provided",
+                "dry_run_report_status": "provided" if dry_run_report else "not_provided",
+                "pre_send_gate_claimed": bool(staging_ready and dry_run_ready),
+                "pre_send_gate_note": "事後closeoutです。過去送信について stage/dry-run/test gate を通過済みとは扱いません。",
+                "future_formal_flow_required": True,
+            },
+            "summary": {
+                "ready_count": sum(1 for check in checks if check["status"] == "ok"),
+                "total_count": len(checks),
+                "next": [check["next_action"] for check in checks if check.get("next_action")],
+            },
+            "safety_boundary": {
+                "discord_send_executed_by_this_tool": False,
+                "raw_discord_text_output": "omitted",
+                "target_url_output": "omitted",
+                "snowflake_values_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
 
     checks = [
         _operation_check(
