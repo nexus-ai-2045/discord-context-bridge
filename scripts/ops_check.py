@@ -26,6 +26,12 @@ class CheckResult:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="実装後の運用チェックを並列で実行する")
+    parser.add_argument(
+        "--profile",
+        choices=["fast", "full", "release"],
+        default="full",
+        help="fast は通常開発用の軽量ゲート、full は従来相当、release は GitHub account確認も含める",
+    )
     parser.add_argument("--port", type=int, default=8025, help="local smoke で使う port")
     parser.add_argument("--http", action="store_true", help="HTTP MCP 起動スモークも含める")
     parser.add_argument("--skip-http", action="store_true", help="HTTP MCP 起動スモークを省略する（既定動作の明示用）")
@@ -185,7 +191,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
     ingest_route_policy_command = [sys.executable, "scripts/lint_ingest_route_policy.py", "--json"]
     if os.environ.get("CI"):
         ingest_route_policy_command.append("--skip-local-claude-skill")
-    checks = {
+    all_checks = {
         "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env),
         "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
         "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
@@ -239,6 +245,17 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/url_intake_fast_path_smoke.py", "--json"],
             env=env,
         ),
+        "discord-url-measure smoke": lambda: run_command(
+            "discord-url-measure smoke",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/test_discord_url_measure.py",
+                "-q",
+            ],
+            env=env,
+        ),
         "SSOT projection": lambda: run_command(
             "SSOT projection",
             [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
@@ -268,6 +285,23 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
+    if args.profile == "fast":
+        checks = {
+            name: all_checks[name]
+            for name in (
+                "compile",
+                "差分チェック",
+                "秘密情報スキャン",
+                "boundary logic",
+                "url-intake-fast-path smoke",
+                "discord-url-measure smoke",
+                "ローカルスモーク",
+            )
+        }
+    else:
+        checks = dict(all_checks)
+    if args.profile == "release":
+        args.gh = True
     if args.gh:
         gh_command = [sys.executable, "scripts/gh_guard.py"]
         if args.gh_switch:
