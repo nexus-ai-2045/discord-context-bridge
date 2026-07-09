@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -20,6 +19,7 @@ if str(SRC) not in sys.path:
 from discord_context_bridge import (  # noqa: E402
     DEFAULT_REST_BACKFILL_MANIFEST,
     DEFAULT_REST_BACKFILL_RAW_OUTPUT,
+    load_bot_token_from_provider,
     plan_discord_url_read,
     rest_backfill_config_safety,
     write_rest_backfill_capture,
@@ -62,6 +62,7 @@ def blocked_payload(reason: str, *, retry_after: float | None = None) -> dict[st
             "retryable": reason == "rate_limited_retryable",
         },
         "token_output": "omitted",
+        "token_provider": "omitted",
         "cookie_output": "omitted",
         "raw_text_returned": False,
         "participant_names_returned": False,
@@ -163,14 +164,16 @@ def main(argv: list[str] | None = None) -> int:
         messages = read_fixture_messages(args.fixture_input)
         warnings.append("fixture_input_used")
     else:
-        token = os.environ.get("DISCORD_" + "BOT_TOKEN", "").strip()
-        if not token:
-            print(_json(blocked_payload("bot_token_missing")))
+        token_result = load_bot_token_from_provider()
+        if not token_result.ok:
+            payload = blocked_payload(token_result.failure_stage or "bot_token_missing")
+            payload["credential_provider"] = token_result.public_status()
+            print(_json(payload))
             return 2
         channel_id = str(route.get("message_or_thread_id") or route.get("channel_id") or "")
         messages, blocked = fetch_discord_messages(
             channel_id=channel_id,
-            token=token,
+            token=token_result.token,
             limit=args.limit,
             page_size=args.page_size,
             sleep_seconds=args.sleep_seconds,
@@ -197,6 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     payload["schema"] = "discord_rest_backfill.v1"
     payload["route"] = "rest_backfill"
     payload["token_output"] = "omitted"
+    payload["credential_provider"] = token_result.public_status() if not args.fixture_input else {
+        "schema": "discord_bot_token_provider.v1",
+        "ok": True,
+        "provider": "fixture",
+        "token_set": False,
+        "value_returned": False,
+        "token_output": "omitted",
+        "command_output": "omitted",
+    }
     print(_json(payload))
     return 0 if payload["ok"] else 2
 
