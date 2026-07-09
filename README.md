@@ -107,7 +107,6 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 
 今の最優先は次です。
 
-- `ops_check` を fast / full に分け、通常開発の確認を速くする。
 - Discordで対象を見つけた後の `message found -> bridge intake` 導線を短くする。
 - append-only snapshot ledger、coverage、context passport、reply guide を一続きにする。
 - `core.py` と `test_core.py` を責務別に分け、速度と保守性を上げる。
@@ -126,7 +125,8 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 ## 運用チェック
 
 ```bash
-python3 scripts/ops_check.py
+python3 scripts/ops_check.py --profile fast
+python3 scripts/ops_check.py --profile full
 python3 scripts/repo_goal_status.py --run-smoke --json
 python3 scripts/bump_version.py --check
 ```
