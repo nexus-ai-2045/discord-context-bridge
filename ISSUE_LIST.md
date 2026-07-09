@@ -15,23 +15,26 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
-| repo sync | ok | `main...origin/main`, ahead/behind `0 0` |
-| open PR | ok | open PR `[]` |
-| residual dashboard | ok | `repo_goal_status.py --run-smoke --json` が `state=done`, `residual_count=0` |
-| full tests | ok | `python -m pytest tests -q --durations=20`: `274 passed` |
-| ops check | ok | `python scripts/ops_check.py --profile fast --skip-http` と `--profile full --skip-http` を分離 |
-| fastest blocker | improved | 通常開発は fast profile、PR/closeout は full/release profile を使う |
+| repo sync | ok | `main...origin/main`, ahead/behind `0 0`（作業中 commit がある場合はその commit を正とする） |
+| open PR | ok | open PR `[]`（2026-07-09 実測） |
+| residual dashboard | ok | `repo_goal_status.py` が `state=done`, `residual_count=0` |
+| full tests | ok | `python -m pytest tests -q`: **308 passed**（2026-07-09 実測） |
+| ops check | ok | `ops_check.py --profile fast --skip-http` 約 1.05s green。通常開発は fast、PR/closeout は full/release |
+| runtime skill sync | ok | `export_runtime_skills.py` 後、Claude / Codex / Grok へ配置。`lint_runtime_skill_sync.py` overall=ok、`ssot_commit` = HEAD |
 | local WIP | parked | cache backfill 試作は stash に退避中。active roadmap にはまだ入れない |
+
+注: `repo_goal_status` の residual zero は「現在実装の安全状態」であり、本ファイルの active TODO 完了ではない。
 
 ## P0: 表に出ている問題
 
 | ID | 状態 | TODO | 完了条件 | 検証 |
 |---|---|---|---|---|
-| P0-1 | active | README / ROADMAP / 旧closeout docs の残務表現を揃える | README の残TODO、ROADMAP、過去closeout文書が「現在のactive TODOは ISSUE_LIST」と読める | `rg "残TODO|残務|次MVP"` で矛盾が増えていない |
+| P0-1 | improved | README / ROADMAP / 旧closeout docs の残務表現を揃える | README の残TODO、ROADMAP、過去closeout文書が「現在のactive TODOは ISSUE_LIST」と読める | README は pointer 済み。旧 chat-context に historical banner を追加。細部は P2-4 継続 |
 | P0-2 | done | full smoke を現実的に速くする | fast gate と full gate を分け、通常開発では fast gate が5秒以内、full gate が20秒以内 | `ops_check.py --profile fast|full` が green |
 | P0-3 | active | message found -> bridge intake を一本化する | URL / visible text / safe label から、snapshot 保存、coverage、context passport、reply guide までの最短コマンドが1つに見える | fixture と CLI smoke |
 | P0-4 | active | append-only snapshot ledger を active docs に反映する | snapshot は重複でも観測eventとして追記し、latest report は projection だと ROADMAP / README から分かる | `snapshot_visible_text` tests と report docs |
-| P0-5 | active | stale closeout の「残務0」を誤読させない | `docs/2026-07-01-*` は historical closeout と明示され、active TODO と混ざらない | docs grep |
+| P0-5 | improved | stale closeout の「残務0」を誤読させない | `docs/2026-07-01-*` / 旧 chat-context は historical と明示され、active TODO と混ざらない | 2026-07-01 系は banner 済み。2026-07-08 chat-context に historical banner 追加 |
+| P0-6 | done | runtime skill を SSOT HEAD と同期する | dist 生成物と Claude/Codex/Grok local skill が同一 checksum / ssot_commit | `lint_runtime_skill_sync.py` overall=ok |
 
 ## P1: 高速化と品質
 
@@ -62,8 +65,8 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 
 ## すぐ直す順序
 
-1. P0-1 / P0-5: TODO正本と古いcloseoutのズレを潰す。
-2. P0-3 / P1-3: message found -> bridge intake の最短導線を作る。
+1. P0-3 / P1-3: message found -> bridge intake の最短導線を作る。
+2. P0-4: append-only ledger を active docs に反映する。
 3. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
 4. P3-1: live rehearsal は人間承認と実チャンネル準備後に別実行する。
 

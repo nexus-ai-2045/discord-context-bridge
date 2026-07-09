@@ -104,6 +104,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 ## 残TODO
 
 active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れは [ROADMAP.md](ROADMAP.md) にあります。
+`docs/chat-context-*.md` や `docs/2026-07-01-*` は履歴証跡です。そこに書かれた「残務0」や open PR 数を現在状態として読まないでください。
 
 今の最優先は次です。
 
@@ -129,6 +130,19 @@ python3 scripts/ops_check.py --profile fast
 python3 scripts/ops_check.py --profile full
 python3 scripts/repo_goal_status.py --run-smoke --json
 python3 scripts/bump_version.py --check
+```
+
+runtime skill を更新したあと（または closeout 前）は、SSOT から再生成して local skill と揃えます。
+
+```bash
+python3 scripts/export_runtime_skills.py --json
+# 生成物: dist/skills/<runtime>/SKILL.md を各 runtime の skills/discord-context-bridge/ へ配置
+python3 scripts/verify_ssot_projection.py --json
+python3 scripts/lint_runtime_skill_sync.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --target codex="$HOME/.codex/skills/discord-context-bridge/SKILL.md" \
+  --target grok="$HOME/.grok/skills/discord-context-bridge/SKILL.md" \
+  --json
 ```
 
 PR前には次も確認します。
