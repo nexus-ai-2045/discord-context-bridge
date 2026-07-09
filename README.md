@@ -10,6 +10,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 
 | やりたいこと | 入口 |
 |---|---|
+| **見つけた対象を一気に取り込む（推奨）** | **`bridge-intake`** |
 | 可視テキストを取り込む | `import-visible-text` |
 | Bot REST API で履歴を private 保存する | `python scripts/discord_rest_backfill.py --url ... --json` |
 | 文脈を整理する | `context-passport` |
@@ -32,6 +33,18 @@ flowchart LR
 
   bridge -. "出さない" .-> raw["raw本文 / token / 実ID / 参加者名"]
   stage -. "しない" .-> send["自動送信 / reaction / edit / delete"]
+```
+
+message found 後の最短入口は `bridge-intake` です。URL と可視テキストを渡すと、snapshot 保存 → coverage → context passport →（任意）guide-reply までを 1 コマンドで進めます。stdout は metadata-only です。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  bridge-intake \
+  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
+  --input /path/to/visible-discord-text.txt \
+  --draft "まず前提を確認してから返事します。" \
+  --understanding-confirmed \
+  --json
 ```
 
 ```bash
@@ -108,8 +121,8 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 
 今の最優先は次です。
 
-- Discordで対象を見つけた後の `message found -> bridge intake` 導線を短くする。
-- append-only snapshot ledger、coverage、context passport、reply guide を一続きにする。
+- `bridge-intake` の運用定着と parser quality 指標（P1-3）。
+- append-only snapshot ledger を active docs にさらに明示する（P0-4）。
 - `core.py` と `test_core.py` を責務別に分け、速度と保守性を上げる。
 - テスト用チャンネルでの人間送信 rehearsal は、人間承認と実ログ準備後に別実行する。
 
