@@ -2111,6 +2111,35 @@ def test_ops_check_includes_report_latest_smoke():
     assert "report-latest smoke" in checks
     assert "report-latest schema" in checks
     assert "文脈運用モード smoke" in checks
+    assert "discord-url-measure smoke" in checks
+
+
+def test_ops_check_fast_profile_uses_small_development_gate():
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    args = ops_check.parse_args(["--profile", "fast"])
+
+    checks = ops_check.build_checks(args)
+
+    assert set(checks) == {
+        "compile",
+        "差分チェック",
+        "秘密情報スキャン",
+        "boundary logic",
+        "url-intake-fast-path smoke",
+        "discord-url-measure smoke",
+        "ローカルスモーク",
+    }
+    assert "テスト" not in checks
+    assert "status dashboard" not in checks
+
+
+def test_ops_check_release_profile_enables_github_guard():
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    args = ops_check.parse_args(["--profile", "release"])
+
+    checks = ops_check.build_checks(args)
+
+    assert "GitHub account確認" in checks
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):

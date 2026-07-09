@@ -1,6 +1,6 @@
 # Discord Context Bridge active TODO
 
-Updated: 2026-07-07
+Updated: 2026-07-09
 
 このファイルを、リポジトリ内の active TODO 正本にする。
 過去の `docs/chat-context-*.md` と `docs/2026-07-01-*` は履歴証跡であり、現在の残務判断ではこのファイルと `ROADMAP.md` を優先する。
@@ -19,8 +19,8 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 | open PR | ok | open PR `[]` |
 | residual dashboard | ok | `repo_goal_status.py --run-smoke --json` が `state=done`, `residual_count=0` |
 | full tests | ok | `python -m pytest tests -q --durations=20`: `274 passed` |
-| ops check | ok but slow | `python scripts/ops_check.py --skip-http`: 約16-17秒 |
-| fastest blocker | active | ROADMAP の full smoke 10秒目標に実測が届いていない |
+| ops check | ok | `python scripts/ops_check.py --profile fast --skip-http` と `--profile full --skip-http` を分離 |
+| fastest blocker | improved | 通常開発は fast profile、PR/closeout は full/release profile を使う |
 | local WIP | parked | cache backfill 試作は stash に退避中。active roadmap にはまだ入れない |
 
 ## P0: 表に出ている問題
@@ -28,7 +28,7 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 | ID | 状態 | TODO | 完了条件 | 検証 |
 |---|---|---|---|---|
 | P0-1 | active | README / ROADMAP / 旧closeout docs の残務表現を揃える | README の残TODO、ROADMAP、過去closeout文書が「現在のactive TODOは ISSUE_LIST」と読める | `rg "残TODO|残務|次MVP"` で矛盾が増えていない |
-| P0-2 | active | full smoke を現実的に速くする | fast gate と full gate を分け、通常開発では fast gate が5秒以内、full gate が20秒以内 | `ops_check.py --profile fast|full` または同等の分割が green |
+| P0-2 | done | full smoke を現実的に速くする | fast gate と full gate を分け、通常開発では fast gate が5秒以内、full gate が20秒以内 | `ops_check.py --profile fast|full` が green |
 | P0-3 | active | message found -> bridge intake を一本化する | URL / visible text / safe label から、snapshot 保存、coverage、context passport、reply guide までの最短コマンドが1つに見える | fixture と CLI smoke |
 | P0-4 | active | append-only snapshot ledger を active docs に反映する | snapshot は重複でも観測eventとして追記し、latest report は projection だと ROADMAP / README から分かる | `snapshot_visible_text` tests と report docs |
 | P0-5 | active | stale closeout の「残務0」を誤読させない | `docs/2026-07-01-*` は historical closeout と明示され、active TODO と混ざらない | docs grep |
@@ -37,7 +37,7 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 
 | ID | 状態 | TODO | 完了条件 | 検証 |
 |---|---|---|---|---|
-| P1-1 | active | `ops_check.py` に profile を入れる | `fast`: compile / diff / boundary / targeted tests / smoke、`full`: 全pytest / dashboard / projection を分離 | fast は5秒以内目標、full は20秒以内目標 |
+| P1-1 | done | `ops_check.py` に profile を入れる | `fast`: compile / diff / boundary / targeted tests / smoke、`full`: 全pytest / dashboard / projection を分離 | fast / full / release profile を実装 |
 | P1-2 | active | slow tests を短縮する | `test_discord_inventory_dashboard_omits_sensitive_values` など上位slow testsの待ち時間をfixture化・分離 | `pytest --durations=20` の最上位が1秒台以下 |
 | P1-3 | active | context parser quality を測る | `context-passport` / `guide-reply` の必須field充足率を fixture で測る | metadata-only quality report |
 | P1-4 | active | cache再利用率を測る | target_key一致時に再parse回避率が出る | `cache_reuse_rate` metadata |
@@ -63,10 +63,9 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 ## すぐ直す順序
 
 1. P0-1 / P0-5: TODO正本と古いcloseoutのズレを潰す。
-2. P0-2 / P1-1: `ops_check` を fast/full に分ける。
-3. P0-3 / P1-3: message found -> bridge intake の最短導線を作る。
-4. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
-5. P3-1: live rehearsal は人間承認と実チャンネル準備後に別実行する。
+2. P0-3 / P1-3: message found -> bridge intake の最短導線を作る。
+3. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
+4. P3-1: live rehearsal は人間承認と実チャンネル準備後に別実行する。
 
 ## Stopline
 

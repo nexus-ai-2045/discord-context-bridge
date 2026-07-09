@@ -1,13 +1,13 @@
 # Tech Debt Audit - Discord Context Bridge
 
-Generated: 2026-07-07
+Generated: 2026-07-09
 
 ## Executive Summary
 
 - The largest risk is not broken tests; it is stale planning language. Older closeout docs say residual zero while current roadmap still has active speed, intake, parser, and rehearsal work.
 - `src/discord_context_bridge/core.py:489` through `src/discord_context_bridge/core.py:2840` carries too many product surfaces in one module.
 - `tests/test_core.py:1854` and nearby large test clusters make the test suite slow and hard to localize.
-- `ops_check.py` is green but too slow for the user's desired loop. Current full run is about 16-17 seconds, while older roadmap text targeted 10 seconds.
+- `ops_check.py` now has fast/full/release profiles; the remaining speed work is measuring the actual intake/cache/parser path and shrinking slow tests.
 - Product goal is correct but needs a sharper operating split: residual-zero safety proof is not the same as roadmap completion.
 - Security boundary is mostly strong: scans and tests preserve metadata-only output, but local-private cache/backfill ideas must stay out of public artifacts until sanitized.
 
@@ -23,7 +23,7 @@ The implementation is currently concentrated in a Python package with a large `c
 |---|---|---:|---|---|---|---|
 | F001 | Documentation drift | `docs/2026-07-01-impact-todo.md:48` | High | S | Historical closeout says roadmap residual is 0, but current active roadmap still has M1/M2/M3 work. | Mark historical closeout docs as superseded and keep active TODO in `ISSUE_LIST.md`. |
 | F002 | Documentation drift | `README.md:103` | High | S | README residual TODO focused on send rehearsal only, omitting the faster intake and speed work the user currently needs. | Point README to `ISSUE_LIST.md` and name the current P0s. |
-| F003 | Performance | `scripts/ops_check.py:290` | High | M | `ops_check` has one main full bundle; current full run is about 16-17 seconds, too slow for the desired loop. | Add profiles: `fast`, `full`, `release`, with fast avoiding full pytest/dashboard. |
+| F003 | Performance | `scripts/ops_check.py:290` | Done | M | `ops_check` now separates fast, full, and release profiles. | Keep fast as the normal development gate and continue measuring full-profile cost. |
 | F004 | Test performance | `tests/test_live_mvp_status_scripts.py:753` | Medium | M | The slowest test takes about 3.3 seconds by itself. | Replace real subprocess/sleep-heavy paths with tighter fixtures or mark as full-profile only. |
 | F005 | Architecture | `src/discord_context_bridge/core.py:489` | High | L | URL intake logic lives in the same module as snapshot, context, review, and send closeout logic. | Split into `intake.py`, `snapshot_ledger.py`, `context.py`, `send_closeout.py`, keeping exports stable. |
 | F006 | Architecture | `src/discord_context_bridge/core.py:1289` | High | M | Snapshot ledger is now important enough to deserve its own module and tests. | Move append-only observation event logic out of `core.py`. |
@@ -39,16 +39,16 @@ The implementation is currently concentrated in a Python package with a large `c
 
 ## Top 5 If You Fix Nothing Else
 
-1. Add `ops_check --profile fast` and make it the normal development loop.
+1. Build the M1 "message found -> bridge intake" command path before doing more live-adapter work.
 2. Split `core.py` by responsibility while preserving public exports.
 3. Split `test_core.py` by feature so slow and failing areas are obvious.
 4. Keep `ISSUE_LIST.md` as the active TODO source and mark historical closeout files as history.
-5. Build the M1 "message found -> bridge intake" command path before doing more live-adapter work.
+5. Add timing budget output for fast/full gates after the profiles settle.
 
 ## Quick Wins
 
-- [ ] Add `--profile fast` to `scripts/ops_check.py`.
-- [ ] Move dashboard-heavy checks out of the fast profile.
+- [x] Add `--profile fast` to `scripts/ops_check.py`.
+- [x] Move dashboard-heavy checks out of the fast profile.
 - [ ] Add a timing budget summary to `ops_check`.
 - [ ] Split the first snapshot ledger tests out of `tests/test_core.py`.
 - [ ] Keep README residual TODO linked to `ISSUE_LIST.md`.
