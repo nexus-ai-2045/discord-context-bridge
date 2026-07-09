@@ -32,7 +32,7 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 | P0-1 | improved | README / ROADMAP / 旧closeout docs の残務表現を揃える | README の残TODO、ROADMAP、過去closeout文書が「現在のactive TODOは ISSUE_LIST」と読める | README は pointer 済み。旧 chat-context に historical banner を追加。細部は P2-4 継続 |
 | P0-2 | done | full smoke を現実的に速くする | fast gate と full gate を分け、通常開発では fast gate が5秒以内、full gate が20秒以内 | `ops_check.py --profile fast|full` が green |
 | P0-3 | done | message found -> bridge intake を一本化する | URL / visible text / safe label から、snapshot 保存、coverage、context passport、reply guide までの最短コマンドが1つに見える | `bridge-intake` CLI + `build_bridge_intake` + tests |
-| P0-4 | active | append-only snapshot ledger を active docs に反映する | snapshot は重複でも観測eventとして追記し、latest report は projection だと ROADMAP / README から分かる | `snapshot_visible_text` tests と report docs |
+| P0-4 | done | append-only snapshot ledger を active docs に反映する | snapshot は重複でも観測eventとして追記し、latest report は projection だと ROADMAP / README から分かる | README「保存モデル」+ ROADMAP M1b + report-latest / operating-contract 参照 |
 | P0-5 | improved | stale closeout の「残務0」を誤読させない | `docs/2026-07-01-*` / 旧 chat-context は historical と明示され、active TODO と混ざらない | 2026-07-01 系は banner 済み。2026-07-08 chat-context に historical banner 追加 |
 | P0-6 | done | runtime skill を SSOT HEAD と同期する | dist 生成物と Claude/Codex/Grok local skill が同一 checksum / ssot_commit | `lint_runtime_skill_sync.py` overall=ok |
 
@@ -65,9 +65,9 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 
 ## すぐ直す順序
 
-1. P0-4: append-only ledger を active docs に反映する。
-2. P1-3: context parser quality を fixture で測る。
-3. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
+1. P1-3: context parser quality を fixture で測る。
+2. P2-1 / P2-2: `core.py` と `test_core.py` を分割し、速度と見通しを上げる。
+3. P1-2 / P1-4: slow tests 短縮と cache reuse 測定。
 4. P3-1: live rehearsal は人間承認と実チャンネル準備後に別実行する。
 
 ## Stopline

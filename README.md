@@ -114,6 +114,25 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 詳しい手順は [docs/discord-send-operation-runbook.md](docs/discord-send-operation-runbook.md) を見てください。
 
+## 保存モデル（append-only ledger）
+
+履歴の正本は **append-only の観測台帳** です。最新レポートは正本ではなく projection です。
+
+| 層 | 役割 | 例 |
+|---|---|---|
+| **ledger（正本）** | 可視テキストを読んだ観測を、重複でも 1 行ずつ追記する | private な `text-snapshots.ndjson` |
+| **projection（派生）** | 台帳から「今見るべき最新状態」を組み立てる | `report-latest` / `coverage-report` |
+| **digest（派生）** | 人が読む文脈・返信ガイド | `context-passport` / `guide-reply` / `bridge-intake` の metadata |
+
+運用ルール:
+
+- 同じ本文を再取得しても **保存を止めない**。差分は `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
+- 各行は immutable event。訂正は既存行の上書きではなく、新しい observation として追記する。
+- target 単位の順序は `stream_id` + `stream_sequence`。改ざん検知用に `previous_event_hash` / `event_hash` がある（外部公開証明ではない）。
+- `report-latest` は live Discord を読まない。保存済み ledger だけを読む。
+
+詳細は [docs/operating-contract.md](docs/operating-contract.md) と [docs/report-latest-architecture-context.md](docs/report-latest-architecture-context.md) を参照。
+
 ## 残TODO
 
 active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れは [ROADMAP.md](ROADMAP.md) にあります。
@@ -122,7 +141,6 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 今の最優先は次です。
 
 - `bridge-intake` の運用定着と parser quality 指標（P1-3）。
-- append-only snapshot ledger を active docs にさらに明示する（P0-4）。
 - `core.py` と `test_core.py` を責務別に分け、速度と保守性を上げる。
 - テスト用チャンネルでの人間送信 rehearsal は、人間承認と実ログ準備後に別実行する。
 
