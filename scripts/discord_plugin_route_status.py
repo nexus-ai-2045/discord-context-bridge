@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +17,8 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
     preflight = discord_bot_route_preflight.build_preflight(channel_dir)
     access = preflight["access"]
     bot_ready = bool(preflight["ok"])
-    env_token_set = bool(os.environ.get("DISCORD_" + "BOT_TOKEN", "").strip())
-    bot_token_set = bool(preflight["bot_token"]["set"] or env_token_set)
+    bot_token_set = bool(preflight["bot_token"]["set"])
+    token_provider = str(preflight["bot_token"].get("provider") or "missing")
     control_plane_ready = bot_token_set and bool(access.get("readable", True))
 
     return {
@@ -32,7 +31,9 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "role": "bot token 設定の入口",
                 "status": "configured" if bot_token_set else "needs_token",
                 "token_set": bot_token_set,
+                "provider": token_provider,
                 "token_output": "omitted",
+                "command_output": "omitted",
                 "mutation": "disabled",
             },
             "discord_access": {
@@ -50,8 +51,10 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "route_class": "main",
                 "role": "Bot REST API で履歴を read-only backfill する主経路",
                 "status": "ready" if bot_token_set else "blocked",
-                "next": "run_discord_rest_backfill" if bot_token_set else "set_bot_token_env_or_channel_env",
+                "next": "run_discord_rest_backfill" if bot_token_set else "set_bot_token_env_or_secret_command",
+                "provider": token_provider,
                 "token_output": "omitted",
+                "command_output": "omitted",
                 "raw_text_output": "omitted",
                 "outbound_actions": "disabled",
                 "send_capability": "disabled_by_policy",

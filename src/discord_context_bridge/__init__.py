@@ -60,6 +60,13 @@ from .core import (
     write_attachment_ocr_log,
     write_rest_backfill_capture,
 )
+from .credentials import (
+    BOT_TOKEN_ENV,
+    TOKEN_COMMAND_ENV,
+    BotTokenLoadResult,
+    configured_bot_token_provider,
+    load_bot_token_from_provider,
+)
 
 __all__ = [
     "DisabledCapability",
@@ -122,4 +129,9 @@ __all__ = [
     "verify_chrome_extension_fill_only_dry_run",
     "write_attachment_ocr_log",
     "write_rest_backfill_capture",
+    "BOT_TOKEN_ENV",
+    "TOKEN_COMMAND_ENV",
+    "BotTokenLoadResult",
+    "configured_bot_token_provider",
+    "load_bot_token_from_provider",
 ]
