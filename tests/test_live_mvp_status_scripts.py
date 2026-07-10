@@ -1254,6 +1254,8 @@ def test_gh_pr_read_can_switch_before_view(monkeypatch):
     assert payload["ok"] is True
     assert payload["pr"]["number"] == 4
     assert [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only", "--json"] in calls
+
+
 def test_discord_inventory_dashboard_uses_upstream_for_feature_branch_sync(monkeypatch):
     class Completed:
         def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
