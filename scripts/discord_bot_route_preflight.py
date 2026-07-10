@@ -4,8 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from discord_context_bridge import configured_bot_token_provider  # noqa: E402
 
 
 DEFAULT_CHANNEL_DIR = Path.home() / ".claude" / "channels" / "discord"
@@ -65,11 +73,14 @@ def read_access_status(access_path: Path) -> dict[str, Any]:
 
 def build_preflight(channel_dir: Path) -> dict[str, Any]:
     env_status = read_env_status(channel_dir / ".env")
+    provider_status = configured_bot_token_provider()
     access_status = read_access_status(channel_dir / "access.json")
     blockers: list[str] = []
     warnings: list[str] = []
+    token_configured = bool(env_status["token_set"] or provider_status["token_set"])
+    provider = "channel_env" if env_status["token_set"] else provider_status["provider"]
 
-    if not env_status["token_set"]:
+    if not token_configured:
         blockers.append("bot_token_missing")
     if not access_status.get("readable", True):
         blockers.append("access_json_invalid")
@@ -83,9 +94,13 @@ def build_preflight(channel_dir: Path) -> dict[str, Any]:
         "ok": not blockers,
         "route": "discord_bot_channel",
         "bot_token": {
-            "set": env_status["token_set"],
+            "set": token_configured,
+            "provider": provider,
             "value_returned": False,
+            "token_output": "omitted",
+            "command_output": "omitted",
         },
+        "credential_provider": provider_status,
         "access": access_status,
         "blockers": blockers,
         "warnings": warnings,

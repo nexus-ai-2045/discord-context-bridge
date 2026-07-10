@@ -10,6 +10,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 
 | やりたいこと | 入口 |
 |---|---|
+| **見つけた対象を一気に取り込む（推奨）** | **`bridge-intake`** |
 | 可視テキストを取り込む | `import-visible-text` |
 | Bot REST API で履歴を private 保存する | `python scripts/discord_rest_backfill.py --url ... --json` |
 | 文脈を整理する | `context-passport` |
@@ -32,6 +33,18 @@ flowchart LR
 
   bridge -. "出さない" .-> raw["raw本文 / token / 実ID / 参加者名"]
   stage -. "しない" .-> send["自動送信 / reaction / edit / delete"]
+```
+
+message found 後の最短入口は `bridge-intake` です。URL と可視テキストを渡すと、snapshot 保存 → coverage → context passport →（任意）guide-reply までを 1 コマンドで進めます。stdout は metadata-only です。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  bridge-intake \
+  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
+  --input /path/to/visible-discord-text.txt \
+  --draft "まず前提を確認してから返事します。" \
+  --understanding-confirmed \
+  --json
 ```
 
 ```bash
@@ -101,15 +114,33 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 詳しい手順は [docs/discord-send-operation-runbook.md](docs/discord-send-operation-runbook.md) を見てください。
 
+## 保存モデル（append-only ledger）
+
+履歴の正本は **append-only の観測台帳** です。最新レポートは正本ではなく projection です。
+
+| 層 | 役割 | 例 |
+|---|---|---|
+| **ledger（正本）** | 可視テキストを読んだ観測を、重複でも 1 行ずつ追記する | private な `text-snapshots.ndjson` |
+| **projection（派生）** | 台帳から「今見るべき最新状態」を組み立てる | `report-latest` / `coverage-report` |
+| **digest（派生）** | 人が読む文脈・返信ガイド | `context-passport` / `guide-reply` / `bridge-intake` の metadata |
+
+運用ルール:
+
+- 同じ本文を再取得しても **保存を止めない**。差分は `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
+- 各行は immutable event。訂正は既存行の上書きではなく、新しい observation として追記する。
+- target 単位の順序は `stream_id` + `stream_sequence`。改ざん検知用に `previous_event_hash` / `event_hash` がある（外部公開証明ではない）。
+- `report-latest` は live Discord を読まない。保存済み ledger だけを読む。
+
+詳細は [docs/operating-contract.md](docs/operating-contract.md) と [docs/report-latest-architecture-context.md](docs/report-latest-architecture-context.md) を参照。
+
 ## 残TODO
 
 active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れは [ROADMAP.md](ROADMAP.md) にあります。
+`docs/chat-context-*.md` や `docs/2026-07-01-*` は履歴証跡です。そこに書かれた「残務0」や open PR 数を現在状態として読まないでください。
 
 今の最優先は次です。
 
-- `ops_check` を fast / full に分け、通常開発の確認を速くする。
-- Discordで対象を見つけた後の `message found -> bridge intake` 導線を短くする。
-- append-only snapshot ledger、coverage、context passport、reply guide を一続きにする。
+- `bridge-intake` の運用定着と parser quality 指標（P1-3）。
 - `core.py` と `test_core.py` を責務別に分け、速度と保守性を上げる。
 - テスト用チャンネルでの人間送信 rehearsal は、人間承認と実ログ準備後に別実行する。
 
@@ -126,15 +157,30 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 ## 運用チェック
 
 ```bash
-python3 scripts/ops_check.py
+python3 scripts/ops_check.py --profile fast
+python3 scripts/ops_check.py --profile full
 python3 scripts/repo_goal_status.py --run-smoke --json
 python3 scripts/bump_version.py --check
+```
+
+runtime skill を更新したあと（または closeout 前）は、SSOT から再生成して local skill と揃えます。
+
+```bash
+python3 scripts/export_runtime_skills.py --json
+# 生成物: dist/skills/<runtime>/SKILL.md を各 runtime の skills/discord-context-bridge/ へ配置
+python3 scripts/verify_ssot_projection.py --json
+python3 scripts/lint_runtime_skill_sync.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --target codex="$HOME/.codex/skills/discord-context-bridge/SKILL.md" \
+  --target grok="$HOME/.grok/skills/discord-context-bridge/SKILL.md" \
+  --json
 ```
 
 PR前には次も確認します。
 
 ```bash
 python3 scripts/gh_guard.py --json
+python3 scripts/gh_pr_read.py --switch list
 python3 scripts/pr_readiness_preflight.py --fetch --gh-switch --json
 python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json
 python3 scripts/boundary_logic_check.py --json

@@ -555,6 +555,215 @@ def build_url_intake_fast_path(
     }
 
 
+def _bridge_intake_passport_summary(passport: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "built": True,
+        "parsed": int(passport.get("parsed") or 0),
+        "thread_purpose": str(passport.get("thread_purpose") or ""),
+        "people_temperature": str(passport.get("people_temperature") or ""),
+        "context_ready": bool(passport.get("context_ready")),
+        "external_context_used": bool(passport.get("external_context_used")),
+        "send_capability": "disabled",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+    }
+
+
+def _bridge_intake_guide_summary(guide: dict[str, Any]) -> dict[str, Any]:
+    review = dict(guide.get("reply_review") or {})
+    missing = review.get("missing_knowledge") or []
+    understanding = dict(review.get("understanding_gate") or {})
+    return {
+        "built": True,
+        "parsed": int(guide.get("parsed") or 0),
+        "quick_verdict": str(review.get("quick_verdict") or ""),
+        "ok_to_reply": str(review.get("ok_to_reply") or ""),
+        "understanding_gate_status": str(understanding.get("status") or ""),
+        "missing_knowledge_count": len(missing) if isinstance(missing, list) else int(bool(missing)),
+        "send_capability": "disabled",
+        "raw_text_returned": False,
+        "draft_text_returned": False,
+    }
+
+
+def build_bridge_intake(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    raw_cache_path: Path | None = None,
+    text: str = "",
+    draft: str = "",
+    understanding_confirmed: bool = False,
+    title: str = "",
+    source: str = "bridge_intake",
+    target_key: str = "",
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Message-found -> bridge intake の一本化入口。
+
+    snapshot 保存、coverage、context passport、任意で guide-reply までを
+    1 回の呼び出しで進め、stdout 向けには metadata-only を返す。
+    """
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    steps_completed: list[str] = []
+    content = text.strip()
+    snapshot_meta: dict[str, Any] = {
+        "saved": False,
+        "changed": False,
+        "duplicate_content": False,
+        "target_key": key,
+        "content_hash": "",
+        "raw_text_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+    if content:
+        snapshot_payload = snapshot_visible_text(
+            text=content,
+            url=url,
+            title=title,
+            source=source,
+            path=snapshot_store,
+        )
+        steps_completed.append("snapshot")
+        snapshot_meta = {
+            "saved": bool(snapshot_payload.get("saved")),
+            "changed": bool(snapshot_payload.get("changed")),
+            "duplicate_content": bool(snapshot_payload.get("duplicate_content")),
+            "target_key": str(snapshot_payload.get("target_key") or key),
+            "content_hash": str(snapshot_payload.get("content_hash") or ""),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+        key = str(snapshot_payload.get("target_key") or key)
+
+    coverage = build_coverage_report(
+        url=url,
+        target_key=key,
+        raw_cache_path=raw_cache_path,
+        ai_log_path=snapshot_store,
+        source_kind="saved_log",
+        generated_at=generated,
+    )
+    steps_completed.append("coverage")
+
+    latest = select_latest_snapshot(path=snapshot_store, target_key=key, url=url)
+    saved_text = str((latest or {}).get("text") or "").strip()
+    latest_report = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
+
+    payload: dict[str, Any] = {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_intake.v1",
+        "generated_at": generated,
+        "message": "message found -> bridge intake を実行しました。",
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": analyze_discord_forum_url_shape(url),
+        "pipeline": {
+            "requested": ["snapshot", "coverage", "context_passport", "guide_reply"],
+            "completed": steps_completed,
+            "draft_requested": bool(draft.strip()),
+        },
+        "snapshot": snapshot_meta,
+        "coverage": {
+            "exact_coverage": bool(coverage.get("coverage", {}).get("exact_coverage")),
+            "snapshot_status": str(coverage.get("snapshot_status") or ""),
+            "recency": dict(coverage.get("recency") or {}),
+            "stale_policy": dict(coverage.get("stale_policy") or {}),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+        },
+        "latest_snapshot_report": {
+            "ok": bool(latest_report.get("ok")),
+            "reason": str(latest_report.get("reason") or ""),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+        },
+        "context_passport": {
+            "built": False,
+            "raw_text_returned": False,
+        },
+        "guide_reply": {
+            "built": False,
+            "skipped": not bool(draft.strip()),
+            "raw_text_returned": False,
+            "draft_text_returned": False,
+        },
+        "decision": "need_visible_text",
+        "next_step": "ask_for_visible_text_or_paste",
+        "recommended_command": "snapshot-discord-url-text",
+        "blocked_reason": "snapshot_missing",
+        "route_failure": "snapshot_missing",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "paths_output": "omitted",
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+    }
+
+    if not saved_text:
+        payload["message"] = "保存済み snapshot が無いため bridge intake を完了できません。"
+        payload["pipeline"]["completed"] = steps_completed
+        return payload
+
+    passport = context_passport_from_text(
+        saved_text,
+        guild_label=guild_label,
+        channel_label=channel_label,
+    )
+    steps_completed.append("context_passport")
+    payload["context_passport"] = _bridge_intake_passport_summary(passport)
+    payload["pipeline"]["completed"] = list(steps_completed)
+    payload["blocked_reason"] = ""
+    payload["route_failure"] = "none"
+    payload["decision"] = "passport_ready"
+    payload["next_step"] = "review_context_then_optional_guide_reply"
+    payload["recommended_command"] = "guide-reply"
+    payload["message"] = "snapshot / coverage / context passport まで完了しました。"
+
+    if not draft.strip():
+        return payload
+
+    guide = guide_reply_from_text(
+        saved_text,
+        draft,
+        guild_label=guild_label,
+        channel_label=channel_label,
+        understanding_confirmed=understanding_confirmed,
+    )
+    steps_completed.append("guide_reply")
+    payload["pipeline"]["completed"] = list(steps_completed)
+    payload["guide_reply"] = _bridge_intake_guide_summary(guide)
+    payload["guide_reply"]["skipped"] = False
+
+    verdict = str(payload["guide_reply"].get("quick_verdict") or "")
+    if verdict == "understanding-blocked":
+        payload["decision"] = "understanding_blocked"
+        payload["next_step"] = "confirm_understanding_then_retry_with_draft"
+        payload["recommended_command"] = "bridge-intake"
+        payload["blocked_reason"] = "understanding_not_confirmed"
+        payload["route_failure"] = "understanding_not_confirmed"
+        payload["message"] = "passport は完了。guide は文脈理解確認待ちです。"
+        return payload
+
+    payload["decision"] = "guide_ready"
+    payload["next_step"] = "human_reviews_draft_then_optional_stage_send"
+    payload["recommended_command"] = "stage-discord-send"
+    payload["blocked_reason"] = ""
+    payload["route_failure"] = "none"
+    payload["message"] = "snapshot / coverage / passport / guide まで完了しました。送信は人間が行います。"
+    return payload
+
+
 def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     if not path.exists():
         return []

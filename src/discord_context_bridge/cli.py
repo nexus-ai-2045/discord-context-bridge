@@ -32,6 +32,7 @@ from .core import (
     build_latest_snapshot_report,
     plan_full_thread_capture,
     build_review_artifact_markdown,
+    build_bridge_intake,
     build_url_intake_fast_path,
     context_passport_from_text,
     context_operating_mode_from_text,
@@ -201,6 +202,31 @@ def build_parser() -> argparse.ArgumentParser:
     fast_path.add_argument("--title", default="", help="任意の安全な短い label。実 channel 名や private 名は避ける")
     fast_path.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     fast_path.set_defaults(handler=_cmd_url_intake_fast_path)
+
+    bridge_intake = sub.add_parser(
+        "bridge-intake",
+        help="message found -> snapshot / coverage / passport / guide までを一本で進める",
+    )
+    bridge_intake.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    bridge_intake.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    bridge_intake.add_argument("--raw-cache", type=Path, help="突合する raw cache / local snapshot ndjson")
+    bridge_intake.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
+    bridge_intake.add_argument("--input", type=Path, help="取り込む可視テキストファイル")
+    bridge_intake.add_argument("--from-clipboard", action="store_true", help="clipboard の可視テキストを取り込む")
+    bridge_intake.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
+    bridge_intake.add_argument("--source-command", help="Discord 可視テキストを出力するローカルコマンド")
+    bridge_intake.add_argument("--title", default="", help="任意の安全な短い label。実 channel 名や private 名は避ける")
+    bridge_intake.add_argument("--source", default="bridge_intake", help="snapshot の取得元 label")
+    bridge_intake.add_argument("--guild", default="example-community", help="サーバー名または仮ラベル")
+    bridge_intake.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
+    bridge_intake.add_argument("--draft", default="", help="任意: 返信下書き。指定時だけ guide-reply まで進める")
+    bridge_intake.add_argument(
+        "--understanding-confirmed",
+        action="store_true",
+        help="文脈理解サマリを人間が確認済みの場合だけ guide を本審査する",
+    )
+    bridge_intake.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    bridge_intake.set_defaults(handler=_cmd_bridge_intake)
 
     snapshot_url = sub.add_parser(
         "snapshot-discord-url-text",
@@ -739,6 +765,42 @@ def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str,
         "raw_text_returned": False,
         "path_output": "omitted",
     }
+
+
+def _cmd_bridge_intake(args: argparse.Namespace) -> int:
+    text = ""
+    if args.input or args.from_clipboard or args.source_command:
+        text = read_visible_text_arg(args)
+    payload = build_bridge_intake(
+        url=args.url,
+        snapshot_store=args.snapshot_store,
+        raw_cache_path=args.raw_cache,
+        text=text,
+        draft=args.draft,
+        understanding_confirmed=args.understanding_confirmed,
+        title=args.title,
+        source=args.source,
+        target_key=args.target_key,
+        guild_label=args.guild,
+        channel_label=args.channel,
+    )
+    if args.json:
+        print(_json(payload))
+    else:
+        print(payload["message"])
+        print(f"decision: {payload['decision']}")
+        print(f"next_step: {payload['next_step']}")
+        print(f"recommended_command: {payload['recommended_command']}")
+        print(f"pipeline_completed: {','.join(payload['pipeline']['completed'])}")
+        print(f"blocked_reason: {payload.get('blocked_reason') or 'none'}")
+        print(f"raw_text_returned: {str(payload['raw_text_returned']).lower()}")
+        print("path_output: omitted")
+        print("outbound: disabled")
+    if payload["decision"] in {"passport_ready", "guide_ready"}:
+        return 0
+    if payload["decision"] == "understanding_blocked":
+        return 2
+    return 2
 
 
 def _cmd_url_intake_fast_path(args: argparse.Namespace) -> int:
