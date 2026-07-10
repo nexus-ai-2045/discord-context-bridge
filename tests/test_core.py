@@ -3100,6 +3100,71 @@ def test_cli_send_operation_status_closes_post_send_retrospective_without_claimi
     assert payload["safety_boundary"]["discord_send_executed_by_this_tool"] is False
 
 
+def test_cli_send_operation_status_closes_post_send_retrospective_even_with_valid_pre_gates_does_not_claim_pre_gates(tmp_path, capsys):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+    )
+    staging_path = tmp_path / "staging.json"
+    dry_run_path = tmp_path / "dry-run.json"
+    closeout_path = tmp_path / "closeout.json"
+    staging_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+    dry_run_path.write_text(json.dumps(dry_run, ensure_ascii=False), encoding="utf-8")
+    closeout_path.write_text(json.dumps(closeout, ensure_ascii=False), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "send-operation-status",
+            "--staging-packet",
+            str(staging_path),
+            "--dry-run-report",
+            str(dry_run_path),
+            "--closeout-report",
+            str(closeout_path),
+            "--target-label",
+            "test-channel",
+            "--rollback-plan-reviewed",
+            "--production-runbook-fixed",
+            "--post-send-retrospective",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["mode"] == "post_send_retrospective"
+    assert payload["retrospective_gaps"] == {
+        "staging_packet_status": "provided",
+        "dry_run_report_status": "provided",
+        "pre_send_gate_claimed": False,
+        "pre_send_gate_note": "事後closeoutです。過去送信について stage/dry-run/test gate を通過済みとは扱いません。",
+        "future_formal_flow_required": True,
+    }
+
+
 def test_visible_text_adapter_reads_fixture_and_normalizes_output(capsys):
     adapter = load_script_module("visible_text_adapter_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
 
