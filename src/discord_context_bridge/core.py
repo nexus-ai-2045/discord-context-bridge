@@ -3608,7 +3608,7 @@ def build_discord_send_operation_status(
             "retrospective_gaps": {
                 "staging_packet_status": "provided" if staging_packet else "not_provided",
                 "dry_run_report_status": "provided" if dry_run_report else "not_provided",
-                "pre_send_gate_claimed": bool(staging_ready and dry_run_ready),
+                "pre_send_gate_claimed": False,
                 "pre_send_gate_note": "事後closeoutです。過去送信について stage/dry-run/test gate を通過済みとは扱いません。",
                 "future_formal_flow_required": True,
             },
