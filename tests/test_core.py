@@ -24,6 +24,7 @@ from discord_context_bridge import (
     build_handoff_packet,
     build_human_gate,
     build_latest_snapshot_report,
+    build_bridge_intake,
     build_url_intake_fast_path,
     build_review_artifact_markdown,
     write_attachment_ocr_log,
@@ -472,6 +473,106 @@ def test_url_intake_fast_path_stops_at_missing_snapshot_without_text_tools(tmp_p
     assert payload["target"]["target_key"] == key
     assert str(snapshot_store) not in rendered
     assert url not in rendered
+
+
+def test_bridge_intake_blocks_when_snapshot_missing(tmp_path):
+    url = "https://discord.com/channels/1/10/30"
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text("", encoding="utf-8")
+
+    payload = build_bridge_intake(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-09T00:00:00+00:00",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema"] == "discord_bridge_intake.v1"
+    assert payload["decision"] == "need_visible_text"
+    assert payload["blocked_reason"] == "snapshot_missing"
+    assert payload["context_passport"]["built"] is False
+    assert payload["guide_reply"]["built"] is False
+    assert "coverage" in payload["pipeline"]["completed"]
+    assert payload["raw_text_returned"] is False
+    assert str(snapshot_store) not in rendered
+    assert url not in rendered
+
+
+def test_bridge_intake_runs_snapshot_coverage_passport_and_optional_guide(tmp_path):
+    url = "https://discord.com/channels/1/10/31"
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    private_text = "member-bridge: 次の前提を確認してから進めたいです。ルールは短縮です。"
+    draft = "まず前提を確認してから返事します。"
+
+    payload = build_bridge_intake(
+        url=url,
+        snapshot_store=snapshot_store,
+        text=private_text,
+        draft=draft,
+        understanding_confirmed=True,
+        generated_at="2026-07-09T00:00:00+00:00",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["decision"] == "guide_ready"
+    assert payload["pipeline"]["completed"] == [
+        "snapshot",
+        "coverage",
+        "context_passport",
+        "guide_reply",
+    ]
+    assert payload["snapshot"]["saved"] is True
+    assert payload["coverage"]["exact_coverage"] is True
+    assert payload["context_passport"]["built"] is True
+    assert payload["context_passport"]["parsed"] >= 1
+    assert payload["guide_reply"]["built"] is True
+    assert payload["guide_reply"]["send_capability"] == "disabled"
+    assert payload["outbound_actions"] == "disabled"
+    assert payload["raw_text_returned"] is False
+    assert private_text not in rendered
+    assert "member-bridge" not in rendered
+    assert draft not in rendered
+    assert url not in rendered
+    assert str(snapshot_store) not in rendered
+
+    records = load_jsonl_records(snapshot_store)
+    assert len(records) == 1
+    assert records[0]["text"] == private_text
+
+
+def test_cli_bridge_intake_metadata_only_end_to_end(tmp_path, capsys):
+    url = "https://discord.com/channels/1/10/32"
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    visible = tmp_path / "visible.txt"
+    private_text = "member-cli: 実装前に前提を揃えたいです。"
+    visible.write_text(private_text, encoding="utf-8")
+
+    result = cli_main(
+        [
+            "bridge-intake",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--input",
+            str(visible),
+            "--draft",
+            "前提を確認してから進めます。",
+            "--understanding-confirmed",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert payload["schema"] == "discord_bridge_intake.v1"
+    assert payload["decision"] == "guide_ready"
+    assert payload["pipeline"]["completed"][-1] == "guide_reply"
+    assert private_text not in output
+    assert "member-cli" not in output
+    assert url not in output
+    assert str(snapshot_store) not in output
 
 
 def test_cli_url_intake_fast_path_outputs_metadata_only_missing_snapshot(tmp_path, capsys):
@@ -2111,6 +2212,35 @@ def test_ops_check_includes_report_latest_smoke():
     assert "report-latest smoke" in checks
     assert "report-latest schema" in checks
     assert "文脈運用モード smoke" in checks
+    assert "discord-url-measure smoke" in checks
+
+
+def test_ops_check_fast_profile_uses_small_development_gate():
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    args = ops_check.parse_args(["--profile", "fast"])
+
+    checks = ops_check.build_checks(args)
+
+    assert set(checks) == {
+        "compile",
+        "差分チェック",
+        "秘密情報スキャン",
+        "boundary logic",
+        "url-intake-fast-path smoke",
+        "discord-url-measure smoke",
+        "ローカルスモーク",
+    }
+    assert "テスト" not in checks
+    assert "status dashboard" not in checks
+
+
+def test_ops_check_release_profile_enables_github_guard():
+    ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
+    args = ops_check.parse_args(["--profile", "release"])
+
+    checks = ops_check.build_checks(args)
+
+    assert "GitHub account確認" in checks
 
 
 def test_cli_guide_reply_outputs_human_readable_guide(capsys):

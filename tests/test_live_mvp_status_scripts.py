@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 import subprocess
@@ -27,7 +28,14 @@ import ops_check
 import ops_preflight
 import route_timing_log
 import fixture_13_step_e2e
+import gh_pr_read
 from discord_context_bridge.cli import safe_command_failure_reason
+from discord_context_bridge.credentials import (
+    BOT_TOKEN_ENV,
+    TOKEN_COMMAND_ENV,
+    configured_bot_token_provider,
+    load_bot_token_from_provider,
+)
 
 
 def ready_channel_dir(tmp_path: Path) -> Path:
@@ -70,12 +78,105 @@ def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Pa
     assert "synthetic-secret" not in str(status)
 
 
+def test_configured_bot_token_provider_detects_secret_command_without_value(monkeypatch):
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+
+    status = configured_bot_token_provider()
+
+    assert status["ok"] is True
+    assert status["provider"] == "secret_command"
+    assert status["token_set"] is True
+    assert status["value_returned"] is False
+    assert "12345" not in json.dumps(status, ensure_ascii=False)
+
+
+def test_secret_command_loads_token_without_public_value(monkeypatch):
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+
+    result = load_bot_token_from_provider()
+
+    assert result.ok is True
+    assert result.provider == "secret_command"
+    assert result.token == "12345"
+    assert "12345" not in json.dumps(result.public_status(), ensure_ascii=False)
+
+
+def test_secret_command_failure_omits_stdout_and_stderr(monkeypatch):
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(
+        TOKEN_COMMAND_ENV,
+        f'"{sys.executable}" -c "import sys; sys.stderr.write(\'hidden-secret\'); sys.exit(7)"',
+    )
+
+    result = load_bot_token_from_provider()
+    status = result.public_status()
+
+    assert result.ok is False
+    assert status["failure_stage"] == "token_command_failed"
+    assert status["exit_code"] == 7
+    assert "hidden-secret" not in json.dumps(status, ensure_ascii=False)
+
+
+def test_bot_route_preflight_accepts_secret_command_provider(tmp_path: Path, monkeypatch):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    (channel_dir / "access.json").write_text(json.dumps({"dmPolicy": "locked", "allowFrom": ["safe"]}), encoding="utf-8")
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+
+    payload = discord_bot_route_preflight.build_preflight(channel_dir)
+
+    assert payload["ok"] is True
+    assert payload["bot_token"]["set"] is True
+    assert payload["bot_token"]["provider"] == "secret_command"
+    assert payload["bot_token"]["value_returned"] is False
+    assert "12345" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch):
     monkeypatch.delenv("DISCORD_" + "BOT_TOKEN", raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
 
     result = discord_rest_backfill.main(["--url", "https://discord.com/channels/7/8/9", "--json"])
 
     assert result == 2
+
+
+def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch, tmp_path: Path, capsys):
+    captured: dict[str, str] = {}
+
+    def fake_fetch_discord_messages(*, channel_id: str, token: str, limit: int, page_size: int, sleep_seconds: float):
+        captured["token"] = token
+        return ([{"id": "123456789012345678", "content": "secret-command private text"}], None)
+
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+    monkeypatch.setattr(discord_rest_backfill, "fetch_discord_messages", fake_fetch_discord_messages)
+    raw_output = tmp_path / "raw.ndjson"
+    manifest_output = tmp_path / "manifest.json"
+
+    result = discord_rest_backfill.main(
+        [
+            "--url",
+            "https://discord.com/channels/7/8/9",
+            "--raw-output",
+            str(raw_output),
+            "--manifest-output",
+            str(manifest_output),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 0
+    assert captured["token"] == "12345"
+    assert payload["credential_provider"]["provider"] == "secret_command"
+    assert payload["credential_provider"]["value_returned"] is False
+    assert "12345" not in output
+    assert "secret-command private text" not in output
 
 
 def test_rest_backfill_fixture_writes_private_artifacts_without_stdout_text(tmp_path: Path, capsys):
@@ -1033,6 +1134,126 @@ def test_discord_inventory_dashboard_blocks_pr_lookup_on_gh_account_mismatch(mon
     assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
 
 
+def test_gh_pr_read_checks_account_before_list(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "actual_owner": "nexus-ai-2045",
+                        "actual_repository": "discord-context-bridge",
+                        "active_account_after": "nexus-ai-2045",
+                        "ok": True,
+                    }
+                )
+            )
+        if command[:3] == ["gh", "pr", "list"]:
+            return Completed("[]")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    payload = gh_pr_read.build_payload(argparse.Namespace(command="list", limit=50, switch=False))
+
+    assert payload["ok"] is True
+    assert payload["prs"] == []
+    assert calls.index([sys.executable, "scripts/gh_guard.py", "--account-only", "--json"]) < calls.index(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,mergeStateStatus,isDraft,url",
+            "--limit",
+            "50",
+        ]
+    )
+
+
+def test_gh_pr_read_blocks_view_on_account_mismatch(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:3] == [sys.executable, "scripts/gh_guard.py", "--account-only"]:
+            return Completed('{"account_matches":false,"ok":false}', returncode=2)
+        if command[:3] == ["gh", "pr", "view"]:
+            raise AssertionError("gh pr view should not run when account boundary fails")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    try:
+        gh_pr_read.build_payload(argparse.Namespace(command="view", number="4", switch=False))
+    except SystemExit as exc:
+        payload = json.loads(str(exc))
+    else:
+        raise AssertionError("expected SystemExit")
+
+    assert payload["ok"] is False
+    assert payload["error"] == "gh_account_boundary_failed"
+    assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
+
+
+def test_gh_pr_read_can_switch_before_view(monkeypatch):
+    class Completed:
+        def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]):
+        calls.append(command)
+        if command[:4] == [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "actual_owner": "nexus-ai-2045",
+                        "actual_repository": "discord-context-bridge",
+                        "active_account_after": "nexus-ai-2045",
+                        "ok": True,
+                        "switched": True,
+                    }
+                )
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            return Completed(
+                json.dumps(
+                    {
+                        "number": 4,
+                        "title": "REST backfill",
+                        "url": "https://github.com/nexus-ai-2045/discord-context-bridge/pull/4",
+                    }
+                )
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(gh_pr_read, "run_command", fake_run)
+
+    payload = gh_pr_read.build_payload(argparse.Namespace(command="view", number="4", switch=True))
+
+    assert payload["ok"] is True
+    assert payload["pr"]["number"] == 4
+    assert [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only", "--json"] in calls
 def test_discord_inventory_dashboard_uses_upstream_for_feature_branch_sync(monkeypatch):
     class Completed:
         def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):

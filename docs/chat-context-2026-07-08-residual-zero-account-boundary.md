@@ -1,5 +1,9 @@
 # Chat Context 2026-07-08: residual zero account boundary
 
+> Historical note: このファイルは 2026-07-08 時点の引き継ぎ証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、順序正本は `ROADMAP.md` です。
+> 下記の open PR 件数・residual 判定は当時の snapshot であり、現在の open PR / residual 状態としては使わないでください。
+
 このメモは、2026-07-08 の `discord-context-bridge` 残務ゼロ確認と account boundary 修正の文脈を保存するための引き継ぎです。
 raw Discord text、実 Discord URL、snowflake、参加者名、token、cookie、webhook、local absolute path は含めません。
 
