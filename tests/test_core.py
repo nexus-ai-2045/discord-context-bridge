@@ -4378,6 +4378,27 @@ def test_gh_guard_parses_github_remote_owner():
     assert gh_guard.parse_github_owner("https://example.com/nexus-ai-2045/discord-context-bridge.git") is None
 
 
+def test_gh_guard_subprocess_output_uses_utf8_replace(monkeypatch):
+    gh_guard = load_script_module("gh_guard_run_encoding_for_test", ROOT / "scripts" / "gh_guard.py")
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(gh_guard.subprocess, "run", fake_run)
+
+    gh_guard.run(["gh", "auth", "status"])
+
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"
+
+
 def test_gh_guard_parses_active_account_from_auth_status():
     gh_guard = load_script_module("gh_guard_auth_status_for_test", ROOT / "scripts" / "gh_guard.py")
     output = """
