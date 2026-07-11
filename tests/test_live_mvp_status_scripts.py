@@ -837,7 +837,7 @@ def test_live_ops_smoke_writes_timing_log(tmp_path: Path):
     result = live_ops_smoke.main(
         [
             "--source-command",
-            f"{sys.executable} -c \"from pathlib import Path; print(Path(r'{source}').read_text(), end='')\"",
+            f"{sys.executable} -c \"from pathlib import Path; print(Path(r'{source}').read_text(encoding='utf-8'), end='')\"",
             "--store",
             str(store),
             "--timing-log",
