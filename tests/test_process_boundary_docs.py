@@ -100,3 +100,21 @@ def test_generated_runtime_skills_include_visible_ui_automation_stopline():
         assert "Computer Use 的な画面操作" in body
         assert "SendKeys" in body
         assert "ユーザーの明示許可なしに実行しない" in body
+
+
+def test_discord_send_runbook_blocks_wrong_route_and_unverified_done_claims():
+    body = (ROOT / "docs" / "discord-send-operation-runbook.md").read_text(encoding="utf-8")
+
+    required_terms = [
+        "送信経路照合",
+        "webhook / bot / browser の投稿先が一致しない場合は送信しない",
+        "ブラウザタイトルや画面上のサーバー名・チャンネル名を title evidence として確認する",
+        "ファイル添付に失敗した場合は、送信せず blocked として止める",
+        "ユーザーが停止した場合は not_sent として閉じる",
+        "metadata-only",
+        "not_sent",
+        "human_sent",
+    ]
+
+    for term in required_terms:
+        assert term in body

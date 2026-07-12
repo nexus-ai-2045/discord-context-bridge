@@ -17,6 +17,10 @@ stoplines:
   - no_playwright_default_for_discord_context
   - no_unapproved_visible_ui_automation
   - no_complete_claim_without_full_local_capture
+  - no_ocr_for_dcb_text_intake
+  - no_clipboard_without_explicit_clipboard_request
+  - no_visible_read_route_expansion_after_blocked_need_chrome_visible_read_go
+  - no_cross_route_webhook_or_bot_guessing
 required_commands:
   - command: rest-backfill
     purpose: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る

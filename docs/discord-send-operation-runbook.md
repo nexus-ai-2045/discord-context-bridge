@@ -22,6 +22,31 @@ flowchart TD
   closeout -. "出力しない" .-> raw["raw本文 / URL / snowflake / 参加者名"]
 ```
 
+## 送信前 gate
+
+送信補助を行う場合でも、このリポは Discord への実送信をしません。
+送信前 gate は「どこへ、何を、どの経路で置こうとしているか」を止まって確認するためのものです。
+
+### 送信経路照合
+
+- webhook / bot / browser の投稿先が一致しない場合は送信しない。
+- 通知用 webhook、別 guild の bot token、別用途の自動通知チャンネルを、目的チャンネルの代替経路として使わない。
+- ブラウザで進める場合は、ブラウザタイトルや画面上のサーバー名・チャンネル名を title evidence として確認する。
+- title evidence は `target_verified_by_browser_title` のような metadata に残し、raw URL / snowflake / handle を visible output に出さない。
+
+### 添付と停止の扱い
+
+- ファイル添付に失敗した場合は、送信せず blocked として止める。
+- 添付前に、対象ファイルの存在、サイズ 0 でないこと、意図したファイル名であることを local evidence として確認する。
+- Unicode 分解文字などでブラウザ upload が不安定な場合、repo外の一時 ASCII 名コピーまたは hard link は使ってよい。ただし元ファイルと同一内容であることを local evidence に残す。
+- ユーザーが停止した場合は not_sent として閉じる。入力欄準備、添付試行、送信先確認は送信済みではない。
+
+### closeout 出力
+
+- closeout は DCB の metadata-only 状態として残す。
+- 外部 action 状態は `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` のどれかに分ける。
+- evidence がない場合は `not_sent` / `blocked` / `unknown` のどれかで閉じる。
+
 1. 対象チャンネル/投稿先を決める
    - 実URLやsnowflakeを公開ログに出さず、`test-channel` のようなsafe labelで扱います。
 

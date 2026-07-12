@@ -26,6 +26,7 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert "no_discord_send" in manifest["stoplines"]
     assert "no_playwright_default_for_discord_context" in manifest["stoplines"]
     assert "no_unapproved_visible_ui_automation" in manifest["stoplines"]
+    assert "no_cross_route_webhook_or_bot_guessing" in manifest["stoplines"]
 
 
 def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
