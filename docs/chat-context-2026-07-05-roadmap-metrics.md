@@ -26,6 +26,13 @@ raw Discord text、実URL、snowflake、参加者名、token、local absolute pa
 | M8 | optional capture adapters | 後段 |
 | M9 | release/package | 後段 |
 
+### 2026-07-13 更新
+
+- M1: `bridge-intake` を含む返信生成入口へ最低文脈gateを適用。
+- M2: `返信文脈契約` をfast profileへ追加し、GitHubレビュー前のローカル検出を短縮。
+- M3: 時系列不明、履歴終端後の未解決参照、取得窓の後退を回帰テスト化。
+- M4: replyとmentionの要件分離、CLI/MCP/bridge-intakeの共通不変条件を文書化。
+
 ## 指針となる数字
 
 | 領域 | 指針 |

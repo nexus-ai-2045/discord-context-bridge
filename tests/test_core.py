@@ -27,6 +27,8 @@ from discord_context_bridge import (
     build_bridge_intake,
     build_url_intake_fast_path,
     build_review_artifact_markdown,
+    build_reply_context_gate,
+    build_reply_context_gate_from_messages,
     write_attachment_ocr_log,
     build_url_intake_gate,
     context_passport_from_text,
@@ -510,6 +512,11 @@ def test_bridge_intake_runs_snapshot_coverage_passport_and_optional_guide(tmp_pa
         text=private_text,
         draft=draft,
         understanding_confirmed=True,
+        reply_context_gate=build_reply_context_gate(
+            thread_root_present=True,
+            reply_target_present=True,
+            prior_message_count=10,
+        ),
         generated_at="2026-07-09T00:00:00+00:00",
     )
     rendered = json.dumps(payload, ensure_ascii=False)
@@ -559,6 +566,10 @@ def test_cli_bridge_intake_metadata_only_end_to_end(tmp_path, capsys):
             "--draft",
             "前提を確認してから進めます。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "0",
+            "--history-exhausted",
             "--json",
         ]
     )
@@ -1214,6 +1225,170 @@ def test_review_reply_intent_blocks_draft_before_understanding_confirmation():
     assert review["copy_block"]["text"] == ""
     assert review["copy_block"]["parts"] == []
     assert review["send_capability"] == "disabled"
+
+
+def test_reply_context_gate_requires_root_target_and_ten_prior_messages():
+    ready = build_reply_context_gate(
+        thread_root_present=True,
+        reply_target_present=True,
+        prior_message_count=10,
+    )
+
+    assert ready["schema"] == "discord_reply_context_gate.v1"
+    assert ready["state"] == "ready"
+    assert ready["reply_generation_allowed"] is True
+    assert ready["minimum_prior_messages"] == 10
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"thread_root_present": False}, "thread_root_missing"),
+        ({"reply_target_present": False}, "reply_target_missing"),
+        ({"prior_message_count": 9}, "minimum_prior_messages_missing"),
+    ],
+)
+def test_reply_context_gate_fails_closed_when_required_context_is_missing(overrides, reason):
+    args = {
+        "thread_root_present": True,
+        "reply_target_present": True,
+        "prior_message_count": 10,
+    }
+    args.update(overrides)
+
+    gate = build_reply_context_gate(**args)
+
+    assert gate["state"] in {"blocked", "expand_required"}
+    assert gate["reply_generation_allowed"] is False
+    assert reason in gate["blockers"]
+    assert gate["outbound_actions"] == "disabled"
+
+
+def test_reply_context_gate_allows_short_thread_only_after_history_end_is_confirmed():
+    gate = build_reply_context_gate(
+        thread_root_present=True,
+        reply_target_present=True,
+        prior_message_count=4,
+        history_exhausted=True,
+    )
+
+    assert gate["state"] == "ready_short_thread"
+    assert gate["reply_generation_allowed"] is True
+    assert gate["history_exhausted"] is True
+
+
+def test_reply_context_gate_expands_by_ten_for_unresolved_references():
+    gate = build_reply_context_gate(
+        thread_root_present=True,
+        reply_target_present=True,
+        prior_message_count=10,
+        unresolved_reference_count=1,
+        fetched_message_count=11,
+        max_context_messages=30,
+    )
+
+    assert gate["state"] == "expand_required"
+    assert gate["next_fetch_limit"] == 21
+    assert "unresolved_references" in gate["blockers"]
+
+
+def test_reply_context_gate_stops_at_limit_with_human_readable_reason():
+    gate = build_reply_context_gate(
+        thread_root_present=True,
+        reply_target_present=True,
+        prior_message_count=29,
+        unresolved_reference_count=1,
+        fetched_message_count=30,
+        max_context_messages=30,
+    )
+
+    assert gate["state"] == "blocked"
+    assert gate["reason_code"] == "reply_context_limit_reached"
+    assert "上限" in gate["message"]
+    assert gate["reply_generation_allowed"] is False
+
+
+def test_reply_context_gate_from_structured_messages_preserves_relationships():
+    messages = [{"text": "root", "is_thread_root": True, "sequence": 0}]
+    messages.extend({"text": f"prior-{index}", "sequence": index + 1} for index in range(9))
+    messages.append({"text": "target", "is_reply_target": True, "sequence": 10})
+
+    gate = build_reply_context_gate_from_messages(messages)
+
+    assert gate["state"] == "ready"
+    assert gate["prior_message_count"] == 10
+    assert gate["structured_message_count"] == 11
+    assert gate["relationship_metadata_preserved"] is True
+
+
+def test_reply_context_gate_from_flat_messages_fails_closed():
+    gate = build_reply_context_gate_from_messages([{"text": "本文"}] * 11)
+
+    assert gate["reply_generation_allowed"] is False
+    assert "thread_root_missing" in gate["blockers"]
+    assert "reply_target_missing" in gate["blockers"]
+
+
+def test_review_reply_intent_enforced_gate_blocks_even_after_understanding_confirmation():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    gate = build_reply_context_gate(
+        thread_root_present=True,
+        reply_target_present=True,
+        prior_message_count=9,
+    )
+
+    review = review_reply_intent(
+        "前提を確認してから返します。",
+        events,
+        understanding_confirmed=True,
+        reply_context_gate=gate,
+    )
+
+    assert review["quick_verdict"] == "reply-context-blocked"
+    assert review["final_candidate"] == ""
+    assert review["copy_block"]["status"] == "blocked"
+    assert review["reply_context_gate"]["reply_generation_allowed"] is False
+
+
+def test_cli_reply_context_plan_is_metadata_only_and_ready(capsys):
+    result = cli_main(
+        [
+            "reply-context-plan",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count",
+            "10",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert payload["state"] == "ready"
+    assert payload["raw_text_returned"] is False
+    assert payload["outbound_actions"] == "disabled"
+
+
+def test_cli_review_draft_fails_closed_without_reply_context_flags(tmp_path, capsys):
+    store = tmp_path / "events.ndjson"
+    append_event(parse_visible_text(FIXTURE.read_text(encoding="utf-8"))[0], store)
+
+    result = cli_main(
+        [
+            "--store",
+            str(store),
+            "review-draft",
+            "--draft",
+            "前提を確認してから返します。",
+            "--understanding-confirmed",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 2
+    assert payload["quick_verdict"] == "reply-context-blocked"
+    assert payload["copy_block"]["status"] == "blocked"
+    assert payload["final_candidate"] == ""
 
 
 def test_copy_block_splits_once_and_blocks_three_or_more_parts():
@@ -2033,6 +2208,10 @@ def test_cli_review_draft_writes_markdown_artifact_without_path_or_raw_context(t
             "--draft",
             "member-a に公開時期の前提を確認します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
             "--artifact-path",
             str(artifact_path),
         ]
@@ -2065,6 +2244,10 @@ def test_cli_review_draft_json_omits_raw_context_without_artifact(tmp_path, caps
             "--draft",
             "公開時期の前提を確認します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
         ]
     )
     output = capsys.readouterr().out
@@ -2091,11 +2274,15 @@ def test_cli_review_draft_without_understanding_confirmation_blocks_copy_block(t
             "review-draft",
             "--draft",
             "公開時期の前提を確認します。",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
         ]
     )
     output = capsys.readouterr().out
 
-    assert result == 0
+    assert result == 2
     assert '"schema": "discord_understanding_gate.v1"' in output
     assert '"status": "blocked"' in output
     assert '"quick_verdict": "understanding-blocked"' in output
@@ -2123,6 +2310,10 @@ def test_cli_review_draft_saves_review_state_and_handoff_reads_it(tmp_path, caps
             "--draft",
             "公開時期の前提を確認して返信します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
         ]
     )
     output = capsys.readouterr().out
@@ -2225,6 +2416,7 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "compile",
         "差分チェック",
         "秘密情報スキャン",
+        "返信文脈契約",
         "boundary logic",
         "url-intake-fast-path smoke",
         "discord-url-measure smoke",
@@ -2252,6 +2444,10 @@ def test_cli_guide_reply_outputs_human_readable_guide(capsys):
             "--draft",
             "公開時期の前提を確認してから返信します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
         ]
     )
     output = capsys.readouterr().out
@@ -2280,6 +2476,10 @@ def test_cli_guide_reply_reads_clipboard_command(tmp_path, capsys, monkeypatch):
             "--draft",
             "公開時期の前提を確認してから返信します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
             "--json",
         ]
     )
@@ -2312,6 +2512,10 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
             "--draft",
             "公開時期の前提を確認してから返信します。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
             "--json",
         ]
     )
@@ -2852,6 +3056,10 @@ def test_cli_review_draft_alias_uses_stored_context(tmp_path, capsys):
             "--draft",
             "Before I reply, I will ask for the premise.",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
         ]
     )
     output = capsys.readouterr().out
@@ -2877,6 +3085,10 @@ def test_cli_stage_discord_send_outputs_fill_only_packet(tmp_path, capsys):
             "--target-url",
             "https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "2",
+            "--history-exhausted",
             "--json",
         ]
     )
@@ -4758,6 +4970,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "import_visible_discord_text",
         "list_context_library_entries",
         "plan_discord_url_read",
+        "plan_reply_context_before_draft",
         "review_reply_before_send",
         "snapshot_chrome_extension_visible_text",
         "snapshot_discord_url_text",
@@ -4829,7 +5042,7 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert context_list["count"] == 1
     assert context_audit["safe_for_tunnel"] is True
     assert review["language"] == "ja"
-    assert review["quick_verdict"] == "understanding-blocked"
+    assert review["quick_verdict"] == "reply-context-blocked"
     assert guide["message"] == "Discord 返信ガイドを作成しました。"
     assert passport["message"] == "スレッド文脈カードを作成しました。"
     assert passport["people_temperature"] == "serious"
@@ -4837,7 +5050,10 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert plan["ok_to_open"] is True
     assert snapshot["source"] == "chrome_extension_dom"
     assert snapshot["visible_text_saved"] is True
+    assert snapshot["reply_context_gate"]["reply_generation_allowed"] is False
+    assert "thread_root_missing" in snapshot["reply_context_gate"]["blockers"]
     assert url_passport["snapshot"]["visible_text_saved"] is True
+    assert url_passport["reply_context_gate"]["reply_generation_allowed"] is False
     assert "latest_target_snapshot_not_confirmed" in mcp_blocked_dry_run["blockers"]
     assert mcp_ready_dry_run["dry_run_status"] == "ready_to_fill"
     assert any("個人情報の共有は禁止" in note for note in passport["rule_notes"])

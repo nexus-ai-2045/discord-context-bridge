@@ -11,6 +11,8 @@ from .core import (
     audit_event_store,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
+    build_reply_context_gate,
+    build_reply_context_gate_from_messages,
     context_operating_mode_from_text,
     context_passport_from_text,
     digest_context_from_text,
@@ -105,9 +107,50 @@ def build_server(
         return audit_context_store(context_store)
 
     @server.tool()
-    def review_reply_before_send(draft: str, understanding_confirmed: bool = False) -> dict[str, Any]:
+    def review_reply_before_send(
+        draft: str,
+        understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+    ) -> dict[str, Any]:
         """送信前の返信 draft を直近文脈と照合します。"""
-        return review_reply_intent(draft, load_events(store), understanding_confirmed=understanding_confirmed)
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
+        return review_reply_intent(
+            draft,
+            load_events(store),
+            understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
+        )
+
+    @server.tool()
+    def plan_reply_context_before_draft(
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+        fetched_message_count: int | None = None,
+        max_context_messages: int = 100,
+    ) -> dict[str, Any]:
+        """返信前の起点・対象・直前10件と追加取得要否を本文なしで判定します。"""
+        return build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+            fetched_message_count=fetched_message_count,
+            max_context_messages=max_context_messages,
+        )
 
     @server.tool()
     def stage_discord_send_before_human_action(
@@ -116,8 +159,20 @@ def build_server(
         target_url: str = "",
         mention_label: str = "",
         understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
     ) -> dict[str, Any]:
         """Discord 返信/メンションの下書き入力準備 packet を返します。実送信はしません。"""
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
         return build_discord_send_staging_packet(
             draft,
             load_events(store),
@@ -125,6 +180,7 @@ def build_server(
             target_url=target_url,
             mention_label=mention_label,
             understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
         )
 
     @server.tool()
@@ -186,14 +242,27 @@ def build_server(
         guild_label: str = "example-community",
         channel_label: str = "general",
         understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
     ) -> dict[str, Any]:
         """Discord の可視テキストと返信 draft から会話ガイドを返します。"""
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
         return guide_reply_from_text(
             text,
             draft,
             guild_label=guild_label,
             channel_label=channel_label,
             understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
         )
 
     @server.tool()
@@ -313,14 +382,19 @@ def build_server(
         messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Chrome 拡張や DOM 抽出で見えている Discord テキストをローカル snapshot として保存します。"""
-        return snapshot_visible_text(
+        message_list = messages or []
+        snapshot = snapshot_visible_text(
             text=text,
-            messages=messages or [],
+            messages=message_list,
             url=url,
             title=title,
             source="chrome_extension_dom",
             path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
         )
+        return {
+            **snapshot,
+            "reply_context_gate": build_reply_context_gate_from_messages(message_list),
+        }
 
     @server.tool()
     def get_context_passport_from_discord_url(
@@ -359,6 +433,7 @@ def build_server(
         return {
             **passport,
             "snapshot": snapshot,
+            "reply_context_gate": build_reply_context_gate_from_messages(message_list),
             "url_read_plan": plan_discord_url_read_core(url),
         }
 

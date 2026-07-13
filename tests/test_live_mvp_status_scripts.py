@@ -1297,6 +1297,14 @@ def test_ops_check_includes_status_dashboard():
     assert "status dashboard" in checks
 
 
+def test_ops_check_fast_profile_includes_reply_context_contract():
+    args = ops_check.parse_args(["--profile", "fast", "--skip-http"])
+
+    checks = ops_check.build_checks(args)
+
+    assert "返信文脈契約" in checks
+
+
 def test_repo_goal_status_reports_done_when_dashboard_is_clean(monkeypatch):
     import repo_goal_status
 
