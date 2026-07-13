@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .desktop_cache import probe_discord_desktop_cache
 from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
@@ -342,6 +343,20 @@ def build_parser() -> argparse.ArgumentParser:
     cache_first.add_argument("--book-output", type=Path, default=None, help="生成する private Markdown book。出力には表示しません")
     cache_first.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     cache_first.set_defaults(handler=_cmd_cache_first_intake)
+
+    desktop_cache = sub.add_parser(
+        "desktop-cache-probe",
+        help="実行中Discord Desktopのcacheから対象設定をmetadata-onlyで確認する",
+    )
+    desktop_cache.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    desktop_cache.add_argument("--user-data-dir", type=Path, help="Discord user-data-dir。出力には表示しません")
+    desktop_cache.add_argument(
+        "--include-labels",
+        action="store_true",
+        help="チャンネル名と掲示板タグ名をprivate consoleへ含める",
+    )
+    desktop_cache.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    desktop_cache.set_defaults(handler=_cmd_desktop_cache_probe)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -1080,6 +1095,32 @@ def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
     print(f"book_created: {str(payload['book']['created']).lower()}")
     print(f"book_status: {payload['book']['status']}")
     print(f"raw_text_returned: {str(payload['raw_text_returned']).lower()}")
+    print("path_output: omitted")
+    print("outbound: disabled")
+    return 0 if payload["ok"] else 2
+
+
+def _cmd_desktop_cache_probe(args: argparse.Namespace) -> int:
+    payload = probe_discord_desktop_cache(
+        url=args.url,
+        explicit_user_data_dir=args.user_data_dir,
+        include_labels=args.include_labels,
+    )
+    if args.json:
+        print(_json(payload))
+        return 0 if payload["ok"] else 2
+    print(payload["message"])
+    print(f"state: {payload['state']}")
+    print(f"ok: {str(payload['ok']).lower()}")
+    print(f"platform: {payload['platform']}")
+    print(f"user_data_dir_source: {payload['user_data_dir']['source']}")
+    metadata = payload.get("metadata") or {}
+    print(f"channel_object_count: {metadata.get('channel_object_count', 0)}")
+    print(f"tag_count: {metadata.get('tag_count', 0)}")
+    if args.include_labels:
+        print(f"channel_labels: {', '.join(metadata.get('channel_labels') or []) or 'なし'}")
+        print(f"tag_labels: {', '.join(metadata.get('tag_labels') or []) or 'なし'}")
+    print("raw_text_returned: false")
     print("path_output: omitted")
     print("outbound: disabled")
     return 0 if payload["ok"] else 2

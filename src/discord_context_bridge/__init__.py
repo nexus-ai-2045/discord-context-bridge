@@ -70,6 +70,11 @@ from .credentials import (
     configured_bot_token_provider,
     load_bot_token_from_provider,
 )
+from .desktop_cache import (
+    parse_simple_cache_entry,
+    probe_discord_desktop_cache,
+    resolve_discord_user_data_dir,
+)
 
 __all__ = [
     "DisabledCapability",
@@ -128,6 +133,9 @@ __all__ = [
     "search_events",
     "send_message",
     "snapshot_visible_text",
+    "parse_simple_cache_entry",
+    "probe_discord_desktop_cache",
+    "resolve_discord_user_data_dir",
     "status_dashboard",
     "target_key_for_url",
     "upsert_review_state",
