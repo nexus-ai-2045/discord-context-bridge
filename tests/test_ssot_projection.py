@@ -289,6 +289,12 @@ def test_checked_in_projection_is_current():
     assert report["overall"] == "ok"
 
 
+def test_ci_checkout_preserves_ssot_provenance_history():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert workflow.count("fetch-depth: 0") == workflow.count("uses: actions/checkout@v7")
+
+
 def test_lint_runtime_skill_sync_accepts_matching_runtime_skill(tmp_path):
     module = load_script_module("lint_runtime_skill_sync_ok", ROOT / "scripts" / "lint_runtime_skill_sync.py")
 
