@@ -1212,7 +1212,7 @@ def test_gh_pr_read_blocks_view_on_account_mismatch(monkeypatch):
     assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
 
 
-def test_gh_pr_read_can_switch_before_view(monkeypatch):
+def test_gh_pr_read_ignores_switch_request_and_remains_read_only(monkeypatch):
     class Completed:
         def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
             self.stdout = stdout
@@ -1223,7 +1223,7 @@ def test_gh_pr_read_can_switch_before_view(monkeypatch):
 
     def fake_run(command: list[str]):
         calls.append(command)
-        if command[:4] == [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only"]:
+        if command == [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"]:
             return Completed(
                 json.dumps(
                     {
@@ -1231,7 +1231,7 @@ def test_gh_pr_read_can_switch_before_view(monkeypatch):
                         "actual_repository": "discord-context-bridge",
                         "active_account_after": "nexus-ai-2045",
                         "ok": True,
-                        "switched": True,
+                        "switched": False,
                     }
                 )
             )
@@ -1253,7 +1253,8 @@ def test_gh_pr_read_can_switch_before_view(monkeypatch):
 
     assert payload["ok"] is True
     assert payload["pr"]["number"] == 4
-    assert [sys.executable, "scripts/gh_guard.py", "--switch", "--account-only", "--json"] in calls
+    assert [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"] in calls
+    assert all("--switch" not in command for command in calls)
 
 
 def test_discord_inventory_dashboard_uses_upstream_for_feature_branch_sync(monkeypatch):

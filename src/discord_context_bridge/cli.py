@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .process_runner import minimal_child_env, run_process
+
 from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
@@ -680,7 +682,7 @@ def read_command_text(
     timeout: float | None = None,
 ) -> str:
     tokens = split_local_command(command)
-    env = os.environ.copy()
+    env = minimal_child_env()
     while tokens:
         key_value = tokens[0]
         if "=" not in key_value or key_value.startswith("-"):
@@ -692,17 +694,13 @@ def read_command_text(
         env[key] = value
     if not tokens:
         raise SystemExit("local command が空です。")
-    try:
-        completed = subprocess.run(
-            tokens,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise SystemExit(f"local command が {timeout:g} 秒で完了しませんでした。") from exc
+    completed = run_process(
+        tokens,
+        env=env,
+        timeout=timeout,
+    )
+    if getattr(completed, "failure_stage", None) == "timeout":
+        raise SystemExit(f"local command が {timeout:g} 秒で完了しませんでした。")
     if completed.returncode != 0:
         failure_text = "\n".join(part for part in [completed.stderr.strip(), completed.stdout.strip()] if part)
         raise SystemExit(

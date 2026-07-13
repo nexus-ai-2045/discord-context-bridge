@@ -2465,7 +2465,7 @@ def test_cli_guide_reply_reads_clipboard_command(tmp_path, capsys, monkeypatch):
         stdout = RICH_COPY_FIXTURE.read_text(encoding="utf-8")
         stderr = ""
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     result = cli_main(
         [
@@ -2502,7 +2502,7 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
         calls.append((command, kwargs))
         return Completed()
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
 
     result = cli_main(
         [
@@ -2523,7 +2523,8 @@ def test_cli_guide_reply_reads_source_command(capsys, monkeypatch):
 
     assert result == 0
     assert calls[0][0] == ["discord-visible-text"]
-    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["timeout"] is None
+    assert isinstance(calls[0][1]["env"], dict)
     assert '"message": "Discord 返信ガイドを作成しました。"' in output
     assert '"send_capability": "disabled"' in output
 
@@ -2571,7 +2572,7 @@ def test_cli_source_command_error_redacts_sensitive_stderr(monkeypatch):
         stdout = ""
         stderr = "failed with https://discord.com/api/webhooks/123456789012345678/token"
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     with pytest.raises(SystemExit) as exc:
         cli_module.read_command_text("discord-visible-text")
@@ -2588,7 +2589,7 @@ def test_cli_source_command_error_reports_safe_reason(monkeypatch):
         stdout = ""
         stderr = "permission denied"
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     with pytest.raises(SystemExit) as exc:
         cli_module.read_command_text("discord-visible-text")
@@ -2602,7 +2603,7 @@ def test_cli_source_command_error_reports_safe_stdout_reason(monkeypatch):
         stdout = "Discord 可視テキストの取得に失敗しました: not_found"
         stderr = ""
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     with pytest.raises(SystemExit) as exc:
         cli_module.read_command_text("discord-visible-text")
@@ -2808,7 +2809,7 @@ def test_cli_context_passport_reads_source_command(capsys, monkeypatch):
         calls.append((command, kwargs))
         return Completed()
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
 
     result = cli_main(
         [
@@ -2843,7 +2844,7 @@ def test_cli_watch_guide_polls_source_command_and_outputs_updates(capsys, monkey
         calls.append((command, kwargs))
         return Completed(outputs.pop(0))
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
     monkeypatch.setattr(cli_module.time, "sleep", lambda interval: None)
 
     result = cli_main(
@@ -2892,7 +2893,7 @@ def test_cli_watch_passport_polls_source_command_and_outputs_updates(capsys, mon
         calls.append((command, kwargs))
         return Completed(outputs.pop(0))
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
     monkeypatch.setattr(cli_module.time, "sleep", lambda interval: None)
 
     result = cli_main(
@@ -2937,7 +2938,7 @@ def test_cli_watch_passport_allows_env_prefixed_source_command(capsys, monkeypat
         calls.append((command, kwargs))
         return Completed()
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
 
     result = cli_main(
         [
@@ -2975,7 +2976,7 @@ def test_cli_watch_passport_uses_context_library_keys(tmp_path, capsys, monkeypa
         source="fixture",
     )
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     result = cli_main(
         [
@@ -3016,7 +3017,7 @@ def test_cli_watch_passport_auto_binds_safe_labels(tmp_path, capsys, monkeypatch
         labels=["example-community"],
     )
 
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda command, **kwargs: Completed())
+    monkeypatch.setattr(cli_module, "run_process", lambda command, **kwargs: Completed())
 
     result = cli_main(
         [
@@ -4851,7 +4852,7 @@ def test_cli_import_clipboard_reads_local_clipboard_command(tmp_path, capsys, mo
         calls.append((command, kwargs))
         return Completed()
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
     store = tmp_path / "events.ndjson"
 
     result = cli_main(
@@ -4867,7 +4868,8 @@ def test_cli_import_clipboard_reads_local_clipboard_command(tmp_path, capsys, mo
 
     assert result == 0
     assert calls[0][0] == ["pbpaste"]
-    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["timeout"] is None
+    assert isinstance(calls[0][1]["env"], dict)
     assert '"parsed": 3' in output
     assert len(load_events(store)) == 3
 
@@ -4888,7 +4890,7 @@ def test_cli_watch_clipboard_imports_only_changed_text(tmp_path, capsys, monkeyp
         calls.append((command, kwargs))
         return Completed(outputs.pop(0))
 
-    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_module, "run_process", fake_run)
     monkeypatch.setattr(cli_module.time, "sleep", lambda interval: None)
     store = tmp_path / "events.ndjson"
 

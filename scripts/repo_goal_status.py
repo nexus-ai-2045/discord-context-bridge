@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 SCRIPT_DIR = ROOT / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import discord_inventory_dashboard
+from discord_context_bridge.process_runner import ProcessResult, run_process
 
 
 GOAL = "discord-context-bridge repo residual zero operational guarantee"
@@ -23,8 +27,8 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=ROOT, check=False, capture_output=True, text=True)
+def run_command(command: list[str]) -> ProcessResult:
+    return run_process(command, cwd=ROOT, timeout=30)
 
 
 def compact_output(text: str, *, limit: int = 1200) -> str:
