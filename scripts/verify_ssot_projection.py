@@ -68,10 +68,13 @@ def verify_projection(
         checks["contract"] = check("error", str(contract_path), "contract file is missing")
     else:
         contract_text = contract_path.read_text(encoding="utf-8")
+        required_boundary = "この public core は Discord への send / 自動返信 / reaction / delete / edit を直接実行しない"
         checks["contract"] = check(
-            "ok" if "Discord への send / 自動返信 / reaction / delete / edit はしない" in contract_text else "error",
+            "ok" if required_boundary in contract_text and "auto-send-preflight" in contract_text else "error",
             str(contract_path),
-            None if "Discord への send / 自動返信 / reaction / delete / edit はしない" in contract_text else "required stopline is missing",
+            None
+            if required_boundary in contract_text and "auto-send-preflight" in contract_text
+            else "required public-core send boundary is missing",
         )
 
     effective_commit = ssot_commit or _existing_ssot_commit(output_dir, runtimes) or export_runtime_skills.git_commit()

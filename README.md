@@ -3,8 +3,8 @@
 Discord Context Bridge は、Discordで見えている会話を local-first に取り込み、
 AIが安全に扱える文脈、返信前レビュー、送信直前の確認ログへ変換するための小さな橋です。
 
-このリポは **Discordへ自動送信しません**。
-送信ボタン、Enter送信、reaction、edit、delete は人間操作のままにします。
+この public core は **Discordへ直接送信しません**。
+既定は下書き入力までです。自動送信を使う場合は、private adapter 側で `auto-send-preflight` を通し、明示承認・宛先一致・idempotency・監査ログが揃った時だけ一回送信します。
 
 ## できること
 
@@ -19,6 +19,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
 | 下書き入力直前のgateを作る | `stage-discord-send` |
 | Chrome fill-only のdry-runを確認する | `verify-chrome-fill-dry-run` |
+| private adapter の自動送信許可を判定する | `auto-send-preflight` |
 | 人間送信後の状態を閉じる | `closeout-discord-send` |
 | 既存ログから送信テスト運転表を作る | `send-operation-status` |
 
@@ -33,7 +34,7 @@ flowchart LR
   stage --> human["人間が送信判断"]
 
   bridge -. "出さない" .-> raw["raw本文 / token / 実ID / 参加者名"]
-  stage -. "しない" .-> send["自動送信 / reaction / edit / delete"]
+  stage -. "public coreはしない" .-> send["自動送信 / reaction / edit / delete"]
 ```
 
 message found 後の最短入口は `bridge-intake` です。URL と可視テキストを渡すと、snapshot 保存 → coverage → context passport →（任意）guide-reply までを 1 コマンドで進めます。stdout は metadata-only です。
@@ -81,6 +82,8 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 4. テスト用チャンネルで人間が実送信
 5. 送信ログ/失敗時回復の確認
 6. 本番送信手順の固定化
+
+自動送信を使う場合は、上の 1-3 に加えて `auto-send-preflight` を通します。`ready_for_auto_send_adapter` になるまで private adapter は実送信しません。
 
 既存のgateログを吸い上げるには、`send-operation-status` を使います。
 
@@ -152,7 +155,7 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 - Bot REST backfill は bot token 用の環境変数の存在だけを使い、token 値は出力・保存しません。
 - Chrome profile から user token、cookie、localStorage を抽出して API に流用しません。
 - public package は本文処理、metadata-only report、gate、closeout を担当します。
-- Discord送信、reaction、edit、delete、repository visibility変更、外部投稿は、人間レビューと明示承認なしに実行しません。
+- Discord送信、reaction、edit、delete、repository visibility変更、外部投稿は、人間レビューと明示承認なしに実行しません。自動送信は private adapter 境界で `auto-send-preflight` が ready の時だけ許可します。
 - `send_message()` は意図的に無効です。
 
 ## 運用チェック

@@ -1,7 +1,7 @@
 # Discord送信テスト運転表
 
-このrunbookは、Discord Context Bridgeを「人間が送信する直前まで支える」ための手順です。
-このリポ自体はDiscordへ送信しません。送信ボタン、Enter送信、reaction、edit、deleteは人間操作です。
+このrunbookは、Discord Context Bridgeを「送信直前まで支える」ための手順です。
+既定は人間送信です。この public core 自体はDiscordへ送信しません。自動送信を使う場合は private adapter 境界で `auto-send-preflight` を通し、ready packet が出た一回だけ実行します。
 
 ## すぐ使う手順
 
@@ -17,7 +17,11 @@ flowchart TD
   closeout --> status["send-operation-statusで6点チェック吸い上げ"]
   status --> prod["本番送信手順へ進むか判断"]
 
-  stage -. "禁止" .-> auto_send["自動送信 / Enter送信 / 送信ボタンclick"]
+  dry --> auto_preflight["任意: auto-send-preflight"]
+  auto_preflight --> adapter["private adapter が一回送信"]
+  adapter --> closeout
+
+  stage -. "public coreでは禁止" .-> auto_send["自動送信 / Enter送信 / 送信ボタンclick"]
   dry -. "禁止" .-> reaction["reaction / edit / delete"]
   closeout -. "出力しない" .-> raw["raw本文 / URL / snowflake / 参加者名"]
 ```
@@ -33,6 +37,13 @@ flowchart TD
 - 通知用 webhook、別 guild の bot token、別用途の自動通知チャンネルを、目的チャンネルの代替経路として使わない。
 - ブラウザで進める場合は、ブラウザタイトルや画面上のサーバー名・チャンネル名を title evidence として確認する。
 - title evidence は `target_verified_by_browser_title` のような metadata に残し、raw URL / snowflake / handle を visible output に出さない。
+
+### 自動送信 preflight
+
+- 自動送信は `auto-send-preflight` が `ready_for_auto_send_adapter` を返した時だけ private adapter が実行できる。
+- 必須条件は、明示承認、対象 route 一致、ready な `stage-discord-send` packet、ready な `verify-chrome-fill-dry-run` report、transport 設定、operator label、idempotency key、rollback plan、metadata-only audit log。
+- `auto-send-preflight` が `blocked` の場合は送信しない。
+- public core の `send_message()` は無効のままにする。private adapter は idempotency key を使って一回だけ送信し、送信後は `closeout-discord-send` を必ず残す。
 
 ### 添付と停止の扱い
 
@@ -93,6 +104,24 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 5. テスト用チャンネルで人間が送信する
    - このリポは送信しません。
    - Chrome拡張や人間操作で下書き欄に入れたあと、最後の送信だけ人間が判断します。
+
+5-a. 任意: private adapter の自動送信 preflight を通す
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  auto-send-preflight \
+  --staging-packet .local/discord-context-bridge/staging-packet.json \
+  --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --explicit-auto-send-approval \
+  --target-route-verified \
+  --transport-label private-test-adapter \
+  --transport-configured \
+  --operator-label human-approved-operator \
+  --idempotency-key "<send-once-key>" \
+  --rollback-plan-reviewed \
+  --audit-log-path .local/discord-context-bridge/auto-send-audit.jsonl \
+  --json > .local/discord-context-bridge/auto-send-preflight.json
+```
 
 6. 送信後closeoutを取る
 

@@ -23,7 +23,7 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert manifest["schema"] == "discord_context_bridge_capability_manifest.v1"
     assert manifest["ssot_repo"] == "nexus-ai-2045/discord-context-bridge"
     assert {"codex", "claude-code", "grok", "antigravity"} <= set(manifest["runtime_targets"])
-    assert "no_discord_send" in manifest["stoplines"]
+    assert "no_public_core_direct_discord_send" in manifest["stoplines"]
     assert "no_playwright_default_for_discord_context" in manifest["stoplines"]
     assert "no_unapproved_visible_ui_automation" in manifest["stoplines"]
     assert "no_cross_route_webhook_or_bot_guessing" in manifest["stoplines"]
@@ -47,7 +47,8 @@ def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
     assert "ssot_repo: nexus-ai-2045/discord-context-bridge" in body
     assert "ssot_commit: testcommit123" in body
     assert "manifest_checksum:" in body
-    assert "Discord への send / 自動返信 / reaction / delete / edit はしない" in body
+    assert "この public core は Discord への send / 自動返信 / reaction / delete / edit を直接実行しない" in body
+    assert "auto-send-preflight" in body
     assert "Playwright / headless browser / 新規 browser profile を既定経路にしない" in body
     assert "no_unapproved_visible_ui_automation" in body
     assert "Computer Use 的な画面操作" in body
@@ -65,7 +66,7 @@ def test_verify_projection_detects_stale_generated_skill(tmp_path):
         ssot_commit="testcommit123",
     )
     stale_skill = output_dir / "grok" / "SKILL.md"
-    stale_skill.write_text(stale_skill.read_text(encoding="utf-8").replace("no_discord_send", "mutated"), encoding="utf-8")
+    stale_skill.write_text(stale_skill.read_text(encoding="utf-8").replace("no_public_core_direct_discord_send", "mutated"), encoding="utf-8")
 
     report = verify_module.verify_projection(
         manifest_path=ROOT / "capability" / "manifest.yaml",
@@ -111,7 +112,7 @@ def test_lint_runtime_skill_sync_detects_drift(tmp_path):
     target = tmp_path / "claude-code" / "SKILL.md"
     target.parent.mkdir()
     body = (ROOT / "dist" / "skills" / "claude-code" / "SKILL.md").read_text(encoding="utf-8")
-    target.write_text(body.replace("no_discord_send", "mutated_stopline"), encoding="utf-8")
+    target.write_text(body.replace("no_public_core_direct_discord_send", "mutated_stopline"), encoding="utf-8")
 
     report = module.lint_runtime_skill_sync(targets={"claude-code": target})
 

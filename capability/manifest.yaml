@@ -10,7 +10,7 @@ runtime_targets:
   - grok
   - antigravity
 stoplines:
-  - no_discord_send
+  - no_public_core_direct_discord_send
   - no_external_share
   - no_raw_discord_text_in_visible_output
   - no_tokens_or_cookies
@@ -42,6 +42,8 @@ required_commands:
     purpose: 可視テキストと下書きから返信前ガイドを作る
   - command: review-draft
     purpose: 下書きの文脈適合・トーン・不足前提を確認する
+  - command: auto-send-preflight
+    purpose: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
 verification_commands:
   - command: python3 scripts/verify_ssot_projection.py --json
     purpose: SSOT から生成された runtime skill が最新か確認する

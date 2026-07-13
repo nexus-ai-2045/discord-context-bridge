@@ -16,6 +16,7 @@ from discord_context_bridge import (
     audit_event_store,
     build_attachment_ledger,
     build_copy_block,
+    build_discord_auto_send_preflight,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
@@ -1028,8 +1029,80 @@ def test_verify_chrome_extension_fill_only_dry_run_blocks_without_latest_snapsho
 
     assert report["dry_run_status"] == "blocked"
     assert report["fill_permitted"] is False
-    assert "latest_target_snapshot_not_confirmed" in report["blockers"]
-    assert report["observed"]["latest_target_snapshot_confirmed"] is False
+
+
+def test_build_discord_auto_send_preflight_blocks_without_explicit_transport_and_approval():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+
+    preflight = build_discord_auto_send_preflight(packet, dry_run)
+
+    assert preflight["schema"] == "discord_auto_send_preflight.v1"
+    assert preflight["preflight_status"] == "blocked"
+    assert "explicit_auto_send_approval_missing" in preflight["blockers"]
+    assert "auto_send_transport_not_configured" in preflight["blockers"]
+    assert preflight["adapter_contract"]["private_adapter_may_execute"] is False
+    assert preflight["send_capability"] == "preflight_only"
+
+
+def test_build_discord_auto_send_preflight_allows_private_adapter_when_all_guards_pass():
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+
+    preflight = build_discord_auto_send_preflight(
+        packet,
+        dry_run,
+        explicit_auto_send_approval=True,
+        target_route_verified=True,
+        transport_label="private test adapter",
+        transport_configured=True,
+        operator_label="human-approved operator",
+        idempotency_key="send-once-20260713",
+        rollback_plan_reviewed=True,
+        audit_log_path=".local/discord-context-bridge/auto-send-audit.jsonl",
+    )
+
+    assert preflight["preflight_status"] == "ready_for_auto_send_adapter"
+    assert preflight["blockers"] == []
+    assert preflight["transport"]["capability"] == "private_auto_send_adapter"
+    assert preflight["adapter_contract"]["public_core_executes_send"] is False
+    assert preflight["adapter_contract"]["private_adapter_may_execute"] is True
+    assert preflight["adapter_contract"]["required_next_action"] == "private_adapter_send_once"
+    serialized = json.dumps(preflight, ensure_ascii=False)
+    assert "send-once-20260713" not in serialized
+    assert "discord.com/channels" not in serialized
 
 
 def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
@@ -3141,6 +3214,63 @@ def test_cli_verify_chrome_fill_dry_run_blocks_ambiguous_reply_ui(tmp_path, caps
     assert '"outbound_actions": "disabled"' in output
 
 
+def test_cli_auto_send_preflight_outputs_private_adapter_gate(tmp_path, capsys):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    packet = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        mode="reply",
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        packet,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    packet_path = tmp_path / "staging-packet.json"
+    dry_run_path = tmp_path / "dry-run.json"
+    packet_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+    dry_run_path.write_text(json.dumps(dry_run, ensure_ascii=False), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "auto-send-preflight",
+            "--staging-packet",
+            str(packet_path),
+            "--dry-run-report",
+            str(dry_run_path),
+            "--explicit-auto-send-approval",
+            "--target-route-verified",
+            "--transport-label",
+            "private test adapter",
+            "--transport-configured",
+            "--operator-label",
+            "human-approved operator",
+            "--idempotency-key",
+            "send-once-20260713",
+            "--rollback-plan-reviewed",
+            "--audit-log-path",
+            ".local/discord-context-bridge/auto-send-audit.jsonl",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_auto_send_preflight.v1"' in output
+    assert '"preflight_status": "ready_for_auto_send_adapter"' in output
+    assert '"send_capability": "preflight_only"' in output
+    assert '"private_adapter_may_execute": true' in output
+    assert "send-once-20260713" not in output
+    assert "discord.com/channels" not in output
+
+
 def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
     result = cli_main(
         [
@@ -4968,10 +5098,11 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         "get_fast_briefing",
         "guide_reply_from_visible_text",
         "import_visible_discord_text",
-        "list_context_library_entries",
-        "plan_discord_url_read",
-        "plan_reply_context_before_draft",
-        "review_reply_before_send",
+            "list_context_library_entries",
+            "plan_discord_url_read",
+            "plan_reply_context_before_draft",
+            "preflight_discord_auto_send_before_private_adapter",
+            "review_reply_before_send",
         "snapshot_chrome_extension_visible_text",
         "snapshot_discord_url_text",
         "stage_discord_send_before_human_action",

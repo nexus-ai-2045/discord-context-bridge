@@ -24,6 +24,7 @@ from .core import (
     build_attachment_ledger,
     load_jsonl_records,
     build_coverage_report,
+    build_discord_auto_send_preflight,
     build_discord_post_send_closeout_packet,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
@@ -408,6 +409,27 @@ def build_parser() -> argparse.ArgumentParser:
     chrome_fill.add_argument("--socket-pre-send", action="store_true", help="送信前停止地点で socket ping が通った")
     chrome_fill.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     chrome_fill.set_defaults(handler=_cmd_verify_chrome_fill_dry_run)
+
+    auto_send = sub.add_parser("auto-send-preflight", help="private adapter に自動送信を許可してよいかを判定する")
+    auto_send.add_argument("--staging-packet", type=Path, required=True, help="stage-discord-send が出した JSON packet")
+    auto_send.add_argument("--dry-run-report", type=Path, required=True, help="verify-chrome-fill-dry-run が出した JSON report")
+    auto_send.add_argument("--explicit-auto-send-approval", action="store_true", help="この会話で自動送信を明示承認済み")
+    auto_send.add_argument("--target-route-verified", action="store_true", help="private adapter の投稿先が対象 Discord route と一致した")
+    auto_send.add_argument("--transport-label", default="", help="private adapter / bot / webhook の安全ラベル。実 token や URL は避ける")
+    auto_send.add_argument("--transport-configured", action="store_true", help="private adapter が送信可能な状態で設定済み")
+    auto_send.add_argument("--operator-label", default="", help="実行者または承認者の安全ラベル")
+    auto_send.add_argument("--idempotency-key", default="", help="一回送信を保証するための idempotency key。出力には表示しません")
+    auto_send.add_argument("--rollback-plan-reviewed", action="store_true", help="失敗時の修正投稿/停止/人間確認手順を確認済み")
+    auto_send.add_argument("--audit-log-path", default="", help="送信前後の metadata-only 監査ログ保存先。出力には表示しません")
+    auto_send.add_argument("--production-runbook-fixed", action="store_true", help="本番送信用手順を固定・レビュー済み")
+    auto_send.add_argument(
+        "--target-environment",
+        choices=["test", "production"],
+        default="test",
+        help="対象がテスト用か本番用か",
+    )
+    auto_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    auto_send.set_defaults(handler=_cmd_auto_send_preflight)
 
     closeout_send = sub.add_parser("closeout-discord-send", help="人間送信後の metadata-only closeout を確認する")
     closeout_send.add_argument("--staging-packet", type=Path, help="任意: stage-discord-send が出した JSON packet")
@@ -1243,6 +1265,33 @@ def _cmd_verify_chrome_fill_dry_run(args: argparse.Namespace) -> int:
     if report["blockers"]:
         print("blockers: " + " / ".join(report["blockers"]))
     print(report["send_capability_label"])
+    return exit_code
+
+
+def _cmd_auto_send_preflight(args: argparse.Namespace) -> int:
+    packet = build_discord_auto_send_preflight(
+        json.loads(args.staging_packet.read_text(encoding="utf-8")),
+        json.loads(args.dry_run_report.read_text(encoding="utf-8")),
+        explicit_auto_send_approval=args.explicit_auto_send_approval,
+        target_route_verified=args.target_route_verified,
+        transport_label=args.transport_label,
+        transport_configured=args.transport_configured,
+        operator_label=args.operator_label,
+        idempotency_key=args.idempotency_key,
+        rollback_plan_reviewed=args.rollback_plan_reviewed,
+        audit_log_path=args.audit_log_path,
+        production_runbook_fixed=args.production_runbook_fixed,
+        target_environment=args.target_environment,
+    )
+    exit_code = 0 if packet["preflight_status"] == "ready_for_auto_send_adapter" else 2
+    if args.json:
+        print(_json(packet))
+        return exit_code
+    print(packet["message"])
+    print(f"preflight_status: {packet['preflight_status']}")
+    if packet["blockers"]:
+        print("blockers: " + " / ".join(packet["blockers"]))
+    print(packet["send_capability_label"])
     return exit_code
 
 

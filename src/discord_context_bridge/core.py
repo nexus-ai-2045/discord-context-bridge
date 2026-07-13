@@ -3595,6 +3595,115 @@ def verify_chrome_extension_fill_only_dry_run(
     }
 
 
+def build_discord_auto_send_preflight(
+    staging_packet: dict[str, Any],
+    dry_run_report: dict[str, Any],
+    *,
+    explicit_auto_send_approval: bool = False,
+    target_route_verified: bool = False,
+    transport_label: str = "",
+    transport_configured: bool = False,
+    operator_label: str = "",
+    idempotency_key: str = "",
+    rollback_plan_reviewed: bool = False,
+    audit_log_path: str = "",
+    production_runbook_fixed: bool = False,
+    target_environment: str = "test",
+) -> dict[str, Any]:
+    """Gate a private adapter before it performs an automatic Discord send.
+
+    The public core still performs no outbound action. This packet is a
+    fail-closed contract for a separate private transport that can execute only
+    after the draft, browser target, approval, idempotency, and audit evidence
+    are all present.
+    """
+    normalized_environment = target_environment.strip().casefold() or "test"
+    if normalized_environment not in {"test", "production"}:
+        normalized_environment = "unknown"
+    safe_transport_label = redact_artifact_text(transport_label)
+    safe_operator_label = redact_artifact_text(operator_label)
+    safe_audit_log_path = redact_artifact_text(audit_log_path)
+    safe_idempotency_key = redact_artifact_text(idempotency_key)
+    blockers: list[str] = []
+
+    if staging_packet.get("schema") != "discord_send_staging_packet.v1":
+        blockers.append("invalid_staging_packet")
+    if staging_packet.get("staging_status") != "ready_to_fill":
+        blockers.append("staging_packet_not_ready")
+    if dry_run_report.get("schema") != "chrome_extension_fill_only_dry_run.v1":
+        blockers.append("invalid_dry_run_report")
+    if dry_run_report.get("dry_run_status") != "ready_to_fill" or dry_run_report.get("fill_permitted") is not True:
+        blockers.append("dry_run_not_ready")
+    if not explicit_auto_send_approval:
+        blockers.append("explicit_auto_send_approval_missing")
+    if not target_route_verified:
+        blockers.append("target_route_not_verified")
+    if not transport_configured:
+        blockers.append("auto_send_transport_not_configured")
+    if not safe_transport_label:
+        blockers.append("transport_label_required")
+    if not safe_operator_label:
+        blockers.append("operator_label_required")
+    if not safe_idempotency_key:
+        blockers.append("idempotency_key_required")
+    if not rollback_plan_reviewed:
+        blockers.append("rollback_plan_not_reviewed")
+    if not safe_audit_log_path:
+        blockers.append("audit_log_path_required")
+    if normalized_environment == "production" and not production_runbook_fixed:
+        blockers.append("production_runbook_not_fixed")
+    if normalized_environment == "unknown":
+        blockers.append("invalid_target_environment")
+
+    preflight_status = "ready_for_auto_send_adapter" if not blockers else "blocked"
+    adapter_contract = {
+        "schema": "discord_auto_send_adapter_contract.v1",
+        "public_core_executes_send": False,
+        "private_adapter_may_execute": preflight_status == "ready_for_auto_send_adapter",
+        "required_next_action": "private_adapter_send_once" if preflight_status == "ready_for_auto_send_adapter" else "fix_blockers",
+        "idempotency_required": True,
+        "post_send_closeout_required": True,
+        "must_record": [
+            "transport_label",
+            "operator_label",
+            "idempotency_key",
+            "target_route_verified",
+            "post_send_message_observed",
+        ],
+    }
+    return {
+        "schema": "discord_auto_send_preflight.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "自動送信用 preflight は private adapter 実行可能です。"
+        if preflight_status == "ready_for_auto_send_adapter"
+        else "自動送信用 preflight は gate で停止しました。",
+        "preflight_status": preflight_status,
+        "blockers": blockers,
+        "target_environment": normalized_environment,
+        "target_route_verified": target_route_verified,
+        "transport": {
+            "label": safe_transport_label,
+            "configured": transport_configured,
+            "capability": "private_auto_send_adapter" if transport_configured else "missing",
+        },
+        "operator_label": safe_operator_label,
+        "idempotency_key_output": "omitted" if safe_idempotency_key else "not_provided",
+        "audit_log_path_output": "omitted" if safe_audit_log_path else "not_provided",
+        "approval": {
+            "explicit_auto_send_approval": explicit_auto_send_approval,
+            "rollback_plan_reviewed": rollback_plan_reviewed,
+            "production_runbook_fixed": production_runbook_fixed,
+        },
+        "adapter_contract": adapter_contract,
+        "outbound_actions": "adapter_required",
+        "send_capability": "preflight_only",
+        "send_capability_label": "この public core は送信しません。条件が揃った時だけ private adapter に一回送信を許可する preflight です。",
+        "raw_discord_text_output": "omitted",
+        "target_url_output": "omitted",
+        "snowflake_values_output": "omitted",
+    }
+
+
 def build_discord_post_send_closeout_packet(
     *,
     staging_packet: dict[str, Any] | None = None,
