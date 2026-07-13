@@ -24,7 +24,20 @@
 4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
 5. `coverage-report` と `thread-capture-plan` で full / partial / blocked を確認する。
 6. `context-passport` で文脈カードを作る。
-7. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
+7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+8. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+9. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
+
+## 返信前最低文脈 gate
+
+返信支援の生成入口は fail-closed とする。本文が1件以上あることや、人間が理解確認を押したことだけでは返信候補を生成しない。
+
+- スレッド起点を取得済み。
+- 返信対象を取得済み。
+- 返信対象までの直前10件を取得済み。ただしスレッド全履歴が10件未満で、履歴終端を確認した場合は取得可能な全件でよい。
+- 未解決参照が0件。
+
+不足時は `reply_context_expand_required` と次の取得件数を返す。取得上限に達した場合は `reply_context_limit_reached`、認証・権限・rate limit の場合は取得層の reason code を保持して停止する。いずれも raw本文、参加者名、実IDをstdoutへ返さず、Discord writeは無効のままにする。
 8. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
 
 ## 更新・保存・完了保証

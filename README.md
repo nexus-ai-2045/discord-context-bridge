@@ -14,6 +14,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | 可視テキストを取り込む | `import-visible-text` |
 | Bot REST API で履歴を private 保存する | `python scripts/discord_rest_backfill.py --url ... --json` |
 | 文脈を整理する | `context-passport` |
+| 返信前の最低文脈を確認する | `reply-context-plan` |
 | 返信前に本文を確認する | `review-draft` / `guide-reply` |
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
 | 下書き入力直前のgateを作る | `stage-discord-send` |
@@ -194,6 +195,7 @@ python3 scripts/boundary_logic_check.py --json
 - [docs/codex-discord-ingress.md](docs/codex-discord-ingress.md): Codexから読む時の入口
 - [docs/full-reference.md](docs/full-reference.md): 以前の詳細README全文
 - [references/initial-thread-ruleset.md](references/initial-thread-ruleset.md): 13工程MVPの判断正本
+- [docs/reply-context-routing.md](docs/reply-context-routing.md): 返信前10件gateの状態遷移と保証境界
 
 ### Discord Desktop 通知 metadata probe
 

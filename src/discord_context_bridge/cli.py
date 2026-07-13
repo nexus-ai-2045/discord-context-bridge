@@ -32,6 +32,7 @@ from .core import (
     build_latest_snapshot_report,
     plan_full_thread_capture,
     build_review_artifact_markdown,
+    build_reply_context_gate,
     build_bridge_intake,
     build_url_intake_fast_path,
     context_passport_from_text,
@@ -113,6 +114,27 @@ def split_local_command(command: str) -> list[str]:
         finally:
             ctypes.windll.kernel32.LocalFree(argv)
     return shlex.split(command, posix=os.name != "nt")
+
+
+def _add_reply_context_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--thread-root-present", action="store_true", help="スレッド起点を取得済み")
+    parser.add_argument("--reply-target-present", action="store_true", help="返信対象を取得済み")
+    parser.add_argument("--prior-message-count", type=int, default=0, help="返信対象より前に取得した会話件数")
+    parser.add_argument("--history-exhausted", action="store_true", help="これ以前の履歴がないことを確認済み")
+    parser.add_argument("--unresolved-reference-count", type=int, default=0, help="追加取得が必要な未解決参照数")
+    parser.add_argument("--max-context-messages", type=int, default=100, help="自動追加取得の安全上限")
+
+
+def _reply_context_gate_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return build_reply_context_gate(
+        thread_root_present=args.thread_root_present,
+        reply_target_present=args.reply_target_present,
+        prior_message_count=args.prior_message_count,
+        history_exhausted=args.history_exhausted,
+        unresolved_reference_count=args.unresolved_reference_count,
+        fetched_message_count=args.prior_message_count + int(args.reply_target_present),
+        max_context_messages=args.max_context_messages,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -225,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="文脈理解サマリを人間が確認済みの場合だけ guide を本審査する",
     )
+    _add_reply_context_args(bridge_intake)
     bridge_intake.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     bridge_intake.set_defaults(handler=_cmd_bridge_intake)
 
@@ -304,6 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
     full_thread.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     full_thread.set_defaults(handler=_cmd_thread_capture_plan)
 
+    reply_context = sub.add_parser("reply-context-plan", help="返信前の起点・対象・直前10件を本文なしで判定する")
+    _add_reply_context_args(reply_context)
+    reply_context.add_argument("--json", action="store_true", help="互換用。常にJSONを出力します")
+    reply_context.set_defaults(handler=_cmd_reply_context_plan)
+
     cache_first = sub.add_parser(
         "cache-first-intake",
         help="ローカル cache / snapshot を先に見て private MD book を作る",
@@ -346,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
     review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
     review.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
+    _add_reply_context_args(review)
     review.set_defaults(handler=_cmd_review_intent)
 
     draft_review = sub.add_parser("review-draft", help="返信下書きを保存済みの直近文脈と照合する")
@@ -354,6 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft_review.add_argument("--thread-key", default="manual-thread", help="review registry に保存する時の安全な thread key")
     draft_review.add_argument("--save-review-state", action="store_true", help="safe metadata だけを review registry に保存する")
     draft_review.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
+    _add_reply_context_args(draft_review)
     draft_review.set_defaults(handler=_cmd_review_intent)
 
     stage_send = sub.add_parser("stage-discord-send", help="Discord 返信/メンションの下書き入力準備だけを作る")
@@ -362,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     stage_send.add_argument("--target-url", required=True, help="対象 Discord URL。出力には表示しません")
     stage_send.add_argument("--mention-label", default="", help="メンション運用時に人間が確認する表示名。例: @safe-label")
     stage_send.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ準備を進める")
+    _add_reply_context_args(stage_send)
     stage_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     stage_send.set_defaults(handler=_cmd_stage_discord_send)
 
@@ -432,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     guide.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
     guide.add_argument("--draft", required=True, help="送信前に確認したい返信下書き")
     guide.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
+    _add_reply_context_args(guide)
     guide.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     guide.set_defaults(handler=_cmd_guide_reply)
 
@@ -783,6 +815,7 @@ def _cmd_bridge_intake(args: argparse.Namespace) -> int:
         target_key=args.target_key,
         guild_label=args.guild,
         channel_label=args.channel,
+        reply_context_gate=_reply_context_gate_from_args(args),
     )
     if args.json:
         print(_json(payload))
@@ -1024,6 +1057,12 @@ def _cmd_thread_capture_plan(args: argparse.Namespace) -> int:
     return 0 if payload["ok"] else 2
 
 
+def _cmd_reply_context_plan(args: argparse.Namespace) -> int:
+    payload = _reply_context_gate_from_args(args)
+    print(_json(payload))
+    return 0 if payload["reply_generation_allowed"] else 2
+
+
 def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
     payload = build_cache_first_intake(
         url=args.url,
@@ -1090,7 +1129,12 @@ def _cmd_audit_context_store(args: argparse.Namespace) -> int:
 
 
 def _cmd_review_intent(args: argparse.Namespace) -> int:
-    review = review_reply_intent(args.draft, load_events(args.store), understanding_confirmed=args.understanding_confirmed)
+    review = review_reply_intent(
+        args.draft,
+        load_events(args.store),
+        understanding_confirmed=args.understanding_confirmed,
+        reply_context_gate=_reply_context_gate_from_args(args),
+    )
     review = {
         **review,
         "likely_counterparty_meaning": "omitted",
@@ -1124,7 +1168,7 @@ def _cmd_review_intent(args: argparse.Namespace) -> int:
             },
         }
     print(_json(review))
-    return 0
+    return 0 if review.get("copy_block", {}).get("status") in {"ready", "split"} else 2
 
 
 def _cmd_guide_reply(args: argparse.Namespace) -> int:
@@ -1135,10 +1179,11 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
         guild_label=args.guild,
         channel_label=args.channel,
         understanding_confirmed=args.understanding_confirmed,
+        reply_context_gate=_reply_context_gate_from_args(args),
     )
     if args.json:
         print(_json(guide))
-        return 0
+        return 0 if guide.get("reply_review", {}).get("copy_block", {}).get("status") in {"ready", "split"} else 2
     print(guide["message"])
     print(f"解析件数: {guide['parsed']}")
     print(f"相手側の文脈: {guide['counterparty_context']}")
@@ -1150,7 +1195,7 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
     for action in guide["next_actions"]:
         print(f"- {action}")
     print(guide["send_capability_label"])
-    return 0
+    return 0 if review.get("copy_block", {}).get("status") in {"ready", "split"} else 2
 
 
 def _cmd_stage_discord_send(args: argparse.Namespace) -> int:
@@ -1161,6 +1206,7 @@ def _cmd_stage_discord_send(args: argparse.Namespace) -> int:
         target_url=args.target_url,
         mention_label=args.mention_label,
         understanding_confirmed=args.understanding_confirmed,
+        reply_context_gate=_reply_context_gate_from_args(args),
     )
     exit_code = 0 if packet["staging_status"] == "ready_to_fill" else 2
     if args.json:

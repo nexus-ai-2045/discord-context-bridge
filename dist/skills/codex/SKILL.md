@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: c6be551e0ca1b4348f280b2fc82c545e6d998d38
+ssot_commit: 3f54e748f44214905a1011d0b59da70abee4125e
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: d1480dfcdba29a974faaa56cfa6869eeeafe0ef6b56cf383262d1cc5c5f4449c
-contract_checksum: ad1e12e2bb81478343a666bbf6d41d80236823e5949c0ce341462006f0254f6f
-generated_at: 2026-07-09T11:21:58+00:00
+manifest_checksum: de364ed024f95cea437301bdbc624cc74837ab16c3e1dd7a7e9cde685d4d1e1c
+contract_checksum: 3fda0a51cee85bcf1a92dded546b975fbec096221a4a8a92a4815171b9114604
+generated_at: 2026-07-12T23:46:36+00:00
 runtime_target: codex
 ---
 
@@ -42,7 +42,20 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
 5. `coverage-report` と `thread-capture-plan` で full / partial / blocked を確認する。
 6. `context-passport` で文脈カードを作る。
-7. 返信案がある時だけ `guide-reply` または `review-draft` で確認する。
+7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+8. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+9. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
+
+## 返信前最低文脈 gate
+
+返信支援の生成入口は fail-closed とする。本文が1件以上あることや、人間が理解確認を押したことだけでは返信候補を生成しない。
+
+- スレッド起点を取得済み。
+- 返信対象を取得済み。
+- 返信対象までの直前10件を取得済み。ただしスレッド全履歴が10件未満で、履歴終端を確認した場合は取得可能な全件でよい。
+- 未解決参照が0件。
+
+不足時は `reply_context_expand_required` と次の取得件数を返す。取得上限に達した場合は `reply_context_limit_reached`、認証・権限・rate limit の場合は取得層の reason code を保持して停止する。いずれも raw本文、参加者名、実IDをstdoutへ返さず、Discord writeは無効のままにする。
 8. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
 
 ## 更新・保存・完了保証
@@ -166,6 +179,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 - `rest-backfill`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
+- `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
 - `coverage-report`: Discord URL / target_key の coverage と freshness を本文なしで確認する
 - `chrome-visible-fallback-guard`: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する

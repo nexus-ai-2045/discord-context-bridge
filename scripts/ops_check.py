@@ -193,6 +193,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         ingest_route_policy_command.append("--skip-local-claude-skill")
     all_checks = {
         "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env),
+        "返信文脈契約": lambda: run_command(
+            "返信文脈契約",
+            [sys.executable, "-m", "pytest", "tests/test_reply_context_contract.py", "-q"],
+            env=env,
+        ),
         "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
         "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
         "version整合性": lambda: run_command("version整合性", [sys.executable, "scripts/bump_version.py", "--check"]),
@@ -292,6 +297,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "compile",
                 "差分チェック",
                 "秘密情報スキャン",
+                "返信文脈契約",
                 "boundary logic",
                 "url-intake-fast-path smoke",
                 "discord-url-measure smoke",
