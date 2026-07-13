@@ -17,6 +17,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | 返信前の最低文脈を確認する | `reply-context-plan` |
 | 返信前に本文を確認する | `review-draft` / `guide-reply` |
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
+| Discord Desktop本体cacheの対象設定を確認する | `desktop-cache-probe` |
 | 下書き入力直前のgateを作る | `stage-discord-send` |
 | Chrome fill-only のdry-runを確認する | `verify-chrome-fill-dry-run` |
 | 人間送信後の状態を閉じる | `closeout-discord-send` |
@@ -54,6 +55,16 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --input /path/to/visible-discord-text.txt \
   --guild example-community \
   --channel planning
+```
+
+Discord Desktop本体の現行cacheをread-onlyで確認する場合は、次を使います。`--include-labels` を付けない限りチャンネル名と掲示板タグ名は返しません。Mac / Windows / Linuxの標準保存場所の差分はadapter側で吸収し、絶対path・Discord ID・raw本文は出力しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  desktop-cache-probe \
+  --url 'https://discord.com/channels/<guild>/<channel>' \
+  --include-labels \
+  --json
 ```
 
 ```bash

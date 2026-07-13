@@ -14,9 +14,14 @@
 
 - 必須入力: Discord channel URL
 - 任意入力: `--user-data-dir`
-- macOSの自動検出: 実行中Discord/Electronプロセスの `--user-data-dir` を読む
-- 自動検出できない場合: 標準候補を存在確認するが、推測で確定扱いしない
+- 解決順序: 明示指定、実行中Discord/Electronプロセスの `--user-data-dir`、OS標準候補
+- macOS標準候補: `~/Library/Application Support/discord`
+- Windows標準候補: `%APPDATA%\discord`
+- Linux標準候補: `~/.config/discord`
+- OS標準候補は実在確認できた場合だけ採用し、存在しない候補を推測で確定扱いしない
 - 対象cache: `<user-data-dir>/Cache/Cache_Data`
+
+標準出力には絶対pathを返さず、`explicit` / `running_process` / `platform_default` の検出元だけを返す。Mac / Windows間でraw cacheを同期対象にはせず、各hostでprobeしたmetadata-only結果だけを同じschemaへ正規化する。
 
 ## Chromium Simple Cache解析
 
