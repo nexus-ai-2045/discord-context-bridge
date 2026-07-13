@@ -186,7 +186,7 @@ visible inputを次に分類する。
 - child processへ親環境を全量継承しない。
 - secret providerへ渡す環境変数をallowlist化する。
 - stdoutは1行・size上限・token形式を検証する。
-- stderr、token、cookie、Authorization、webhookを永続化しない。
+- stderr、token、cookie、認証header、webhookを永続化しない。
 - timeoutとprocess-tree cleanupを共通化する。
 
 ### private artifact

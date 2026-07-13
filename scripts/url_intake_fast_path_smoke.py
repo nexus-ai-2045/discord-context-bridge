@@ -30,6 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run_fast_path(snapshot_store: Path, raw_cache: Path, visible_text: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [
@@ -52,6 +53,8 @@ def run_fast_path(snapshot_store: Path, raw_cache: Path, visible_text: Path) -> 
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=20,
     )
 

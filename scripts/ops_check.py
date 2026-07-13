@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,6 +14,11 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from discord_context_bridge.process_runner import minimal_child_env, run_process
 
 
 @dataclass(frozen=True)
@@ -22,6 +28,11 @@ class CheckResult:
     elapsed: float
     command: list[str]
     output: str
+    failure_stage: str | None = None
+    output_truncated: bool = False
+
+
+DEFAULT_COMMAND_TIMEOUT: float | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,21 +47,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--http", action="store_true", help="HTTP MCP 起動スモークも含める")
     parser.add_argument("--skip-http", action="store_true", help="HTTP MCP 起動スモークを省略する（既定動作の明示用）")
     parser.add_argument("--gh", action="store_true", help="GitHub account と remote owner の一致も確認する")
-    parser.add_argument("--gh-switch", action="store_true", help="GitHub account 不一致時に remote owner へ切り替える")
     parser.add_argument("--gh-account-only", action="store_true", help="GitHub token ではなく account 一致だけを確認する")
     parser.add_argument("--fail-fast", action="store_true", help="失敗した時点で終了する")
     return parser.parse_args(argv)
 
 
-def run_command(name: str, command: list[str], *, env: dict[str, str] | None = None) -> CheckResult:
+def run_command(
+    name: str,
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> CheckResult:
     started = time.perf_counter()
-    completed = subprocess.run(
+    completed = run_process(
         command,
         cwd=ROOT,
         env=env,
-        check=False,
-        capture_output=True,
-        text=True,
+        timeout=DEFAULT_COMMAND_TIMEOUT if timeout is None else timeout,
     )
     output = (completed.stdout or "") + (completed.stderr or "")
     return CheckResult(
@@ -59,7 +73,21 @@ def run_command(name: str, command: list[str], *, env: dict[str, str] | None = N
         elapsed=time.perf_counter() - started,
         command=command,
         output=output,
+        failure_stage=completed.failure_stage,
+        output_truncated=completed.output_truncated,
     )
+
+
+def run_compile_check() -> CheckResult:
+    cache_root = Path(tempfile.mkdtemp(prefix="dcb-pycache-"))
+    try:
+        return run_command(
+            "compile",
+            [sys.executable, "-m", "compileall", "src", "tests", "scripts"],
+            env={"PYTHONPYCACHEPREFIX": str(cache_root)},
+        )
+    finally:
+        shutil.rmtree(cache_root, ignore_errors=True)
 
 
 def run_secret_scan() -> CheckResult:
@@ -172,7 +200,9 @@ def smoke_store_paths() -> tuple[Path, Path]:
 
 
 def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult]]:
-    env = os.environ.copy()
+    global DEFAULT_COMMAND_TIMEOUT
+    DEFAULT_COMMAND_TIMEOUT = 20.0 if args.profile == "fast" else 60.0
+    env = minimal_child_env()
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     smoke_store, context_store = smoke_store_paths()
     smoke_command = [
@@ -192,13 +222,13 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
     if os.environ.get("CI"):
         ingest_route_policy_command.append("--skip-local-claude-skill")
     all_checks = {
-        "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env),
+        "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env, timeout=120.0),
         "返信文脈契約": lambda: run_command(
             "返信文脈契約",
             [sys.executable, "-m", "pytest", "tests/test_reply_context_contract.py", "-q"],
             env=env,
         ),
-        "compile": lambda: run_command("compile", [sys.executable, "-m", "compileall", "src", "tests", "scripts"]),
+        "compile": run_compile_check,
         "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
         "version整合性": lambda: run_command("version整合性", [sys.executable, "scripts/bump_version.py", "--check"]),
         "秘密情報スキャン": run_secret_scan,
@@ -310,8 +340,6 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         args.gh = True
     if args.gh:
         gh_command = [sys.executable, "scripts/gh_guard.py"]
-        if args.gh_switch:
-            gh_command.append("--switch")
         if args.gh_account_only:
             gh_command.append("--account-only")
         checks["GitHub account確認"] = lambda: run_command("GitHub account確認", gh_command, env=env)
