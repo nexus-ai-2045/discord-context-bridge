@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for claude-code; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 01e11ea87d5903c15920cc09809bdf534d5c350e
+ssot_commit: 91f968b9c810946359174dc0ac31817df9899e6a
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: b3089566edb7c6fabe6683288bea699067fefe99e2b29fbf3db6d60679867a92
 contract_checksum: c52f902b50664055d1d685a6a3ba2076ac4a883b23fb33c5f525cbfac82cb03b
-generated_at: 2026-07-13T12:20:09+00:00
+generated_at: 2026-07-13T12:21:10+00:00
 runtime_target: claude-code
 ---
 

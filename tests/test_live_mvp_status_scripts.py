@@ -1296,6 +1296,40 @@ def test_ops_check_includes_status_dashboard():
     assert "status dashboard" in checks
 
 
+def test_ops_check_requires_local_runtime_skill_outside_ci(monkeypatch):
+    captured: list[list[str]] = []
+
+    def fake_run_command(name: str, command: list[str], **kwargs) -> ops_check.CheckResult:
+        captured.append(command)
+        return ops_check.CheckResult(name, True, 0.0, command, "")
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    checks = ops_check.build_checks(ops_check.parse_args(["--skip-http"]))
+
+    checks["runtime skill sync lint"]()
+
+    assert captured
+    assert "--allow-missing" not in captured[0]
+
+
+def test_ops_check_allows_missing_local_runtime_skill_in_ci(monkeypatch):
+    captured: list[list[str]] = []
+
+    def fake_run_command(name: str, command: list[str], **kwargs) -> ops_check.CheckResult:
+        captured.append(command)
+        return ops_check.CheckResult(name, True, 0.0, command, "")
+
+    monkeypatch.setenv("CI", "1")
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    checks = ops_check.build_checks(ops_check.parse_args(["--skip-http"]))
+
+    checks["runtime skill sync lint"]()
+
+    assert captured
+    assert "--allow-missing" in captured[0]
+
+
 def test_ops_check_fast_profile_includes_reply_context_contract():
     args = ops_check.parse_args(["--profile", "fast", "--skip-http"])
 

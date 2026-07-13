@@ -180,6 +180,33 @@ python3 scripts/lint_runtime_skill_sync.py \
   --json
 ```
 
+`generated_at` は `ssot_commit` の commit timestamp から決定し、同じ commit からの再生成で同じ値になります。
+`verify_ssot_projection.py` は、`ssot_commit` に保存された manifest / contract と現在の checksum、`generated_at` を照合します。
+commit hash の自己参照を避けるため、SSOT を変更する時は次の 2 段階にします。
+
+1. `capability/manifest.yaml` / `docs/operating-contract.md` の変更を先に commit する。
+2. その commit を指して runtime skill を再生成し、生成物を次の commit 候補にする。
+
+`post-commit` からの自動生成・local runtime 更新は行いません。
+
+local runtime skill の更新は既定で read-only です。同期を明示する場合だけ `--apply` を付けます。
+`--apply` は1回につき1 targetだけを受け付け、symlinkを含む配置先や未登録runtimeは書き込み前に拒否します。
+
+```bash
+python3 scripts/sync_runtime_skills.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --json
+# 差分を確認し、人間レビュー後にだけ実行
+python3 scripts/sync_runtime_skills.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --apply \
+  --json
+```
+
+hook は `post-commit` で自動同期しません。commit 後の worktree dirty 化と user runtime の意図しない変更を避けるためです。
+必要な場合は `pre-push` から `verify_ssot_projection.py --json` と上記 read-only check だけを呼び、hook 有効化は別の明示承認で扱います。
+local ops checkではClaude runtime skillを必須とし、CI環境だけ未配置をwarningとして許可します。存在するstale skillはCIでも失敗します。
+
 PR前には次も確認します。
 
 ```bash
