@@ -97,6 +97,11 @@ def test_generated_runtime_skills_include_visible_ui_automation_stopline():
     for skill in (ROOT / "dist" / "skills").glob("*/SKILL.md"):
         body = skill.read_text(encoding="utf-8")
         assert "no_unapproved_visible_ui_automation" in body
+        assert "no_ocr_for_dcb_text_intake" in body
+        assert "no_clipboard_without_explicit_clipboard_request" in body
+        assert "raw本文は private artifact / local store に保存する" in body
+        assert "visible output には raw本文を貼らず" in body
+        assert "private chat に本文を出す" not in body
         assert "Computer Use 的な画面操作" in body
         assert "SendKeys" in body
         assert "ユーザーの明示許可なしに実行しない" in body
@@ -121,3 +126,10 @@ def test_discord_send_runbook_blocks_wrong_route_and_unverified_done_claims():
 
     for term in required_terms:
         assert term in body
+
+
+def test_process_boundary_removes_ocr_as_discord_text_intake_fallback():
+    body = (ROOT / "PROCESS_BOUNDARY.md").read_text(encoding="utf-8")
+
+    assert "Accessibility が空読み | OCR private adapter へ切る" not in body
+    assert "画像添付のOCRが必要 | DCB本文取得ではなく" in body

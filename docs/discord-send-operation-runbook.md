@@ -52,6 +52,14 @@ flowchart TD
 - Unicode 分解文字などでブラウザ upload が不安定な場合、repo外の一時 ASCII 名コピーまたは hard link は使ってよい。ただし元ファイルと同一内容であることを local evidence に残す。
 - ユーザーが停止した場合は not_sent として閉じる。入力欄準備、添付試行、送信先確認は送信済みではない。
 
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  closeout-discord-send \
+  --external-action-state not-sent \
+  --note-label "user-stopped-before-send" \
+  --json > .local/discord-context-bridge/not-sent-closeout.json
+```
+
 ### closeout 出力
 
 - closeout は DCB の metadata-only 状態として残す。

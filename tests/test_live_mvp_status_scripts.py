@@ -304,7 +304,7 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert payload["routes"]["rest_backfill"]["route_class"] == "main"
     assert payload["routes"]["bot_private_ingest"]["route_class"] == "main"
     assert payload["routes"]["computer_use_discord"]["route_class"] == "visual_fallback"
-    assert payload["routes"]["ocr_region"]["route_class"] == "last_fallback"
+    assert "ocr_region" not in payload["routes"]
     assert payload["routes"]["discord_configure"]["token_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["token_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["raw_text_output"] == "omitted"
@@ -313,7 +313,6 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert payload["routes"]["discord_access"]["pending_count"] == 1
     assert payload["routes"]["bot_private_ingest"]["outbound_actions"] == "disabled"
     assert payload["routes"]["computer_use_discord"]["send_capability"] == "disabled_by_policy"
-    assert payload["routes"]["ocr_region"]["full_screen_capture"] == "disabled_by_policy"
     assert "synthetic-secret" not in rendered
     assert "123456789012345678" not in rendered
     assert "987654321098765432" not in rendered

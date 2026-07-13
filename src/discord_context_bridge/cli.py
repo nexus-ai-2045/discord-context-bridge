@@ -434,6 +434,12 @@ def build_parser() -> argparse.ArgumentParser:
     closeout_send = sub.add_parser("closeout-discord-send", help="人間送信後の metadata-only closeout を確認する")
     closeout_send.add_argument("--staging-packet", type=Path, help="任意: stage-discord-send が出した JSON packet")
     closeout_send.add_argument("--dry-run-report", type=Path, help="任意: verify-chrome-fill-dry-run が出した JSON report")
+    closeout_send.add_argument(
+        "--external-action-state",
+        choices=["human-sent", "not-sent"],
+        default="human-sent",
+        help="外部 action の状態。途中停止や添付失敗で送信しなかった場合は not-sent",
+    )
     closeout_send.add_argument("--human-sent-observed", action="store_true", help="Discord 上で人間送信済み message を確認した")
     closeout_send.add_argument("--human-reviewed", action="store_true", help="送信後の見え方を人間が確認済み")
     closeout_send.add_argument(
@@ -1301,6 +1307,7 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
     packet = build_discord_post_send_closeout_packet(
         staging_packet=staging_packet,
         dry_run_report=dry_run_report,
+        external_action_state=args.external_action_state,
         human_sent_observed=args.human_sent_observed,
         human_reviewed=args.human_reviewed,
         observed_text_status=args.observed_text_status,
@@ -1310,7 +1317,7 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         observed_url=args.observed_url,
         note_label=args.note_label,
     )
-    exit_code = 0 if packet["closeout_status"] == "closed" else 2
+    exit_code = 0 if packet["closeout_status"] in {"closed", "not_sent"} else 2
     if args.json:
         print(_json(packet))
         return exit_code

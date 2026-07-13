@@ -1193,6 +1193,32 @@ def test_build_discord_post_send_closeout_packet_blocks_missing_human_observatio
     assert closeout["recommended_next_state"] == "verify_visible_message"
 
 
+def test_build_discord_post_send_closeout_packet_closes_not_sent_without_send_observation():
+    closeout = build_discord_post_send_closeout_packet(
+        external_action_state="not_sent",
+        note_label="user stopped before send",
+    )
+
+    assert closeout["closeout_status"] == "not_sent"
+    assert closeout["external_action_state"] == "not_sent"
+    assert closeout["blockers"] == []
+    assert closeout["recommended_next_state"] == "done"
+    assert closeout["observed_text_status"] == "not_applicable"
+    assert closeout["unread_check_status"] == "not_applicable"
+    assert closeout["human_sent_observed"] is False
+    assert closeout["raw_discord_text_output"] == "omitted"
+
+
+def test_build_discord_post_send_closeout_packet_blocks_not_sent_with_send_observation():
+    closeout = build_discord_post_send_closeout_packet(
+        external_action_state="not_sent",
+        human_sent_observed=True,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "not_sent_conflicts_with_human_send_observed" in closeout["blockers"]
+
+
 def test_build_discord_post_send_closeout_packet_blocks_unread_items():
     closeout = build_discord_post_send_closeout_packet(
         human_sent_observed=True,
@@ -1269,6 +1295,29 @@ def test_build_discord_send_operation_status_summarizes_existing_logs():
     assert status["safety_boundary"]["discord_send_executed_by_this_tool"] is False
     assert "discord.com/channels" not in serialized
     assert "423456789012345678" not in serialized
+
+
+def test_build_discord_send_operation_status_accepts_not_sent_retrospective_closeout():
+    closeout = build_discord_post_send_closeout_packet(
+        external_action_state="not_sent",
+        note_label="user stopped before send",
+    )
+
+    status = build_discord_send_operation_status(
+        closeout_report=closeout,
+        target_label="test-channel",
+        rollback_plan_reviewed=True,
+        production_runbook_fixed=True,
+        post_send_retrospective=True,
+    )
+
+    assert status["schema"] == "discord_send_operation_status.v1"
+    assert status["ok"] is True
+    assert status["state"] == "post_send_retrospective_closed"
+    assert status["checks"][1]["name"] == "post_send_closeout_closed"
+    assert status["checks"][1]["status"] == "ok"
+    assert status["checks"][2]["name"] == "post_send_unread_clear"
+    assert status["checks"][2]["status"] == "ok"
 
 
 def test_build_discord_send_operation_status_shows_next_actions_when_logs_missing():
@@ -3299,6 +3348,27 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
     assert '"text_returned": false' in output
     assert "423456789012345678" not in output
     assert "discord.com/channels" not in output
+
+
+def test_cli_closeout_discord_send_outputs_not_sent_packet(capsys):
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--external-action-state",
+            "not-sent",
+            "--note-label",
+            "user stopped before send",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"schema": "discord_post_send_closeout_packet.v1"' in output
+    assert '"closeout_status": "not_sent"' in output
+    assert '"external_action_state": "not_sent"' in output
+    assert '"recommended_next_state": "done"' in output
+    assert '"human_send_not_observed"' not in output
 
 
 def test_cli_closeout_discord_send_blocks_unchecked_text(capsys):

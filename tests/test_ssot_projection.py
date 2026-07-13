@@ -139,7 +139,9 @@ def test_lint_ingest_route_policy_requires_playwright_default_ban(tmp_path):
         "Playwright 既定経路にしない cic Discord Desktop cache macOS Accessibility "
         "ai-party 外部 MCP 自動探索しない Computer Use 的な画面操作 SendKeys "
         "AppActivate スクショ取得 Chromeを勝手に開く ユーザーの明示許可なしに実行しない "
-        "no_unapproved_visible_ui_automation"
+        "no_unapproved_visible_ui_automation no_ocr_for_dcb_text_intake "
+        "no_clipboard_without_explicit_clipboard_request "
+        "raw本文は private artifact / local store に保存する visible output には raw本文を貼らず"
     )
     contract = tmp_path / "operating-contract.md"
     contract.write_text(required, encoding="utf-8")
