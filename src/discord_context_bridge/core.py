@@ -2824,6 +2824,122 @@ def context_operating_mode_from_text(
 UNDERSTANDING_GATE_OPTIONS = ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
 
 
+def build_reply_context_gate(
+    *,
+    thread_root_present: bool,
+    reply_target_present: bool,
+    prior_message_count: int,
+    history_exhausted: bool = False,
+    unresolved_reference_count: int = 0,
+    fetched_message_count: int | None = None,
+    minimum_prior_messages: int = 10,
+    max_context_messages: int = 100,
+) -> dict[str, Any]:
+    """返信生成前に必要な会話範囲を metadata-only で判定する。
+
+    直前10件は最低量であり、未解決参照が残る場合は10件ずつ追加取得する。
+    スレッド全履歴が10件未満の場合だけ、履歴終端の確認を条件に短い履歴を許可する。
+    """
+    prior_count = max(0, int(prior_message_count))
+    minimum = max(1, int(minimum_prior_messages))
+    fetched = max(0, int(fetched_message_count if fetched_message_count is not None else prior_count + int(reply_target_present)))
+    maximum = max(minimum + 1, int(max_context_messages))
+    unresolved = max(0, int(unresolved_reference_count))
+    blockers: list[str] = []
+    if not thread_root_present:
+        blockers.append("thread_root_missing")
+    if not reply_target_present:
+        blockers.append("reply_target_missing")
+    if prior_count < minimum and not history_exhausted:
+        blockers.append("minimum_prior_messages_missing")
+    if unresolved:
+        blockers.append("unresolved_references")
+
+    anchors_ready = bool(thread_root_present and reply_target_present)
+    count_ready = bool(prior_count >= minimum or history_exhausted)
+    ready = bool(anchors_ready and count_ready and not unresolved)
+    short_thread = bool(ready and prior_count < minimum and history_exhausted)
+    limit_reached = bool(not ready and fetched >= maximum)
+    can_expand = bool(not ready and not limit_reached and (not history_exhausted or unresolved > 0))
+    if ready:
+        state = "ready_short_thread" if short_thread else "ready"
+        reason_code = "reply_context_ready"
+        message = "返信前の必要文脈を確認しました。"
+        next_fetch_limit = fetched
+    elif limit_reached:
+        state = "blocked"
+        reason_code = "reply_context_limit_reached"
+        message = "追加取得の上限に達しました。未解決の前提を人間が確認してください。"
+        next_fetch_limit = maximum
+    elif can_expand:
+        state = "expand_required"
+        reason_code = "reply_context_expand_required"
+        message = "返信前の文脈が不足しています。直前履歴を10件追加取得してください。"
+        next_fetch_limit = min(maximum, fetched + 10)
+    else:
+        state = "blocked"
+        reason_code = "reply_context_blocked"
+        message = "返信対象を判断できる文脈が揃っていません。"
+        next_fetch_limit = fetched
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_reply_context_gate.v1",
+        "state": state,
+        "reason_code": reason_code,
+        "message": message,
+        "reply_generation_allowed": ready,
+        "thread_root_present": bool(thread_root_present),
+        "reply_target_present": bool(reply_target_present),
+        "prior_message_count": prior_count,
+        "minimum_prior_messages": minimum,
+        "history_exhausted": bool(history_exhausted),
+        "unresolved_reference_count": unresolved,
+        "fetched_message_count": fetched,
+        "max_context_messages": maximum,
+        "next_fetch_limit": next_fetch_limit,
+        "blockers": blockers,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+    }
+
+
+def build_reply_context_gate_from_messages(
+    messages: Iterable[dict[str, Any]],
+    *,
+    history_exhausted: bool = False,
+    max_context_messages: int = 100,
+) -> dict[str, Any]:
+    """structured message envelope を壊さず返信前文脈gateへ変換する。"""
+    loaded = [message for message in messages if isinstance(message, dict)]
+    root_present = any(bool(message.get("is_thread_root")) for message in loaded)
+    target_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_reply_target"))]
+    target_present = bool(target_indexes)
+    target_index = target_indexes[-1] if target_indexes else -1
+    prior_count = target_index if target_present else 0
+    unresolved = sum(
+        1
+        for message in loaded[: target_index + 1 if target_present else len(loaded)]
+        if bool(message.get("unresolved_reference"))
+    )
+    gate = build_reply_context_gate(
+        thread_root_present=root_present,
+        reply_target_present=target_present,
+        prior_message_count=prior_count,
+        history_exhausted=history_exhausted,
+        unresolved_reference_count=unresolved,
+        fetched_message_count=len(loaded),
+        max_context_messages=max_context_messages,
+    )
+    return {
+        **gate,
+        "structured_message_count": len(loaded),
+        "relationship_metadata_preserved": True,
+    }
+
+
 def build_understanding_gate(
     *,
     understanding_confirmed: bool,
@@ -2863,6 +2979,7 @@ def review_reply_intent(
     events: Iterable[DiscordEvent],
     *,
     understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     loaded = list(events)
     gap = check_knowledge_gap(draft, loaded)
@@ -2874,6 +2991,39 @@ def review_reply_intent(
         understanding_confirmed=understanding_confirmed,
         context_ready=not no_context,
     )
+    if reply_context_gate is not None and not reply_context_gate.get("reply_generation_allowed"):
+        reason = str(reply_context_gate.get("message") or "返信前の必要文脈が揃っていません。")
+        copy_block = build_blocked_copy_block(reason)
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": reason,
+            "ok_to_reply": "ask_first",
+            "ok_to_reply_label": "先に必要な会話履歴を取得してください。",
+            "quick_verdict": "reply-context-blocked",
+            "quick_verdict_label": f"read-more: {reason}",
+            "one_check_before_reply": "スレッド起点、返信対象、直前10件、未解決参照を確認してください。",
+            "alignment": "not_checked",
+            "alignment_label": "返信前文脈gateで停止中です。",
+            "missing_knowledge": gap["knowledge_gap"],
+            "missing_knowledge_label": "返信前文脈gateで停止中です。",
+            "topic_warning_label": gap["topic_warning_label"],
+            "likely_counterparty_meaning": [],
+            "suggested_correction": "",
+            "reply_context_gate": reply_context_gate,
+            "understanding_gate": understanding_gate,
+            "final_candidate": "",
+            "human_gate": {
+                "schema": "discord_human_gate.v1",
+                "human_decision_required": True,
+                "decision": "pending",
+                "recommended_option": "read-more",
+                "options": UNDERSTANDING_GATE_OPTIONS,
+                "outbound_actions": "disabled",
+            },
+            "copy_block": copy_block,
+            "send_capability": "disabled",
+            "send_capability_label": "このツールから Discord へ送信しません。",
+        }
     if understanding_gate["status"] != "confirmed":
         copy_block = build_blocked_copy_block(str(understanding_gate["reason"]))
         human_gate = {
@@ -3144,10 +3294,16 @@ def guide_reply_from_text(
     guild_label: str = "example-community",
     channel_label: str = "general",
     understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
     briefing = fast_briefing(events)
-    review = review_reply_intent(draft, events, understanding_confirmed=understanding_confirmed)
+    review = review_reply_intent(
+        draft,
+        events,
+        understanding_confirmed=understanding_confirmed,
+        reply_context_gate=reply_context_gate,
+    )
     next_actions = ["そのまま送らず、Discord 側で人間が確認してから返信してください。"]
     if review["missing_knowledge"]:
         next_actions.insert(0, "不足している前提を相手に確認してください。")
@@ -3212,6 +3368,7 @@ def build_discord_send_staging_packet(
     target_url: str = "",
     mention_label: str = "",
     understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a fill-only browser action packet for a Discord reply/mention.
 
@@ -3222,7 +3379,12 @@ def build_discord_send_staging_packet(
     if normalized_mode not in {"reply", "mention"}:
         normalized_mode = "unsupported"
     loaded = list(events)
-    review = review_reply_intent(draft, loaded, understanding_confirmed=understanding_confirmed)
+    review = review_reply_intent(
+        draft,
+        loaded,
+        understanding_confirmed=understanding_confirmed,
+        reply_context_gate=reply_context_gate,
+    )
     copy_block = dict(review.get("copy_block") or {})
     blockers: list[str] = []
     target_kind = "unknown"
