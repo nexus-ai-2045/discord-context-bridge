@@ -600,6 +600,7 @@ def build_bridge_intake(
     guild_label: str = "example-community",
     channel_label: str = "general",
     generated_at: str | None = None,
+    reply_context_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Message-found -> bridge intake の一本化入口。
 
@@ -733,12 +734,18 @@ def build_bridge_intake(
     if not draft.strip():
         return payload
 
+    effective_reply_context_gate = reply_context_gate or build_reply_context_gate(
+        thread_root_present=False,
+        reply_target_present=False,
+        prior_message_count=0,
+    )
     guide = guide_reply_from_text(
         saved_text,
         draft,
         guild_label=guild_label,
         channel_label=channel_label,
         understanding_confirmed=understanding_confirmed,
+        reply_context_gate=effective_reply_context_gate,
     )
     steps_completed.append("guide_reply")
     payload["pipeline"]["completed"] = list(steps_completed)
@@ -746,6 +753,15 @@ def build_bridge_intake(
     payload["guide_reply"]["skipped"] = False
 
     verdict = str(payload["guide_reply"].get("quick_verdict") or "")
+    if verdict == "reply-context-blocked":
+        payload["decision"] = "reply_context_blocked"
+        payload["next_step"] = "acquire_required_reply_context_then_retry"
+        payload["recommended_command"] = "reply-context-plan"
+        payload["blocked_reason"] = str(effective_reply_context_gate.get("reason_code") or "reply_context_required")
+        payload["route_failure"] = payload["blocked_reason"]
+        payload["message"] = "passport は完了。guide は返信前文脈gateで停止しました。"
+        return payload
+
     if verdict == "understanding-blocked":
         payload["decision"] = "understanding_blocked"
         payload["next_step"] = "confirm_understanding_then_retry_with_draft"
@@ -2860,11 +2876,17 @@ def build_reply_context_gate(
     ready = bool(anchors_ready and count_ready and not unresolved)
     short_thread = bool(ready and prior_count < minimum and history_exhausted)
     limit_reached = bool(not ready and fetched >= maximum)
-    can_expand = bool(not ready and not limit_reached and (not history_exhausted or unresolved > 0))
+    unresolved_after_history_end = bool(history_exhausted and unresolved > 0)
+    can_expand = bool(not ready and not limit_reached and not history_exhausted)
     if ready:
         state = "ready_short_thread" if short_thread else "ready"
         reason_code = "reply_context_ready"
         message = "返信前の必要文脈を確認しました。"
+        next_fetch_limit = fetched
+    elif unresolved_after_history_end:
+        state = "blocked"
+        reason_code = "reply_context_unresolved_after_history_end"
+        message = "履歴終端まで取得済みですが、未解決の参照が残っています。人間または添付確認が必要です。"
         next_fetch_limit = fetched
     elif limit_reached:
         state = "blocked"
@@ -2914,10 +2936,24 @@ def build_reply_context_gate_from_messages(
 ) -> dict[str, Any]:
     """structured message envelope を壊さず返信前文脈gateへ変換する。"""
     loaded = [message for message in messages if isinstance(message, dict)]
-    root_present = any(bool(message.get("is_thread_root")) for message in loaded)
+    order_source = "unknown"
+    order_verified = False
+    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
+        loaded = sorted(loaded, key=lambda message: int(message["sequence"]))
+        order_source = "sequence"
+        order_verified = True
+    elif loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
+        loaded = sorted(
+            loaded,
+            key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        order_source = "timestamp"
+        order_verified = True
+    root_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_thread_root"))]
     target_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_reply_target"))]
     target_present = bool(target_indexes)
     target_index = target_indexes[-1] if target_indexes else -1
+    root_present = bool(root_indexes and target_present and min(root_indexes) <= target_index)
     prior_count = target_index if target_present else 0
     unresolved = sum(
         1
@@ -2933,11 +2969,26 @@ def build_reply_context_gate_from_messages(
         fetched_message_count=len(loaded),
         max_context_messages=max_context_messages,
     )
-    return {
+    result = {
         **gate,
         "structured_message_count": len(loaded),
         "relationship_metadata_preserved": True,
+        "message_order_verified": order_verified,
+        "message_order_source": order_source,
     }
+    if len(loaded) > 1 and not order_verified:
+        result["state"] = "blocked"
+        result["reason_code"] = "reply_context_message_order_unverified"
+        result["message"] = "メッセージの時系列を確認できないため、返信候補を生成しません。"
+        result["reply_generation_allowed"] = False
+        result["blockers"] = [*result["blockers"], "message_order_unverified"]
+    if root_indexes and target_present and min(root_indexes) > target_index:
+        result["state"] = "blocked"
+        result["reason_code"] = "reply_context_root_after_target"
+        result["message"] = "スレッド起点が返信対象より後に並んでいるため、取得順を確認してください。"
+        result["reply_generation_allowed"] = False
+        result["blockers"] = [*result["blockers"], "thread_root_not_before_target"]
+    return result
 
 
 def build_understanding_gate(
@@ -3379,11 +3430,12 @@ def build_discord_send_staging_packet(
     if normalized_mode not in {"reply", "mention"}:
         normalized_mode = "unsupported"
     loaded = list(events)
+    effective_reply_context_gate = reply_context_gate if normalized_mode == "reply" else None
     review = review_reply_intent(
         draft,
         loaded,
         understanding_confirmed=understanding_confirmed,
-        reply_context_gate=reply_context_gate,
+        reply_context_gate=effective_reply_context_gate,
     )
     copy_block = dict(review.get("copy_block") or {})
     blockers: list[str] = []

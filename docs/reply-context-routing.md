@@ -83,3 +83,16 @@ python3 scripts/verify_ssot_projection.py --json
 python3 scripts/lint_ingest_route_policy.py --json
 python3 scripts/ops_check.py --gh
 ```
+
+## ローカルコードレビュー契約
+
+GitHub botレビューへ依存せず、次の不変条件を `tests/test_reply_context_contract.py` で先に検査します。
+
+- `bridge-intake` を含む全返信生成入口は最低文脈gateを迂回しない。
+- mention stagingにはreply専用の返信対象条件を適用しない。
+- 取得件数を省略した時は既存の直前件数から追加取得量を推定する。
+- 履歴終端後に未解決参照が残る場合は再取得をループせず停止する。
+- structured messageはsequenceまたはtimestampで時系列を確認し、不明ならreadyにしない。
+- blockedのCLIはJSON出力でも終了コードを非0にする。
+
+開発中は `python3 scripts/ops_check.py --profile fast`、PR前は `python3 scripts/ops_check.py --gh` を実行します。fast profileにも「返信文脈契約」を含め、全pytestとの二重検査にします。

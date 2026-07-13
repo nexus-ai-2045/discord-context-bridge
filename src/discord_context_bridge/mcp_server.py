@@ -138,7 +138,7 @@ def build_server(
         prior_message_count: int = 0,
         history_exhausted: bool = False,
         unresolved_reference_count: int = 0,
-        fetched_message_count: int = 0,
+        fetched_message_count: int | None = None,
         max_context_messages: int = 100,
     ) -> dict[str, Any]:
         """返信前の起点・対象・直前10件と追加取得要否を本文なしで判定します。"""

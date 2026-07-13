@@ -512,6 +512,11 @@ def test_bridge_intake_runs_snapshot_coverage_passport_and_optional_guide(tmp_pa
         text=private_text,
         draft=draft,
         understanding_confirmed=True,
+        reply_context_gate=build_reply_context_gate(
+            thread_root_present=True,
+            reply_target_present=True,
+            prior_message_count=10,
+        ),
         generated_at="2026-07-09T00:00:00+00:00",
     )
     rendered = json.dumps(payload, ensure_ascii=False)
@@ -561,6 +566,10 @@ def test_cli_bridge_intake_metadata_only_end_to_end(tmp_path, capsys):
             "--draft",
             "前提を確認してから進めます。",
             "--understanding-confirmed",
+            "--thread-root-present",
+            "--reply-target-present",
+            "--prior-message-count", "0",
+            "--history-exhausted",
             "--json",
         ]
     )
@@ -1300,9 +1309,9 @@ def test_reply_context_gate_stops_at_limit_with_human_readable_reason():
 
 
 def test_reply_context_gate_from_structured_messages_preserves_relationships():
-    messages = [{"text": "root", "is_thread_root": True}]
-    messages.extend({"text": f"prior-{index}"} for index in range(9))
-    messages.append({"text": "target", "is_reply_target": True})
+    messages = [{"text": "root", "is_thread_root": True, "sequence": 0}]
+    messages.extend({"text": f"prior-{index}", "sequence": index + 1} for index in range(9))
+    messages.append({"text": "target", "is_reply_target": True, "sequence": 10})
 
     gate = build_reply_context_gate_from_messages(messages)
 
@@ -2407,6 +2416,7 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "compile",
         "差分チェック",
         "秘密情報スキャン",
+        "返信文脈契約",
         "boundary logic",
         "url-intake-fast-path smoke",
         "discord-url-measure smoke",

@@ -15,6 +15,7 @@
 japanese_pr_ok: yes
 
 ## 公開前ガード
+- [ ] `python3 scripts/ops_check.py --profile fast`
 - [ ] `python3 scripts/gh_guard.py --json`
 - [ ] `python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json`
 - [ ] `python3 scripts/pr_readiness_preflight.py --fetch --gh-switch --json`

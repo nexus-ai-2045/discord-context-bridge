@@ -247,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="文脈理解サマリを人間が確認済みの場合だけ guide を本審査する",
     )
+    _add_reply_context_args(bridge_intake)
     bridge_intake.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     bridge_intake.set_defaults(handler=_cmd_bridge_intake)
 
@@ -814,6 +815,7 @@ def _cmd_bridge_intake(args: argparse.Namespace) -> int:
         target_key=args.target_key,
         guild_label=args.guild,
         channel_label=args.channel,
+        reply_context_gate=_reply_context_gate_from_args(args),
     )
     if args.json:
         print(_json(payload))
@@ -1181,7 +1183,7 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
     )
     if args.json:
         print(_json(guide))
-        return 0
+        return 0 if guide.get("reply_review", {}).get("copy_block", {}).get("status") in {"ready", "split"} else 2
     print(guide["message"])
     print(f"解析件数: {guide['parsed']}")
     print(f"相手側の文脈: {guide['counterparty_context']}")
@@ -1193,7 +1195,7 @@ def _cmd_guide_reply(args: argparse.Namespace) -> int:
     for action in guide["next_actions"]:
         print(f"- {action}")
     print(guide["send_capability_label"])
-    return 0
+    return 0 if review.get("copy_block", {}).get("status") in {"ready", "split"} else 2
 
 
 def _cmd_stage_discord_send(args: argparse.Namespace) -> int:
