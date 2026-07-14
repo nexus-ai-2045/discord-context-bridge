@@ -18,6 +18,7 @@ from discord_context_bridge import (
     build_copy_block,
     build_discord_auto_send_preflight,
     build_discord_post_send_closeout_packet,
+    build_discord_send_pdca_preflight,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
     build_cache_first_intake,
@@ -1130,6 +1131,44 @@ def test_verify_chrome_extension_fill_only_dry_run_blocks_ambiguous_reply_ui():
     assert report["fill_permitted"] is False
     assert "reply_ui_not_unique" in report["blockers"]
     assert report["allowed_next_action"] == "fix_blockers"
+
+
+def test_build_discord_send_pdca_preflight_blocks_missing_attachment_preview():
+    packet = build_discord_send_pdca_preflight(
+        target_verified=True,
+        draft_verified=True,
+        attachment_required=True,
+        attachment_file_verified=True,
+        attachment_preview_verified=False,
+        browser_route_status="dom_timeout",
+        webhook_route_status="wrong_target",
+        failure_notes=["Chrome DOM timed out before attachment verification"],
+    )
+
+    assert packet["schema"] == "discord_send_pdca_preflight.v1"
+    assert packet["ok_to_send"] is False
+    assert packet["state"] == "blocked"
+    assert "attachment_preview_not_verified" in packet["blockers"]
+    assert "browser_route_unstable" in packet["route_failures"]
+    assert "webhook_target_mismatch" in packet["route_failures"]
+    assert packet["next_action"] == "attach_image_manually_or_recover_browser_route"
+    assert packet["pdca"]["check"] == "blocked"
+    assert packet["safety_boundary"]["discord_send_executed_by_this_tool"] is False
+
+
+def test_build_discord_send_pdca_preflight_allows_confirmed_text_only_send():
+    packet = build_discord_send_pdca_preflight(
+        target_verified=True,
+        draft_verified=True,
+        attachment_required=False,
+        browser_route_status="ready",
+        webhook_route_status="not_used",
+    )
+
+    assert packet["state"] == "ready_for_human_send"
+    assert packet["ok_to_send"] is True
+    assert packet["blockers"] == []
+    assert packet["next_action"] == "human_send_or_closeout"
 
 
 def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_values():
@@ -2516,6 +2555,20 @@ def test_report_latest_schema_check_verifies_public_contract():
     assert report["validated_schema_count"] == 4
 
 
+def test_send_pdca_preflight_smoke_verifies_route_matrix():
+    send_pdca_smoke = load_script_module("send_pdca_preflight_smoke", ROOT / "scripts" / "send_pdca_preflight_smoke.py")
+
+    report = send_pdca_smoke.build_report()
+
+    assert report["schema"] == "discord_send_pdca_preflight_smoke.v1"
+    assert report["ok"] is True
+    assert report["failure_stage"] is None
+    assert report["case_count"] == 4
+    assert report["raw_text_returned"] is False
+    assert report["outbound_actions"] == "disabled"
+    assert report["discord_send_executed_by_this_tool"] is False
+
+
 def test_ops_check_includes_report_latest_smoke():
     ops_check = load_script_module("ops_check", ROOT / "scripts" / "ops_check.py")
     args = ops_check.parse_args([])
@@ -2524,6 +2577,7 @@ def test_ops_check_includes_report_latest_smoke():
 
     assert "report-latest smoke" in checks
     assert "report-latest schema" in checks
+    assert "send-pdca-preflight smoke" in checks
     assert "文脈運用モード smoke" in checks
     assert "discord-url-measure smoke" in checks
 
@@ -2541,6 +2595,7 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "返信文脈契約",
         "boundary logic",
         "url-intake-fast-path smoke",
+        "send-pdca-preflight smoke",
         "discord-url-measure smoke",
         "ローカルスモーク",
     }

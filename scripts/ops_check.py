@@ -115,6 +115,7 @@ def run_secret_scan() -> CheckResult:
         "./scripts/ops_check.py:",
         "./scripts/pr_scope_guard.py:",
         "./scripts/read_visible_discord_text.py:",
+        "./scripts/send_pdca_preflight_smoke.py:",
         "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
     )
@@ -289,6 +290,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/url_intake_fast_path_smoke.py", "--json"],
             env=env,
         ),
+        "send-pdca-preflight smoke": lambda: run_command(
+            "send-pdca-preflight smoke",
+            [sys.executable, "scripts/send_pdca_preflight_smoke.py", "--json"],
+            env=env,
+        ),
         "discord-url-measure smoke": lambda: run_command(
             "discord-url-measure smoke",
             [
@@ -333,6 +339,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "返信文脈契約",
                 "boundary logic",
                 "url-intake-fast-path smoke",
+                "send-pdca-preflight smoke",
                 "discord-url-measure smoke",
                 "ローカルスモーク",
             )

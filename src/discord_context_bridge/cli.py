@@ -28,6 +28,7 @@ from .core import (
     build_coverage_report,
     build_discord_auto_send_preflight,
     build_discord_post_send_closeout_packet,
+    build_discord_send_pdca_preflight,
     build_discord_send_staging_packet,
     build_discord_send_operation_status,
     build_cache_first_intake,
@@ -411,6 +412,28 @@ def build_parser() -> argparse.ArgumentParser:
     chrome_fill.add_argument("--socket-pre-send", action="store_true", help="送信前停止地点で socket ping が通った")
     chrome_fill.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     chrome_fill.set_defaults(handler=_cmd_verify_chrome_fill_dry_run)
+
+    send_pdca = sub.add_parser("send-pdca-preflight", help="Discord送信直前のPDCA gateをmetadata-onlyで判定する")
+    send_pdca.add_argument("--target-verified", action="store_true", help="対象チャンネル/投稿先が確認済み")
+    send_pdca.add_argument("--draft-verified", action="store_true", help="本文下書きが確認済み")
+    send_pdca.add_argument("--attachment-required", action="store_true", help="画像などの添付が必須")
+    send_pdca.add_argument("--attachment-file-verified", action="store_true", help="添付元ファイルが確認済み")
+    send_pdca.add_argument("--attachment-preview-verified", action="store_true", help="Discord入力欄で添付プレビューを確認済み")
+    send_pdca.add_argument(
+        "--browser-route-status",
+        choices=["ready", "dom-timeout", "filechooser-timeout", "clipboard-unavailable", "manual-only", "unknown"],
+        default="unknown",
+        help="ブラウザ経路の観測状態",
+    )
+    send_pdca.add_argument(
+        "--webhook-route-status",
+        choices=["not-used", "ready", "missing", "wrong-target", "unknown"],
+        default="not-used",
+        help="Webhook経路の観測状態。対象違いなら wrong-target",
+    )
+    send_pdca.add_argument("--failure-note", action="append", default=[], help="失敗観測の短いメモ。raw本文やIDは入れない")
+    send_pdca.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    send_pdca.set_defaults(handler=_cmd_send_pdca_preflight)
 
     auto_send = sub.add_parser("auto-send-preflight", help="private adapter に自動送信を許可してよいかを判定する")
     auto_send.add_argument("--staging-packet", type=Path, required=True, help="stage-discord-send が出した JSON packet")
@@ -1269,6 +1292,31 @@ def _cmd_verify_chrome_fill_dry_run(args: argparse.Namespace) -> int:
     if report["blockers"]:
         print("blockers: " + " / ".join(report["blockers"]))
     print(report["send_capability_label"])
+    return exit_code
+
+
+def _cmd_send_pdca_preflight(args: argparse.Namespace) -> int:
+    packet = build_discord_send_pdca_preflight(
+        target_verified=args.target_verified,
+        draft_verified=args.draft_verified,
+        attachment_required=args.attachment_required,
+        attachment_file_verified=args.attachment_file_verified,
+        attachment_preview_verified=args.attachment_preview_verified,
+        browser_route_status=args.browser_route_status,
+        webhook_route_status=args.webhook_route_status,
+        failure_notes=args.failure_note,
+    )
+    exit_code = 0 if packet["ok_to_send"] else 2
+    if args.json:
+        print(_json(packet))
+        return exit_code
+    print(packet["message"])
+    print(f"state: {packet['state']}")
+    if packet["blockers"]:
+        print("blockers: " + " / ".join(packet["blockers"]))
+    if packet["route_failures"]:
+        print("route_failures: " + " / ".join(packet["route_failures"]))
+    print(f"next_action: {packet['next_action']}")
     return exit_code
 
 

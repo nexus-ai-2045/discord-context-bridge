@@ -24,6 +24,7 @@ def copy_boundary_files(target_root: Path) -> None:
         "scripts/pr_readiness_preflight.py",
         "README.md",
         "PROCESS_BOUNDARY.md",
+        "docs/discord-send-operation-runbook.md",
         ".github/pull_request_template.md",
     ]
     for relative in files:

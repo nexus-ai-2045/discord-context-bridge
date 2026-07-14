@@ -3595,6 +3595,118 @@ def verify_chrome_extension_fill_only_dry_run(
     }
 
 
+def build_discord_send_pdca_preflight(
+    *,
+    target_verified: bool = False,
+    draft_verified: bool = False,
+    attachment_required: bool = False,
+    attachment_file_verified: bool = False,
+    attachment_preview_verified: bool = False,
+    browser_route_status: str = "unknown",
+    webhook_route_status: str = "not_used",
+    failure_notes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Classify the final Discord send readiness as a PDCA gate.
+
+    This gate exists for the gap between fill-only preparation and the final
+    human send. It records why the loop must stop when the target, draft, or
+    attachment preview cannot be proven, so operators do not keep retrying the
+    same unstable route.
+    """
+    normalized_browser = browser_route_status.strip().casefold().replace("-", "_") or "unknown"
+    normalized_webhook = webhook_route_status.strip().casefold().replace("-", "_") or "not_used"
+    allowed_browser = {
+        "ready",
+        "dom_timeout",
+        "filechooser_timeout",
+        "clipboard_unavailable",
+        "manual_only",
+        "unknown",
+    }
+    allowed_webhook = {
+        "not_used",
+        "ready",
+        "missing",
+        "wrong_target",
+        "unknown",
+    }
+    if normalized_browser not in allowed_browser:
+        normalized_browser = "unknown"
+    if normalized_webhook not in allowed_webhook:
+        normalized_webhook = "unknown"
+
+    blockers: list[str] = []
+    route_failures: list[str] = []
+    if not target_verified:
+        blockers.append("target_not_verified")
+    if not draft_verified:
+        blockers.append("draft_not_verified")
+    if attachment_required:
+        if not attachment_file_verified:
+            blockers.append("attachment_file_not_verified")
+        if not attachment_preview_verified:
+            blockers.append("attachment_preview_not_verified")
+    if normalized_browser in {"dom_timeout", "filechooser_timeout", "clipboard_unavailable", "unknown"}:
+        route_failures.append("browser_route_unstable")
+    if normalized_webhook in {"wrong_target", "missing", "unknown"}:
+        route_failures.append(
+            "webhook_target_mismatch" if normalized_webhook == "wrong_target" else "webhook_route_unavailable"
+        )
+
+    state = "ready_for_human_send" if not blockers and not route_failures else "blocked"
+    if "attachment_preview_not_verified" in blockers:
+        next_action = "attach_image_manually_or_recover_browser_route"
+    elif "target_not_verified" in blockers:
+        next_action = "verify_target_channel"
+    elif "draft_not_verified" in blockers:
+        next_action = "verify_draft_text"
+    elif "browser_route_unstable" in route_failures:
+        next_action = "switch_to_manual_send_or_fix_browser_route"
+    elif route_failures:
+        next_action = "fix_route_mismatch_before_retry"
+    else:
+        next_action = "human_send_or_closeout"
+
+    notes = [redact_artifact_text(note) for note in (failure_notes or []) if note.strip()]
+    return {
+        "schema": "discord_send_pdca_preflight.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 送信前 PDCA gate は送信可能です。"
+        if state == "ready_for_human_send"
+        else "Discord 送信前 PDCA gate は停止しました。同じ失敗を再試行せず、原因を直してください。",
+        "state": state,
+        "ok_to_send": state == "ready_for_human_send",
+        "blockers": blockers,
+        "route_failures": route_failures,
+        "observed": {
+            "target_verified": target_verified,
+            "draft_verified": draft_verified,
+            "attachment_required": attachment_required,
+            "attachment_file_verified": attachment_file_verified,
+            "attachment_preview_verified": attachment_preview_verified,
+            "browser_route_status": normalized_browser,
+            "webhook_route_status": normalized_webhook,
+        },
+        "pdca": {
+            "plan": "target + draft + attachment + route を送信前に確定する",
+            "do": "fill-only または人間操作で下書き/添付準備まで進める",
+            "check": "ready" if state == "ready_for_human_send" else "blocked",
+            "act": next_action,
+            "retry_policy": "同じ route_failure が残る間は再試行しない",
+        },
+        "next_action": next_action,
+        "failure_notes": notes,
+        "safety_boundary": {
+            "discord_send_executed_by_this_tool": False,
+            "raw_discord_text_output": "omitted",
+            "target_url_output": "omitted",
+            "snowflake_values_output": "omitted",
+            "outbound_actions": "disabled",
+            "send_capability": "disabled",
+        },
+    }
+
+
 def build_discord_auto_send_preflight(
     staging_packet: dict[str, Any],
     dry_run_report: dict[str, Any],
