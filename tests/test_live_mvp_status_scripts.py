@@ -304,7 +304,7 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert payload["routes"]["rest_backfill"]["route_class"] == "main"
     assert payload["routes"]["bot_private_ingest"]["route_class"] == "main"
     assert payload["routes"]["computer_use_discord"]["route_class"] == "visual_fallback"
-    assert payload["routes"]["ocr_region"]["route_class"] == "last_fallback"
+    assert "ocr_region" not in payload["routes"]
     assert payload["routes"]["discord_configure"]["token_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["token_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["raw_text_output"] == "omitted"
@@ -313,7 +313,6 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert payload["routes"]["discord_access"]["pending_count"] == 1
     assert payload["routes"]["bot_private_ingest"]["outbound_actions"] == "disabled"
     assert payload["routes"]["computer_use_discord"]["send_capability"] == "disabled_by_policy"
-    assert payload["routes"]["ocr_region"]["full_screen_capture"] == "disabled_by_policy"
     assert "synthetic-secret" not in rendered
     assert "123456789012345678" not in rendered
     assert "987654321098765432" not in rendered
@@ -1295,6 +1294,40 @@ def test_ops_check_includes_status_dashboard():
     checks = ops_check.build_checks(args)
 
     assert "status dashboard" in checks
+
+
+def test_ops_check_requires_local_runtime_skill_outside_ci(monkeypatch):
+    captured: list[list[str]] = []
+
+    def fake_run_command(name: str, command: list[str], **kwargs) -> ops_check.CheckResult:
+        captured.append(command)
+        return ops_check.CheckResult(name, True, 0.0, command, "")
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    checks = ops_check.build_checks(ops_check.parse_args(["--skip-http"]))
+
+    checks["runtime skill sync lint"]()
+
+    assert captured
+    assert "--allow-missing" not in captured[0]
+
+
+def test_ops_check_allows_missing_local_runtime_skill_in_ci(monkeypatch):
+    captured: list[list[str]] = []
+
+    def fake_run_command(name: str, command: list[str], **kwargs) -> ops_check.CheckResult:
+        captured.append(command)
+        return ops_check.CheckResult(name, True, 0.0, command, "")
+
+    monkeypatch.setenv("CI", "1")
+    monkeypatch.setattr(ops_check, "run_command", fake_run_command)
+    checks = ops_check.build_checks(ops_check.parse_args(["--skip-http"]))
+
+    checks["runtime skill sync lint"]()
+
+    assert captured
+    assert "--allow-missing" in captured[0]
 
 
 def test_ops_check_fast_profile_includes_reply_context_contract():

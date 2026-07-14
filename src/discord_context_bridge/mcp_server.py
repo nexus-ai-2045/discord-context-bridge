@@ -10,6 +10,7 @@ from .core import (
     audit_context_store,
     audit_event_store,
     build_discord_post_send_closeout_packet,
+    build_discord_auto_send_preflight,
     build_discord_send_staging_packet,
     build_reply_context_gate,
     build_reply_context_gate_from_messages,
@@ -209,9 +210,41 @@ def build_server(
         )
 
     @server.tool()
+    def preflight_discord_auto_send_before_private_adapter(
+        staging_packet: dict[str, Any],
+        dry_run_report: dict[str, Any],
+        explicit_auto_send_approval: bool = False,
+        target_route_verified: bool = False,
+        transport_label: str = "",
+        transport_configured: bool = False,
+        operator_label: str = "",
+        idempotency_key: str = "",
+        rollback_plan_reviewed: bool = False,
+        audit_log_path: str = "",
+        production_runbook_fixed: bool = False,
+        target_environment: str = "test",
+    ) -> dict[str, Any]:
+        """private adapter に自動送信を許可してよいかを fail-closed で判定します。実送信はしません。"""
+        return build_discord_auto_send_preflight(
+            staging_packet,
+            dry_run_report,
+            explicit_auto_send_approval=explicit_auto_send_approval,
+            target_route_verified=target_route_verified,
+            transport_label=transport_label,
+            transport_configured=transport_configured,
+            operator_label=operator_label,
+            idempotency_key=idempotency_key,
+            rollback_plan_reviewed=rollback_plan_reviewed,
+            audit_log_path=audit_log_path,
+            production_runbook_fixed=production_runbook_fixed,
+            target_environment=target_environment,
+        )
+
+    @server.tool()
     def closeout_discord_send_after_human_action(
         staging_packet: dict[str, Any] | None = None,
         dry_run_report: dict[str, Any] | None = None,
+        external_action_state: str = "human_sent",
         human_sent_observed: bool = False,
         human_reviewed: bool = False,
         observed_text_status: str = "not_checked",
@@ -225,6 +258,7 @@ def build_server(
         return build_discord_post_send_closeout_packet(
             staging_packet=staging_packet,
             dry_run_report=dry_run_report,
+            external_action_state=external_action_state,
             human_sent_observed=human_sent_observed,
             human_reviewed=human_reviewed,
             observed_text_status=observed_text_status,

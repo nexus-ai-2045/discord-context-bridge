@@ -11,7 +11,6 @@
 | `control` | `discord_configure` | bot token / secret-command provider 設定の入口 | token provider が未設定で、ユーザーが明示的に設定する時 | token 値や secret-command stdout を表示しない。自動変更しない |
 | `control` | `discord_access` | DM / group allowlist の入口 | pairing、allowlist、group access を明示管理する時 | snowflake 値を表示しない。自動変更しない |
 | `visual_fallback` | `computer_use_discord` | 画面状態の人間確認 fallback | bot route が詰まり、今どの画面かだけ確認したい時 | 送信、reaction、delete、raw本文抽出をしない |
-| `last_fallback` | `ocr_region` | region 指定の pixel fallback | bot route と visual確認だけでは足りない時 | full-screen capture をしない。region 必須。本文は出さない |
 
 ## 運用順序
 
@@ -19,7 +18,7 @@
 2. `recommended_route=bot_private_ingest` なら、bot channel server / private adapter から本文を渡す。
 3. `discord_configure_or_access` なら、`discord:configure`、secret-command provider、または `discord:access` の明示操作で control plane を直す。
 4. bot route が使えない時だけ、Computer Use で画面状態を確認する。
-5. それでも足りない時だけ、OCR region fallback を使う。
+5. Discord本文取得で OCR / screenshot / vision へ拡張しない。必要なら DCB ではなく別 task として Type1 明示承認を取る。
 
 Discord URL / 返信下書きの通常 ingress では、別 repository の Discord bot、ai-party、
 ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が未設定なら

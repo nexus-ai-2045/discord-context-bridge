@@ -3595,10 +3595,120 @@ def verify_chrome_extension_fill_only_dry_run(
     }
 
 
+def build_discord_auto_send_preflight(
+    staging_packet: dict[str, Any],
+    dry_run_report: dict[str, Any],
+    *,
+    explicit_auto_send_approval: bool = False,
+    target_route_verified: bool = False,
+    transport_label: str = "",
+    transport_configured: bool = False,
+    operator_label: str = "",
+    idempotency_key: str = "",
+    rollback_plan_reviewed: bool = False,
+    audit_log_path: str = "",
+    production_runbook_fixed: bool = False,
+    target_environment: str = "test",
+) -> dict[str, Any]:
+    """Gate a private adapter before it performs an automatic Discord send.
+
+    The public core still performs no outbound action. This packet is a
+    fail-closed contract for a separate private transport that can execute only
+    after the draft, browser target, approval, idempotency, and audit evidence
+    are all present.
+    """
+    normalized_environment = target_environment.strip().casefold() or "test"
+    if normalized_environment not in {"test", "production"}:
+        normalized_environment = "unknown"
+    safe_transport_label = redact_artifact_text(transport_label)
+    safe_operator_label = redact_artifact_text(operator_label)
+    safe_audit_log_path = redact_artifact_text(audit_log_path)
+    safe_idempotency_key = redact_artifact_text(idempotency_key)
+    blockers: list[str] = []
+
+    if staging_packet.get("schema") != "discord_send_staging_packet.v1":
+        blockers.append("invalid_staging_packet")
+    if staging_packet.get("staging_status") != "ready_to_fill":
+        blockers.append("staging_packet_not_ready")
+    if dry_run_report.get("schema") != "chrome_extension_fill_only_dry_run.v1":
+        blockers.append("invalid_dry_run_report")
+    if dry_run_report.get("dry_run_status") != "ready_to_fill" or dry_run_report.get("fill_permitted") is not True:
+        blockers.append("dry_run_not_ready")
+    if not explicit_auto_send_approval:
+        blockers.append("explicit_auto_send_approval_missing")
+    if not target_route_verified:
+        blockers.append("target_route_not_verified")
+    if not transport_configured:
+        blockers.append("auto_send_transport_not_configured")
+    if not safe_transport_label:
+        blockers.append("transport_label_required")
+    if not safe_operator_label:
+        blockers.append("operator_label_required")
+    if not safe_idempotency_key:
+        blockers.append("idempotency_key_required")
+    if not rollback_plan_reviewed:
+        blockers.append("rollback_plan_not_reviewed")
+    if not safe_audit_log_path:
+        blockers.append("audit_log_path_required")
+    if normalized_environment == "production" and not production_runbook_fixed:
+        blockers.append("production_runbook_not_fixed")
+    if normalized_environment == "unknown":
+        blockers.append("invalid_target_environment")
+
+    preflight_status = "ready_for_auto_send_adapter" if not blockers else "blocked"
+    adapter_contract = {
+        "schema": "discord_auto_send_adapter_contract.v1",
+        "public_core_executes_send": False,
+        "private_adapter_may_execute": preflight_status == "ready_for_auto_send_adapter",
+        "required_next_action": "private_adapter_send_once" if preflight_status == "ready_for_auto_send_adapter" else "fix_blockers",
+        "idempotency_required": True,
+        "post_send_closeout_required": True,
+        "must_record": [
+            "transport_label",
+            "operator_label",
+            "idempotency_key",
+            "target_route_verified",
+            "post_send_message_observed",
+        ],
+    }
+    return {
+        "schema": "discord_auto_send_preflight.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "自動送信用 preflight は private adapter 実行可能です。"
+        if preflight_status == "ready_for_auto_send_adapter"
+        else "自動送信用 preflight は gate で停止しました。",
+        "preflight_status": preflight_status,
+        "blockers": blockers,
+        "target_environment": normalized_environment,
+        "target_route_verified": target_route_verified,
+        "transport": {
+            "label": safe_transport_label,
+            "configured": transport_configured,
+            "capability": "private_auto_send_adapter" if transport_configured else "missing",
+        },
+        "operator_label": safe_operator_label,
+        "idempotency_key_output": "omitted" if safe_idempotency_key else "not_provided",
+        "audit_log_path_output": "omitted" if safe_audit_log_path else "not_provided",
+        "approval": {
+            "explicit_auto_send_approval": explicit_auto_send_approval,
+            "rollback_plan_reviewed": rollback_plan_reviewed,
+            "production_runbook_fixed": production_runbook_fixed,
+        },
+        "adapter_contract": adapter_contract,
+        "outbound_actions": "adapter_required",
+        "send_capability": "preflight_only",
+        "send_capability_label": "この public core は送信しません。条件が揃った時だけ private adapter に一回送信を許可する preflight です。",
+        "raw_discord_text_output": "omitted",
+        "target_url_output": "omitted",
+        "snowflake_values_output": "omitted",
+    }
+
+
 def build_discord_post_send_closeout_packet(
     *,
     staging_packet: dict[str, Any] | None = None,
     dry_run_report: dict[str, Any] | None = None,
+    external_action_state: str = "human_sent",
     human_sent_observed: bool = False,
     human_reviewed: bool = False,
     observed_text_status: str = "not_checked",
@@ -3608,13 +3718,18 @@ def build_discord_post_send_closeout_packet(
     observed_url: str = "",
     note_label: str = "",
 ) -> dict[str, Any]:
-    """Build a metadata-only closeout after the human performs final send.
+    """Build a metadata-only closeout for sent or intentionally not-sent flows.
 
     This records only state transitions. It never returns Discord body text,
     message URLs, or snowflake values.
     """
+    normalized_external_action_state = external_action_state.strip().lower().replace("-", "_") or "human_sent"
     normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
     normalized_unread_status = unread_check_status.strip().lower().replace("-", "_") or "not_checked"
+    allowed_external_action_states = {
+        "human_sent",
+        "not_sent",
+    }
     allowed_text_statuses = {
         "matches_copy_block",
         "human_edited_and_reviewed",
@@ -3627,6 +3742,8 @@ def build_discord_post_send_closeout_packet(
     }
     safe_unread_signal_count = max(0, int(unread_signal_count))
     blockers: list[str] = []
+    if normalized_external_action_state not in allowed_external_action_states:
+        blockers.append("invalid_external_action_state")
     if staging_packet is not None:
         if (
             staging_packet.get("schema") != "discord_send_staging_packet.v1"
@@ -3640,23 +3757,37 @@ def build_discord_post_send_closeout_packet(
             or dry_run_report.get("fill_permitted") is not True
         ):
             blockers.append("dry_run_not_ready")
-    if not human_sent_observed:
-        blockers.append("human_send_not_observed")
-    if not human_reviewed:
-        blockers.append("human_review_not_confirmed")
-    if normalized_text_status not in allowed_text_statuses:
-        blockers.append("invalid_observed_text_status")
-    elif normalized_text_status == "not_checked":
-        blockers.append("observed_text_not_checked")
-    if normalized_unread_status not in allowed_unread_statuses:
-        blockers.append("invalid_unread_check_status")
-    elif normalized_unread_status == "not_checked":
-        blockers.append("unread_not_checked")
-    elif normalized_unread_status == "has_unread" or safe_unread_signal_count > 0:
-        blockers.append("unread_items_remaining")
+    if normalized_external_action_state == "human_sent":
+        if not human_sent_observed:
+            blockers.append("human_send_not_observed")
+        if not human_reviewed:
+            blockers.append("human_review_not_confirmed")
+        if normalized_text_status not in allowed_text_statuses:
+            blockers.append("invalid_observed_text_status")
+        elif normalized_text_status == "not_checked":
+            blockers.append("observed_text_not_checked")
+        if normalized_unread_status not in allowed_unread_statuses:
+            blockers.append("invalid_unread_check_status")
+        elif normalized_unread_status == "not_checked":
+            blockers.append("unread_not_checked")
+        elif normalized_unread_status == "has_unread" or safe_unread_signal_count > 0:
+            blockers.append("unread_items_remaining")
+    else:
+        if human_sent_observed:
+            blockers.append("not_sent_conflicts_with_human_send_observed")
+        if observed_message_id or observed_url:
+            blockers.append("not_sent_observation_values_provided")
+        normalized_text_status = "not_applicable"
+        normalized_unread_status = "not_applicable"
+        safe_unread_signal_count = 0
 
-    closeout_status = "closed" if not blockers else "blocked"
-    if closeout_status == "closed":
+    if blockers:
+        closeout_status = "blocked"
+    elif normalized_external_action_state == "not_sent":
+        closeout_status = "not_sent"
+    else:
+        closeout_status = "closed"
+    if closeout_status in {"closed", "not_sent"}:
         recommended_next_state = "done"
     elif "human_send_not_observed" in blockers:
         recommended_next_state = "verify_visible_message"
@@ -3671,11 +3802,16 @@ def build_discord_post_send_closeout_packet(
     return {
         "schema": "discord_post_send_closeout_packet.v1",
         "language": DEFAULT_LANGUAGE,
-        "message": "Discord 送信後 closeout は完了しました。"
-        if closeout_status == "closed"
-        else "Discord 送信後 closeout は gate で停止しました。",
+        "message": (
+            "Discord 送信後 closeout は完了しました。"
+            if closeout_status == "closed"
+            else "Discord not_sent closeout は完了しました。"
+            if closeout_status == "not_sent"
+            else "Discord 送信後 closeout は gate で停止しました。"
+        ),
         "closeout_status": closeout_status,
         "blockers": blockers,
+        "external_action_state": normalized_external_action_state,
         "human_sent_observed": human_sent_observed,
         "human_reviewed": human_reviewed,
         "observed_text_status": normalized_text_status,
@@ -3766,6 +3902,13 @@ def build_discord_send_operation_status(
         and closeout_report.get("closeout_status") == "closed"
         and closeout_report.get("recommended_next_state") == "done"
     )
+    closeout_not_sent = bool(
+        closeout_report
+        and closeout_report.get("schema") == "discord_post_send_closeout_packet.v1"
+        and closeout_report.get("closeout_status") == "not_sent"
+        and closeout_report.get("external_action_state") == "not_sent"
+        and closeout_report.get("recommended_next_state") == "done"
+    )
     closeout_unread_clear = bool(closeout_report and closeout_report.get("unread_check_status") == "none_unread")
 
     if post_send_retrospective:
@@ -3779,17 +3922,17 @@ def build_discord_send_operation_status(
             ),
             _operation_check(
                 "post_send_closeout_closed",
-                closeout_closed,
+                closeout_closed or closeout_not_sent,
                 evidence="closeout-discord-send",
-                blocker=None if closeout_closed else "closeout_not_closed",
-                next_action="送信後 closeout を closed にする" if not closeout_closed else None,
+                blocker=None if closeout_closed or closeout_not_sent else "closeout_not_closed",
+                next_action="送信後 closeout を closed / not_sent にする" if not (closeout_closed or closeout_not_sent) else None,
             ),
             _operation_check(
                 "post_send_unread_clear",
-                closeout_unread_clear,
+                closeout_unread_clear or closeout_not_sent,
                 evidence="closeout-discord-send.unread_check_status",
-                blocker=None if closeout_unread_clear else "unread_check_not_clear",
-                next_action="送信後の未読状態を metadata-only で確認する" if not closeout_unread_clear else None,
+                blocker=None if closeout_unread_clear or closeout_not_sent else "unread_check_not_clear",
+                next_action="送信後の未読状態を metadata-only で確認する" if not (closeout_unread_clear or closeout_not_sent) else None,
             ),
             _operation_check(
                 "failure_recovery_reviewed",
