@@ -20,10 +20,14 @@ def run_probe(extra_env: dict[str, str] | None = None) -> subprocess.CompletedPr
     if extra_env and extra_env.get("PYTHONPATH"):
         pythonpath_parts.insert(0, extra_env["PYTHONPATH"])
     env = {**os.environ, **(extra_env or {}), "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     return subprocess.run(
         [sys.executable, str(SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=ROOT,
         env=env,
         check=False,

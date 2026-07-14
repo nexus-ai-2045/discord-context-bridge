@@ -59,12 +59,16 @@ def build_capture_source_command(*, capture_profile: str, capture_region: str, o
 def run_script(script_name: str, args: list[str], *, timeout: float) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT / "scripts"), env.get("PYTHONPATH", "")])
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     try:
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / script_name), *args],
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=ROOT,
             env=env,
             timeout=timeout,

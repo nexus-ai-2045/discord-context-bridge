@@ -21,6 +21,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from discord_context_bridge import parse_visible_text
+from discord_context_bridge.process_runner import minimal_child_env, run_process
 from read_visible_discord_text import audit_visible_text, normalize_visible_text, safe_probe_reason
 
 
@@ -139,17 +140,15 @@ def read_private_adapter(args: argparse.Namespace) -> tuple[str | None, dict[str
 
     if command:
         try:
-            completed = subprocess.run(
+            completed = run_process(
                 split_local_command(command),
-                check=False,
-                capture_output=True,
-                text=True,
+                env=minimal_child_env(),
                 timeout=timeout,
             )
-        except subprocess.TimeoutExpired:
-            return None, failure_payload("adapter_timeout")
         except OSError as exc:
             return None, failure_payload("adapter_failed", detail=str(exc))
+        if completed.failure_stage == "timeout":
+            return None, failure_payload("adapter_timeout")
         if completed.returncode != 0:
             reason = safe_probe_reason(RuntimeError(completed.stderr))
             return None, failure_payload(classify_adapter_failure(reason), detail=reason)
