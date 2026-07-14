@@ -27,6 +27,10 @@ REQUIRED_PHRASES = (
     "Chromeを勝手に開く",
     "ユーザーの明示許可なしに実行しない",
     "no_unapproved_visible_ui_automation",
+    "no_ocr_for_dcb_text_intake",
+    "no_clipboard_without_explicit_clipboard_request",
+    "raw本文は private artifact / local store に保存する",
+    "visible output には raw本文を貼らず",
 )
 
 

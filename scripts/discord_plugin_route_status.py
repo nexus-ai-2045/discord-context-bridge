@@ -74,14 +74,6 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "raw_text_output": "disabled_by_policy",
                 "send_capability": "disabled_by_policy",
             },
-            "ocr_region": {
-                "route_class": "last_fallback",
-                "role": "bot route が使えない時の pixel fallback",
-                "status": "fallback",
-                "requires": "explicit_region",
-                "full_screen_capture": "disabled_by_policy",
-                "text_output": "omitted",
-            },
         },
         "blockers": preflight["blockers"],
         "warnings": preflight["warnings"],
@@ -95,7 +87,7 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="@discord / Computer Use / OCR route の安全な状態を一覧する。")
+    parser = argparse.ArgumentParser(description="@discord / Computer Use route の安全な状態を一覧する。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
     parser.add_argument("--json", action="store_true", help="JSON で出力する。")
     return parser
@@ -112,7 +104,6 @@ def print_human(payload: dict[str, Any]) -> None:
         "rest_backfill",
         "bot_private_ingest",
         "computer_use_discord",
-        "ocr_region",
     ):
         route = routes[name]
         print(f"{name}: {route['status']}")

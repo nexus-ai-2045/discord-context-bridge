@@ -1077,8 +1077,10 @@ MCP tool は 18個です。
 - `list_context_library_entries`: ローカル文脈庫の一覧を返します。本文は返さず summary だけ返します。
 - `audit_context_library_before_tunnel`: tunnel 公開前にローカル文脈庫の安全性を確認します。
 
-実送信 tool はありません。`stage_discord_send_before_human_action` は Chrome 拡張で
-下書き欄へ入れるための fill-only packet で、返信は人間が Discord 側で送信する前提です。
+public core が直接実送信する tool はありません。`stage_discord_send_before_human_action` は Chrome 拡張で
+下書き欄へ入れるための fill-only packet で、既定は人間が Discord 側で送信する前提です。
+自動送信を使う場合は `preflight_discord_auto_send_before_private_adapter` が
+`ready_for_auto_send_adapter` を返した時だけ、private adapter が一回送信してよいです。
 送信後は `closeout_discord_send_after_human_action` で `human_sent_observed` と
 `human_reviewed`、`observed_text_status`、`unread_check_status` を閉じ、本文、URL、
 snowflake は返しません。

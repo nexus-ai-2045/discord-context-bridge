@@ -3,8 +3,8 @@
 Discord Context Bridge は、Discordで見えている会話を local-first に取り込み、
 AIが安全に扱える文脈、返信前レビュー、送信直前の確認ログへ変換するための小さな橋です。
 
-このリポは **Discordへ自動送信しません**。
-送信ボタン、Enter送信、reaction、edit、delete は人間操作のままにします。
+この public core は **Discordへ直接送信しません**。
+既定は下書き入力までです。自動送信を使う場合は、private adapter 側で `auto-send-preflight` を通し、明示承認・宛先一致・idempotency・監査ログが揃った時だけ一回送信します。
 
 ## できること
 
@@ -19,6 +19,7 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
 | 下書き入力直前のgateを作る | `stage-discord-send` |
 | Chrome fill-only のdry-runを確認する | `verify-chrome-fill-dry-run` |
+| private adapter の自動送信許可を判定する | `auto-send-preflight` |
 | 人間送信後の状態を閉じる | `closeout-discord-send` |
 | 既存ログから送信テスト運転表を作る | `send-operation-status` |
 
@@ -33,7 +34,7 @@ flowchart LR
   stage --> human["人間が送信判断"]
 
   bridge -. "出さない" .-> raw["raw本文 / token / 実ID / 参加者名"]
-  stage -. "しない" .-> send["自動送信 / reaction / edit / delete"]
+  stage -. "public coreはしない" .-> send["自動送信 / reaction / edit / delete"]
 ```
 
 message found 後の最短入口は `bridge-intake` です。URL と可視テキストを渡すと、snapshot 保存 → coverage → context passport →（任意）guide-reply までを 1 コマンドで進めます。stdout は metadata-only です。
@@ -81,6 +82,8 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 4. テスト用チャンネルで人間が実送信
 5. 送信ログ/失敗時回復の確認
 6. 本番送信手順の固定化
+
+自動送信を使う場合は、上の 1-3 に加えて `auto-send-preflight` を通します。`ready_for_auto_send_adapter` になるまで private adapter は実送信しません。
 
 既存のgateログを吸い上げるには、`send-operation-status` を使います。
 
@@ -152,7 +155,7 @@ active TODO の正本は [ISSUE_LIST.md](ISSUE_LIST.md) です。大きな流れ
 - Bot REST backfill は bot token 用の環境変数の存在だけを使い、token 値は出力・保存しません。
 - Chrome profile から user token、cookie、localStorage を抽出して API に流用しません。
 - public package は本文処理、metadata-only report、gate、closeout を担当します。
-- Discord送信、reaction、edit、delete、repository visibility変更、外部投稿は、人間レビューと明示承認なしに実行しません。
+- Discord送信、reaction、edit、delete、repository visibility変更、外部投稿は、人間レビューと明示承認なしに実行しません。自動送信は private adapter 境界で `auto-send-preflight` が ready の時だけ許可します。
 - `send_message()` は意図的に無効です。
 
 ## 運用チェック
@@ -176,6 +179,33 @@ python3 scripts/lint_runtime_skill_sync.py \
   --target grok="$HOME/.grok/skills/discord-context-bridge/SKILL.md" \
   --json
 ```
+
+`generated_at` は `ssot_commit` の commit timestamp から決定し、同じ commit からの再生成で同じ値になります。
+`verify_ssot_projection.py` は、`ssot_commit` に保存された manifest / contract と現在の checksum、`generated_at` を照合します。
+commit hash の自己参照を避けるため、SSOT を変更する時は次の 2 段階にします。
+
+1. `capability/manifest.yaml` / `docs/operating-contract.md` の変更を先に commit する。
+2. その commit を指して runtime skill を再生成し、生成物を次の commit 候補にする。
+
+`post-commit` からの自動生成・local runtime 更新は行いません。
+
+local runtime skill の更新は既定で read-only です。同期を明示する場合だけ `--apply` を付けます。
+`--apply` は1回につき1 targetだけを受け付け、symlinkを含む配置先や未登録runtimeは書き込み前に拒否します。
+
+```bash
+python3 scripts/sync_runtime_skills.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --json
+# 差分を確認し、人間レビュー後にだけ実行
+python3 scripts/sync_runtime_skills.py \
+  --target claude-code="$HOME/.claude/skills/discord-context-bridge/SKILL.md" \
+  --apply \
+  --json
+```
+
+hook は `post-commit` で自動同期しません。commit 後の worktree dirty 化と user runtime の意図しない変更を避けるためです。
+必要な場合は `pre-push` から `verify_ssot_projection.py --json` と上記 read-only check だけを呼び、hook 有効化は別の明示承認で扱います。
+local ops checkではClaude runtime skillを必須とし、CI環境だけ未配置をwarningとして許可します。存在するstale skillはCIでも失敗します。
 
 PR前には次も確認します。
 
