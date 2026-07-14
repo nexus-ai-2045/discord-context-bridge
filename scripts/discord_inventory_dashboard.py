@@ -18,6 +18,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import discord_bot_route_preflight
 from discord_context_bridge.core import audit_event_store, load_events
+from discord_context_bridge.process_runner import ProcessResult, run_process
 from route_timing_log import read_entries, summarize_entries
 
 
@@ -29,8 +30,8 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=ROOT, check=False, capture_output=True, text=True)
+def run_command(command: list[str]) -> ProcessResult:
+    return run_process(command, cwd=ROOT, timeout=30)
 
 
 def parse_ahead_behind(raw: str) -> tuple[int, int]:

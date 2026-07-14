@@ -81,6 +81,8 @@ def _git_file_at_commit(commit: str, path: Path) -> str | None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return completed.stdout if completed.returncode == 0 else None
 

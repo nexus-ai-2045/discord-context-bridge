@@ -9,16 +9,19 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from discord_context_bridge.process_runner import ProcessResult, run_process
 
 
-def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=ROOT, check=False, capture_output=True, text=True)
+def run_command(command: list[str]) -> ProcessResult:
+    return run_process(command, cwd=ROOT, timeout=30)
 
 
-def ensure_account_boundary(*, switch: bool) -> dict[str, Any]:
+def ensure_account_boundary() -> dict[str, Any]:
     command = [sys.executable, "scripts/gh_guard.py", "--account-only", "--json"]
-    if switch:
-        command.insert(2, "--switch")
     completed = run_command(command)
     try:
         payload = json.loads(completed.stdout)
@@ -83,7 +86,7 @@ def load_pr(number: str) -> dict[str, Any]:
 
 
 def build_payload(args: argparse.Namespace) -> dict[str, Any]:
-    guard = ensure_account_boundary(switch=args.switch)
+    guard = ensure_account_boundary()
     if args.command == "list":
         return {
             "ok": True,
@@ -113,7 +116,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GitHub PR を account guard 通過後に読み取る")
-    parser.add_argument("--switch", action="store_true", help="active account 不一致時に remote owner へ切り替える")
     subparsers = parser.add_subparsers(dest="command", required=True)
     list_parser = subparsers.add_parser("list", help="open PR 一覧を取得する")
     list_parser.add_argument("--limit", type=int, default=50)
