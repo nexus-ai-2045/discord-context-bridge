@@ -82,14 +82,37 @@ def sha256_text(text: str) -> str:
 
 
 def git_commit() -> str:
+    return resolve_git_commit("HEAD")
+
+
+def resolve_git_commit(value: str) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "rev-parse", "--verify", f"{value}^{{commit}}"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-    return completed.stdout.strip() if completed.returncode == 0 else "unknown"
+    resolved = completed.stdout.strip()
+    if completed.returncode != 0 or not resolved:
+        raise ValueError(f"ssot_commit を commit に解決できません: {value}")
+    return resolved
+
+
+def git_commit_generated_at(commit: str) -> str:
+    """Return a deterministic generation timestamp for a Git commit."""
+    completed = subprocess.run(
+        ["git", "show", "-s", "--format=%cI", commit],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not value:
+        raise ValueError(f"ssot_commit の commit timestamp を取得できません: {commit}")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def render_skill(
@@ -153,8 +176,8 @@ def export_runtime_skills(
 ) -> dict[str, Any]:
     manifest = load_manifest(manifest_path)
     contract_text = contract_path.read_text(encoding="utf-8")
-    ssot_commit = ssot_commit or git_commit()
-    generated_at = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    ssot_commit = resolve_git_commit(ssot_commit or "HEAD")
+    generated_at = generated_at or git_commit_generated_at(ssot_commit)
     changed = False
     generated: list[str] = []
     for runtime in manifest["runtime_targets"]:

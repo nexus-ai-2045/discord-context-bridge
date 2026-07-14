@@ -168,8 +168,8 @@ metadata-only の完了状態だけを閉じます。snapshot 保存と closeout
 
 | 状態 | fallback |
 |---|---|
-| Accessibility が空読み | OCR private adapter へ切る |
-| OCR が不安定 | copy / paste fixture または手動 visible text へ戻す |
+| Accessibility が空読み | `blocked_need_chrome_visible_read_go` または明示済み Chrome visible DOM 読取へ戻す |
+| 画像添付のOCRが必要 | DCB本文取得ではなく、添付レビュー用の private OCR log として別 task に分ける |
 | browser automation が必要 | private adapter に隔離し、public package には stdout contract だけ渡す |
 | source command が失敗 | `adapter_failed` として人間語で原因を返す |
 
