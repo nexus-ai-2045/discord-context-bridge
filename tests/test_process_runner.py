@@ -152,6 +152,15 @@ def test_process_runner_does_not_inherit_parent_secrets(monkeypatch, explicit_en
     assert result.stdout.strip() == "absent"
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["GH_TOKEN", "API_KEY", "DISCORD_WEBHOOK_URL", "SESSION_COOKIE", "AUTHORIZATION"],
+)
+def test_process_runner_rejects_explicit_secret_like_environment(name: str):
+    with pytest.raises(ValueError, match="secret-like environment"):
+        run_process([sys.executable, "-c", "print('not-run')"], env={name: "synthetic-value"})
+
+
 def test_process_runner_timeout_removes_grandchild(tmp_path):
     marker = tmp_path / "grandchild-survived.txt"
     child_code = (

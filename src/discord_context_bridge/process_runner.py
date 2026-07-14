@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 from dataclasses import dataclass
 from os import PathLike
@@ -24,6 +25,10 @@ _CHILD_ENV_ALLOWLIST = (
     "USERPROFILE",
     "LANG",
     "LC_ALL",
+)
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?:TOKEN|SECRET|PASSWORD|PASSWD|COOKIE|AUTHORIZATION|WEBHOOK|API[_-]?KEY)",
+    re.IGNORECASE,
 )
 
 
@@ -131,6 +136,9 @@ def run_process(
 
     command = list(argv)
     child_env = minimal_child_env() if env is None else dict(env)
+    sensitive_keys = sorted(key for key in child_env if _SENSITIVE_ENV_NAME.search(key))
+    if sensitive_keys:
+        raise ValueError("secret-like environment variables are not accepted by run_process")
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
     group_options = (
