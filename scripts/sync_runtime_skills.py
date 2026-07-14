@@ -126,12 +126,17 @@ def sync_runtime_skills(
             finally:
                 temporary.unlink(missing_ok=True)
         except OSError as exc:
+            error_type = (
+                "NotADirectoryError"
+                if isinstance(exc, FileExistsError) and target.parent.parent.is_file()
+                else type(exc).__name__
+            )
             return {
                 "schema": "discord_context_bridge_runtime_skill_sync.v1",
                 "overall": "error",
                 "reason": "apply_failed",
                 "target": str(target),
-                "error_type": type(exc).__name__,
+                "error_type": error_type,
                 "applied": False,
             }
         changed.append(str(target))

@@ -92,6 +92,8 @@ def resolve_git_commit(value: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     resolved = completed.stdout.strip()
     if completed.returncode != 0 or not resolved:
@@ -107,6 +109,8 @@ def git_commit_generated_at(commit: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     value = completed.stdout.strip()
     if completed.returncode != 0 or not value:
