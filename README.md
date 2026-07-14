@@ -74,14 +74,15 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ## 送信テストの運転表
 
-送信テストは次の6点で見ます。
+送信テストは次のチェック表で見ます。
 
 1. 対象チャンネル/投稿先の明示
 2. 送信本文のレビュー
 3. dry-run または preview
-4. テスト用チャンネルで人間が実送信
-5. 送信ログ/失敗時回復の確認
-6. 本番送信手順の固定化
+4. 送信直前PDCA gate
+5. テスト用チャンネルで人間が実送信
+6. 送信ログ/失敗時回復の確認
+7. 本番送信手順の固定化
 
 自動送信を使う場合は、上の 1-3 に加えて `auto-send-preflight` を通します。`ready_for_auto_send_adapter` になるまで private adapter は実送信しません。
 
@@ -93,14 +94,16 @@ stateDiagram-v2
   Target --> Review: 対象safe label
   Review --> Stage: 本文レビューOK
   Stage --> DryRun: fill-only packet ready
-  DryRun --> HumanSend: dry-run ready
+  DryRun --> PdcaPreflight: dry-run ready
+  PdcaPreflight --> HumanSend: 対象/本文/添付/route_failure確認済み
   HumanSend --> Closeout: 人間がテスト送信
   Closeout --> OperationStatus: 送信後metadata確認
-  OperationStatus --> [*]: 6点チェックOK
+  OperationStatus --> [*]: チェック表OK
 
   Review --> Blocked: 文脈理解不足
   Stage --> Blocked: target/copy block不備
   DryRun --> Blocked: URL/UI/snapshot不一致
+  PdcaPreflight --> Blocked: 対象/本文/添付/route_failure未解決
   Closeout --> Blocked: 未観測/未読あり
 ```
 

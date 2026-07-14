@@ -141,6 +141,38 @@ def discord_send_boundary_checks(root: Path = ROOT) -> dict[str, Any]:
         None if dry_run else "verify_chrome_extension_fill_only_dry_run is missing",
     )
 
+    pdca_preflight = function_source(module, source, "build_discord_send_pdca_preflight")
+    runbook_path = root / "docs" / "discord-send-operation-runbook.md"
+    runbook = read_text(runbook_path) if runbook_path.exists() else ""
+    checks["send_pdca_preflight_guard"] = check(
+        "ok"
+        if has_all(
+            pdca_preflight,
+            [
+                "discord_send_pdca_preflight.v1",
+                "attachment_preview_not_verified",
+                "browser_route_unstable",
+                "webhook_target_mismatch",
+                "route_failure",
+                "retry_policy",
+                '"discord_send_executed_by_this_tool": False',
+                '"outbound_actions": "disabled"',
+                '"send_capability": "disabled"',
+            ],
+        )
+        and has_all(
+            runbook,
+            [
+                "send-pdca-preflight",
+                "attachment-preview-verified",
+                "route_failure",
+                "同じ `route_failure` が残っている間は",
+            ],
+        )
+        else "error",
+        None if pdca_preflight and runbook else "send PDCA preflight function or runbook section is missing",
+    )
+
     closeout = function_source(module, source, "build_discord_post_send_closeout_packet")
     checks["post_send_closeout_is_metadata_only"] = check(
         "ok"
