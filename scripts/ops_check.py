@@ -118,6 +118,7 @@ def run_secret_scan() -> CheckResult:
         "./scripts/send_pdca_preflight_smoke.py:",
         "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
+        "./tests/test_process_runner.py:",
     )
     unexpected = []
     for line in result.output.splitlines():
