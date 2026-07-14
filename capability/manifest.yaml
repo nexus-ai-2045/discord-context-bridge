@@ -10,13 +10,17 @@ runtime_targets:
   - grok
   - antigravity
 stoplines:
-  - no_discord_send
+  - no_public_core_direct_discord_send
   - no_external_share
   - no_raw_discord_text_in_visible_output
   - no_tokens_or_cookies
   - no_playwright_default_for_discord_context
   - no_unapproved_visible_ui_automation
   - no_complete_claim_without_full_local_capture
+  - no_ocr_for_dcb_text_intake
+  - no_clipboard_without_explicit_clipboard_request
+  - no_visible_read_route_expansion_after_blocked_need_chrome_visible_read_go
+  - no_cross_route_webhook_or_bot_guessing
 required_commands:
   - command: rest-backfill
     purpose: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
@@ -38,6 +42,8 @@ required_commands:
     purpose: 可視テキストと下書きから返信前ガイドを作る
   - command: review-draft
     purpose: 下書きの文脈適合・トーン・不足前提を確認する
+  - command: auto-send-preflight
+    purpose: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
 verification_commands:
   - command: python3 scripts/verify_ssot_projection.py --json
     purpose: SSOT から生成された runtime skill が最新か確認する

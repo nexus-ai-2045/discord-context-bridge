@@ -221,6 +221,15 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
     ingest_route_policy_command = [sys.executable, "scripts/lint_ingest_route_policy.py", "--json"]
     if os.environ.get("CI"):
         ingest_route_policy_command.append("--skip-local-claude-skill")
+    runtime_skill_sync_command = [
+        sys.executable,
+        "scripts/lint_runtime_skill_sync.py",
+        "--target",
+        "claude-code=~/.claude/skills/discord-context-bridge/SKILL.md",
+    ]
+    if os.environ.get("CI"):
+        runtime_skill_sync_command.append("--allow-missing")
+    runtime_skill_sync_command.append("--json")
     all_checks = {
         "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env, timeout=120.0),
         "返信文脈契約": lambda: run_command(
@@ -304,13 +313,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         "文脈運用モード smoke": lambda: run_context_operating_mode_smoke(env),
         "runtime skill sync lint": lambda: run_command(
             "runtime skill sync lint",
-            [
-                sys.executable,
-                "scripts/lint_runtime_skill_sync.py",
-                "--target",
-                "codex=dist/skills/codex/SKILL.md",
-                "--json",
-            ],
+            runtime_skill_sync_command,
             env=env,
         ),
         "ingest route policy lint": lambda: run_command(
