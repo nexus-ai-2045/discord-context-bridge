@@ -7,6 +7,7 @@
     "schema",
     "site",
     "adapter_id",
+    "adapter_version",
     "source_url",
     "captured_at",
     "capture_method",
@@ -56,6 +57,8 @@
         "type": "object",
         "required": [
           "ordinal",
+          "visible_timestamp",
+          "author_label",
           "body_text",
           "attachments",
           "extraction_confidence"

@@ -1,0 +1,12 @@
+{
+  "selector_hits": 1,
+  "messages": [
+    {
+      "visible_timestamp": "2026-07-14T00:00:00Z",
+      "author_label": "fixture-user",
+      "body_text": "fixture visible message",
+      "attachments": [],
+      "extraction_confidence": "high"
+    }
+  ]
+}

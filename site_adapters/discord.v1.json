@@ -99,7 +99,8 @@
     "attachment_url_unmapped_to_message",
     "selector_hit_rate_drop",
     "viewport_bottom_unconfirmed",
-    "multiple_primary_selectors_failed"
+    "multiple_primary_selectors_failed",
+    "empty_visible_text"
   ],
   "storage": {
     "raw_json_schema": "schemas/dcb_raw_capture.v1.schema.json",

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .process_runner import minimal_child_env, run_process
+from .site_adapter_runtime import build_capture
+from .site_adapter_store import store_capture
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -154,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     visible.add_argument("--channel", default="general", help="チャンネル名または仮ラベル")
     visible.add_argument("--dry-run", action="store_true", help="保存せずに解析結果だけ確認する")
     visible.set_defaults(handler=_cmd_import_visible_text)
+
+    site_capture = sub.add_parser("capture-visible-snapshot", help="可視入力をprivate site adapter snapshotとして保存する")
+    site_capture.add_argument("--source-url", required=True, help="adapter選択にのみ使うDiscord URL")
+    site_input = site_capture.add_mutually_exclusive_group(required=True)
+    site_input.add_argument("--structured-input", type=Path, help="structured DOM JSON")
+    site_input.add_argument("--input", type=Path, help="fallback可視テキスト")
+    site_capture.add_argument("--output-root", type=Path, required=True, help=".local配下のprivate保存先")
+    site_capture.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
+    site_capture.set_defaults(handler=_cmd_capture_visible_snapshot)
 
     clipboard = sub.add_parser(
         "import-clipboard",
@@ -627,6 +638,22 @@ def build_parser() -> argparse.ArgumentParser:
     watch_guide.add_argument("--json", action="store_true", help="機械処理用に JSON lines で出力する")
     watch_guide.set_defaults(handler=_cmd_watch_guide)
     return parser
+
+
+def _cmd_capture_visible_snapshot(args: argparse.Namespace) -> int:
+    try:
+        if args.structured_input:
+            structured = json.loads(args.structured_input.read_text(encoding="utf-8"))
+            capture = build_capture(args.source_url, structured=structured)
+        else:
+            capture = build_capture(args.source_url, body_text=args.input.read_text(encoding="utf-8"))
+        result = store_capture(capture, args.output_root)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        receipt = {"capture_state": "blocked", "status": "blocked", "recoverable": True, "failure_stage": "input_validation", "review_required": True, "outbound_actions": "disabled"}
+        print(_json(receipt) if args.json else "site adapter capture blocked")
+        return 2
+    print(_json(result) if args.json else f"capture_id={result['capture_id']} status={result['status']}")
+    return 0
 
 
 def _cmd_import_visible_text(args: argparse.Namespace) -> int:
