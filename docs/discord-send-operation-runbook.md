@@ -11,13 +11,14 @@ flowchart TD
   review --> stage["stage-discord-sendでfill-only packet作成"]
   stage --> dry["verify-chrome-fill-dry-runでdry-run確認"]
   dry --> fill["Chrome拡張または人間操作で下書き欄へ入力"]
-  fill --> stop["送信ボタン手前で停止"]
+  fill --> pdca["send-pdca-preflightで対象/本文/添付/route_failureを確認"]
+  pdca --> stop["送信ボタン手前で停止"]
   stop --> human["人間がテスト用チャンネルで送信判断"]
   human --> closeout["closeout-discord-sendで送信後metadata確認"]
-  closeout --> status["send-operation-statusで6点チェック吸い上げ"]
+  closeout --> status["send-operation-statusでチェック表を吸い上げ"]
   status --> prod["本番送信手順へ進むか判断"]
 
-  dry --> auto_preflight["任意: auto-send-preflight"]
+  pdca --> auto_preflight["任意: auto-send-preflight"]
   auto_preflight --> adapter["private adapter が一回送信"]
   adapter --> closeout
 
@@ -109,11 +110,49 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/fill-dry-run.json
 ```
 
-5. テスト用チャンネルで人間が送信する
+5. 送信直前のPDCA gateを通す
+
+添付つき投稿では、画像ファイルが存在するだけではOKにしません。
+Discord入力欄に添付プレビューが出ていることを `attachment-preview-verified`
+として確認します。Chrome DOM、file chooser、clipboard、Webhook などの経路が
+不安定または対象違いの場合は、同じ操作を繰り返さず `route_failure` として
+止めます。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-pdca-preflight \
+  --target-verified \
+  --draft-verified \
+  --attachment-required \
+  --attachment-file-verified \
+  --attachment-preview-verified \
+  --browser-route-status ready \
+  --webhook-route-status not-used \
+  --json > .local/discord-context-bridge/send-pdca-preflight.json
+```
+
+添付プレビューが確認できない場合の例:
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-pdca-preflight \
+  --target-verified \
+  --draft-verified \
+  --attachment-required \
+  --attachment-file-verified \
+  --browser-route-status filechooser-timeout \
+  --webhook-route-status wrong-target \
+  --failure-note "attachment preview was not visible before send" \
+  --json
+```
+
+この場合は `ok_to_send=false` になり、送信しません。
+
+6. テスト用チャンネルで人間が送信する
    - このリポは送信しません。
    - Chrome拡張や人間操作で下書き欄に入れたあと、最後の送信だけ人間が判断します。
 
-5-a. 任意: private adapter の自動送信 preflight を通す
+6-a. 任意: private adapter の自動送信 preflight を通す
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -131,7 +170,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/auto-send-preflight.json
 ```
 
-6. 送信後closeoutを取る
+7. 送信後closeoutを取る
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -146,7 +185,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/send-closeout.json
 ```
 
-7. 既存ログから運転表を吸い上げる
+8. 既存ログから運転表を吸い上げる
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -183,13 +222,14 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 正式送信フローでは通常どおり `stage-discord-send`、dry-run、テスト送信、
 closeout を順に通します。
 
-## 6点チェック
+## 送信チェック表
 
 | チェック | OK条件 | 足りない時 |
 |---|---|---|
 | 対象チャンネル/投稿先の明示 | `target-label` と staging packet がある | safe labelを決める |
 | 送信本文のレビュー | `stage-discord-send` が `ready_to_fill` | review-draft / understanding gateを通す |
 | dry-run / preview | `verify-chrome-fill-dry-run` が `ready_to_fill` | URL、UI候補数、snapshot、copy block一致を直す |
+| 送信直前PDCA | `send-pdca-preflight` が `ok_to_send=true` | 対象、本文、添付プレビュー、route_failureを直す |
 | テスト用チャンネルで実送信 | 人間送信後のcloseoutが `closed` | テストチャンネルで人間が送信し、観測する |
 | 送信ログ/失敗時回復確認 | closeout、未読0、回復手順レビュー済み | 修正投稿、停止、人間確認の手順を確認する |
 | 本番送信手順の固定化 | runbookをレビュー済みにする | 本番前チェックリストを更新する |
@@ -204,7 +244,9 @@ stateDiagram-v2
   DraftReview --> StageReady: stage-discord-send ready_to_fill
   StageReady --> DryRunBlocked: URL/UI/snapshot/copy不一致
   StageReady --> DryRunReady: fill-only dry-run ready_to_fill
-  DryRunReady --> HumanSend: 下書き入力後に人間が送信判断
+  DryRunReady --> PdcaBlocked: 対象/本文/添付/route_failure未解決
+  DryRunReady --> PdcaReady: send-pdca-preflight ok_to_send
+  PdcaReady --> HumanSend: 下書き入力後に人間が送信判断
   HumanSend --> CloseoutBlocked: 未観測 / 未レビュー / 未読あり
   HumanSend --> CloseoutClosed: closeout closed
   CloseoutClosed --> OperationReady: rollback-plan + production-runbook確認済み
@@ -216,6 +258,8 @@ stateDiagram-v2
 - 誤送信の自動削除やeditはしません。
 - 失敗時は、人間が対象チャンネルを見て、停止、修正投稿、再送、追記説明のどれにするか決めます。
 - このリポが残すのはmetadata-onlyの状態です。本文、URL、snowflake、参加者名は出力しません。
+- 同じ `route_failure` が残っている間は、同じブラウザ操作やWebhook経路を再試行しません。
+- 添付必須の投稿では、添付ファイル存在と添付プレビュー確認を別チェックにします。
 
 ## 本番前の最低条件
 
@@ -225,5 +269,6 @@ stateDiagram-v2
 - テストチャンネルでcloseout済み
 - 本文は人間レビュー済み
 - 送信先safe labelが明示されている
+- 添付必須なら、送信直前に添付プレビューが確認済み
 - 失敗時の回復方針が確認済み
 - Discord送信は人間が最後に実行する
