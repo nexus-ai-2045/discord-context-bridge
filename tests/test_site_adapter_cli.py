@@ -3,6 +3,7 @@ import json
 import pytest
 
 from discord_context_bridge.cli import main
+from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES
 
 
 URL = "https://discord.com/channels/1/2/3"
@@ -49,4 +50,16 @@ def test_structured_top_level_array_returns_safe_blocked(tmp_path, capsys):
     payload = json.loads(captured.out)
     assert payload["capture_state"] == "blocked"
     assert "PRIVATE BODY" not in captured.out + captured.err
+    assert str(tmp_path) not in captured.out + captured.err
+
+
+def test_oversized_input_is_blocked_before_reading_and_stays_public_safe(tmp_path, capsys):
+    source = tmp_path / "oversized.txt"
+    source.write_bytes(b"x" * (MAX_INPUT_BYTES + 1))
+
+    assert main(["capture-visible-snapshot", "--source-url", URL, "--input", str(source), "--output-root", str(tmp_path / ".local"), "--json"]) == 2
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["failure_stage"] == "input_validation"
     assert str(tmp_path) not in captured.out + captured.err

@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .site_adapter_runtime import build_manifest, capture_id, validate_artifact
+from .site_adapter_runtime import build_manifest, capture_id, enforce_capture_budget, validate_artifact
 
 
 def _safe_root(root: Path) -> Path:
@@ -56,6 +56,7 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def store_capture(capture: dict[str, Any], output_root: Path, *, writer=_atomic_json) -> dict[str, Any]:
+    enforce_capture_budget(capture)
     root = _safe_root(output_root)
     identifier = capture_id(capture)
     relative_raw = f"raw/{identifier}.json"

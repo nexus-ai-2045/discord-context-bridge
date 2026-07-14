@@ -11,6 +11,19 @@ from jsonschema import validate
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MAX_INPUT_BYTES = 8 * 1024 * 1024
+MAX_MESSAGES = 2_000
+MAX_BODY_TEXT_CHARS = 1_000_000
+MAX_ATTACHMENTS_PER_MESSAGE = 100
+
+
+def enforce_capture_budget(payload: Any) -> None:
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError("structured input must be JSON-compatible") from exc
+    if len(encoded) > MAX_INPUT_BYTES:
+        raise ValueError("aggregate input limit exceeded")
 
 
 def load_adapter_definition(
@@ -58,11 +71,16 @@ def _message(item: dict[str, Any], ordinal: int) -> dict[str, Any]:
     attachments = item.get("attachments") or []
     if not isinstance(attachments, list) or not all(isinstance(value, (str, dict)) for value in attachments):
         raise ValueError("attachments must be a list of strings or objects")
+    if len(attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
+        raise ValueError("attachment limit exceeded")
+    body_text = str(item.get("body_text", ""))
+    if len(body_text) > MAX_BODY_TEXT_CHARS:
+        raise ValueError("message body limit exceeded")
     return {
         "ordinal": ordinal,
         "visible_timestamp": str(item.get("visible_timestamp", "")),
         "author_label": str(item.get("author_label", "")),
-        "body_text": str(item.get("body_text", "")),
+        "body_text": body_text,
         "attachments": attachments,
         "extraction_confidence": item.get("extraction_confidence", "high"),
     }
@@ -77,12 +95,18 @@ def build_capture(
 ) -> dict[str, Any]:
     if structured is not None and not isinstance(structured, dict):
         raise ValueError("structured input must be an object")
+    if structured is not None:
+        enforce_capture_budget(structured)
+    elif len((body_text or "").encode("utf-8")) > MAX_INPUT_BYTES:
+        raise ValueError("aggregate input limit exceeded")
     adapter = select_adapter(source_url)
     drift: list[str] = []
     if structured is not None:
         raw_messages = structured.get("messages") or []
         if not isinstance(raw_messages, list) or not all(isinstance(item, dict) for item in raw_messages):
             raise ValueError("structured messages must be a list of objects")
+        if len(raw_messages) > MAX_MESSAGES:
+            raise ValueError("message limit exceeded")
         messages = [_message(item, index) for index, item in enumerate(raw_messages)]
         method = "structured_dom"
         if structured.get("selector_hits") == 0:
@@ -102,6 +126,8 @@ def build_capture(
         raw_unattributed = structured.get("unattributed_cache_candidates") or []
         if not isinstance(raw_unattributed, list) or not all(isinstance(value, (str, dict)) for value in raw_unattributed):
             raise ValueError("unattributed_cache_candidates must be a list of strings or objects")
+        if len(raw_unattributed) > MAX_MESSAGES:
+            raise ValueError("unattributed candidate limit exceeded")
         unattributed = raw_unattributed
     else:
         messages = [_message({"body_text": body_text or "", "extraction_confidence": "low"}, 0)]
@@ -121,6 +147,7 @@ def build_capture(
         "messages": messages,
         "unattributed_cache_candidates": unattributed,
         "viewport_bottom_confirmed": structured.get("viewport_bottom_confirmed") if structured is not None else None,
+        "completion_evidence": {"source": "caller_supplied", "trusted": False},
         "drift": {"detected": bool(drift), "items": drift},
         "safety": {
             "outbound_actions": "disabled",
@@ -147,8 +174,9 @@ def build_manifest(capture: dict[str, Any], *, raw_json: str) -> dict[str, Any]:
     drift = capture["drift"]
     messages = capture.get("messages") or []
     full_fields = bool(messages) and all(m.get("body_text") and m.get("author_label") and m.get("visible_timestamp") for m in messages)
-    viewport_confirmed = capture.get("viewport_bottom_confirmed") is True
-    state = "drift_detected" if drift["detected"] else ("captured" if full_fields and viewport_confirmed else "partial")
+    # v1 has no trusted completion producer. Caller-provided evidence must never
+    # promote a visible-viewport capture to full.
+    state = "drift_detected" if drift["detected"] else "partial"
     return {
         "schema": "dcb.capture_manifest.v1",
         "capture_id": capture_id(capture),

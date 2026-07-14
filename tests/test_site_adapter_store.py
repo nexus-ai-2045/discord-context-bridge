@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 
-from discord_context_bridge.site_adapter_runtime import build_capture
+from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from discord_context_bridge.site_adapter_store import store_capture
 
 
@@ -28,6 +28,14 @@ def test_store_rejects_outside_local_root(tmp_path: Path):
         store_capture(capture, tmp_path / "public")
     with pytest.raises(ValueError, match=".local"):
         store_capture(capture, tmp_path / ".local-public")
+
+
+def test_store_rejects_direct_oversized_capture_before_persistence(tmp_path: Path):
+    capture = build_capture(URL, body_text="text")
+    capture["untrusted_extra"] = "x" * MAX_INPUT_BYTES
+    with pytest.raises(ValueError, match="aggregate input limit"):
+        store_capture(capture, tmp_path / ".local")
+    assert not (tmp_path / ".local").exists()
 
 
 def test_store_rejects_unc_root_before_creating_directories(monkeypatch):

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from discord_context_bridge.site_adapter_runtime import build_capture, build_manifest, load_adapter_definition, select_adapter
+from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES, MAX_MESSAGES, build_capture, build_manifest, load_adapter_definition, select_adapter
 
 
 URL = "https://discord.com/channels/1/2/3"
@@ -86,14 +86,32 @@ def test_all_adopted_drift_signals_are_reported():
     } <= set(capture["drift"]["items"])
 
 
-def test_viewport_state_is_preserved_and_full_requires_confirmed_bottom():
+def test_caller_supplied_viewport_confirmation_cannot_claim_full_capture():
     message = {"body_text": "x", "author_label": "a", "visible_timestamp": "t"}
     absent = build_capture(URL, structured={"messages": [message]})
     confirmed = build_capture(URL, structured={"messages": [message], "viewport_bottom_confirmed": True})
     assert absent["viewport_bottom_confirmed"] is None
     assert confirmed["viewport_bottom_confirmed"] is True
     assert build_manifest(absent, raw_json="raw/x.json")["capture_state"] == "partial"
-    assert build_manifest(confirmed, raw_json="raw/x.json")["capture_state"] == "full"
+    assert build_manifest(confirmed, raw_json="raw/x.json")["capture_state"] == "partial"
+    assert build_manifest(confirmed, raw_json="raw/x.json")["status"] == "partial"
+
+
+def test_structured_capture_rejects_too_many_messages():
+    with pytest.raises(ValueError, match="message limit"):
+        build_capture(URL, structured={"messages": [{}] * (MAX_MESSAGES + 1)})
+
+
+def test_structured_capture_rejects_aggregate_payload_over_budget():
+    with pytest.raises(ValueError, match="aggregate input limit"):
+        build_capture(URL, structured={"messages": [{"body_text": "x" * MAX_INPUT_BYTES}]})
+
+
+def test_manifest_cannot_be_promoted_by_forged_completion_evidence():
+    message = {"body_text": "x", "author_label": "a", "visible_timestamp": "t"}
+    capture = build_capture(URL, structured={"messages": [message], "viewport_bottom_confirmed": True})
+    capture["completion_evidence"] = {"source": "forged", "trusted": True}
+    assert build_manifest(capture, raw_json="raw/x.json")["capture_state"] == "partial"
 
 
 def test_structured_input_type_is_validated():

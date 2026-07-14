@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .process_runner import minimal_child_env, run_process
-from .site_adapter_runtime import build_capture
+from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
 
 from .core import (
@@ -642,11 +642,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _cmd_capture_visible_snapshot(args: argparse.Namespace) -> int:
     try:
+        input_path = args.structured_input or args.input
+        with input_path.open("rb") as handle:
+            raw_input = handle.read(MAX_INPUT_BYTES + 1)
+        if len(raw_input) > MAX_INPUT_BYTES:
+            raise ValueError("input size limit exceeded")
+        input_text = raw_input.decode("utf-8")
         if args.structured_input:
-            structured = json.loads(args.structured_input.read_text(encoding="utf-8"))
+            structured = json.loads(input_text)
             capture = build_capture(args.source_url, structured=structured)
         else:
-            capture = build_capture(args.source_url, body_text=args.input.read_text(encoding="utf-8"))
+            capture = build_capture(args.source_url, body_text=input_text)
         result = store_capture(capture, args.output_root)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         receipt = {"capture_state": "blocked", "status": "blocked", "recoverable": True, "failure_stage": "input_validation", "review_required": True, "outbound_actions": "disabled"}
