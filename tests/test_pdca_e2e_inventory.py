@@ -124,6 +124,41 @@ def test_ops_fast_is_opt_in_to_avoid_nested_orchestrators() -> None:
     assert next(spec for spec in explicit_specs if spec.case_id == "ops_fast").enabled is True
 
 
+def test_cache_inventory_case_only_uses_supported_cli_flags() -> None:
+    specs = pdca_e2e_inventory.build_case_specs(
+        python_executable=sys.executable,
+        url="https://discord.com/channels/11111111111111111/22222222222222222",
+        include_desktop_cache=False,
+    )
+    command = next(spec.command for spec in specs if spec.case_id == "cache_inventory")
+    assert "--max-scan-seconds" not in command
+
+
+def test_execute_case_preserves_src_for_child_imports(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run_process(command, *, cwd, env, timeout):
+        captured.update(command=command, cwd=cwd, env=env, timeout=timeout)
+        return type("Result", (), {"returncode": 0, "stdout": "{}", "stderr": "", "failure_stage": None})()
+
+    monkeypatch.setattr(pdca_e2e_inventory, "run_process", fake_run_process)
+    pdca_e2e_inventory.execute_case(_spec("child"))
+    assert str(ROOT / "src") in captured["env"]["PYTHONPATH"].split(pdca_e2e_inventory.os.pathsep)
+
+
+def test_json_case_rejects_unparseable_or_explicit_failure_payload() -> None:
+    invalid = pdca_e2e_inventory.ExecutionResult(0, "not-json", "", None, 0.01)
+    classified_invalid = pdca_e2e_inventory.classify_case(_spec("invalid"), invalid)
+    assert classified_invalid["classification"] == "code_repair_required"
+    assert classified_invalid["failure_signal"] == "invalid_json_output"
+
+    classified_failure = pdca_e2e_inventory.classify_case(
+        _spec("blocked"),
+        _result(returncode=0, payload={"ok": False, "state": "blocked"}),
+    )
+    assert classified_failure["classification"] == "code_repair_required"
+
+
 def test_report_is_metadata_only() -> None:
     report = pdca_e2e_inventory.build_report(
         [

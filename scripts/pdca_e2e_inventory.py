@@ -116,8 +116,6 @@ def build_case_specs(
                 "cache-inventory",
                 "--url",
                 url or "",
-                "--max-scan-seconds",
-                "20",
                 "--json",
             ),
             30,
@@ -174,9 +172,19 @@ def _failure_signal(payload: dict[str, Any] | None, result: ExecutionResult) -> 
 def classify_case(spec: CaseSpec, result: ExecutionResult) -> dict[str, Any]:
     payload = _parse_json(result.stdout) if spec.expects_json else None
     signal = _failure_signal(payload, result)
+    if spec.expects_json and result.returncode == 0 and payload is None:
+        signal = "invalid_json_output"
     normalized = signal.casefold()
 
-    if result.returncode == 0:
+    payload_reports_failure = bool(
+        payload
+        and (
+            payload.get("ok") is False
+            or str(payload.get("overall") or "").casefold()
+            in {"error", "failed", "blocked"}
+        )
+    )
+    if result.returncode == 0 and not (spec.expects_json and payload is None) and not payload_reports_failure:
         state = str((payload or {}).get("state") or "").casefold()
         if state in {"snapshot_missing", "reference_only", "partial", "partial_scan"}:
             classification = "partial_evidence"
@@ -216,10 +224,12 @@ def classify_case(spec: CaseSpec, result: ExecutionResult) -> dict[str, Any]:
 
 def execute_case(spec: CaseSpec) -> ExecutionResult:
     started = time.monotonic()
+    env = minimal_child_env()
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     completed = run_process(
         list(spec.command),
         cwd=ROOT,
-        env=minimal_child_env(),
+        env=env,
         timeout=spec.timeout_seconds,
     )
     return ExecutionResult(

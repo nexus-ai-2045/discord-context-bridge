@@ -22,6 +22,10 @@ class ResolvedLocalPath:
     source: str
 
 
+def _absolute_path(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
 def default_config_path(*, home: Path | None = None, env: Mapping[str, str] | None = None) -> Path:
     env_value = env if env is not None else os.environ
     configured = str(env_value.get(CONFIG_ENV, "")).strip()
@@ -83,9 +87,11 @@ def build_configure_local_cache(
     existing = load_local_config(config_path)
     updated = dict(existing)
     if shared_snapshot_root is not None:
-        updated["shared_snapshot_root"] = str(shared_snapshot_root.expanduser())
+        updated["shared_snapshot_root"] = str(_absolute_path(shared_snapshot_root))
     if discord_desktop_user_data_dir is not None:
-        updated["discord_desktop_user_data_dir"] = str(discord_desktop_user_data_dir.expanduser())
+        updated["discord_desktop_user_data_dir"] = str(
+            _absolute_path(discord_desktop_user_data_dir)
+        )
     changed = updated != existing
     if apply and changed:
         config_path.parent.mkdir(parents=True, exist_ok=True)

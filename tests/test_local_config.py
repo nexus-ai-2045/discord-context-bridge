@@ -59,6 +59,22 @@ def test_configure_local_cache_is_dry_run_by_default_and_applies_atomically(tmp_
     assert str(tmp_path) not in json.dumps(applied)
 
 
+def test_configure_local_cache_persists_relative_paths_as_absolute(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "config.json"
+    build_configure_local_cache(
+        config_path=config_path,
+        shared_snapshot_root=Path("snapshots"),
+        discord_desktop_user_data_dir=Path("discord-data"),
+        apply=True,
+    )
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["shared_snapshot_root"] == str(tmp_path / "snapshots")
+    assert payload["discord_desktop_user_data_dir"] == str(tmp_path / "discord-data")
+
+
 def test_configure_local_cache_cli_dry_run_then_apply(tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "config.json"
     snapshot_root = tmp_path / "snapshots"

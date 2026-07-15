@@ -168,7 +168,7 @@ def build_cache_inventory(
     return {
         "language": "ja",
         "schema": "discord_cache_inventory.v1",
-        "ok": root.exists(),
+        "ok": root.exists() or bool(records),
         "state": "ready" if records else "snapshot_missing",
         "target": {
             "target_key": target_key,

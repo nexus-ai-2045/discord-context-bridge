@@ -91,6 +91,20 @@ def test_cache_inventory_missing_target_requests_capture(tmp_path: Path) -> None
     assert payload["stale_policy"]["usable_for_reply"] is False
 
 
+def test_cache_inventory_accepts_saved_snapshot_when_raw_root_is_absent(tmp_path: Path) -> None:
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    _write_record(snapshot_store, captured_at="2026-07-15T01:00:00+00:00")
+    payload = build_cache_inventory(
+        url=URL,
+        cache_root=tmp_path / "missing-raw-root",
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-15T02:00:00+00:00",
+    )
+    assert payload["ok"] is True
+    assert payload["state"] == "ready"
+    assert payload["decision"] == "use_local_snapshot"
+
+
 def test_cache_inventory_cli_is_metadata_only_end_to_end(tmp_path: Path, capsys) -> None:
     root = tmp_path / "raw-snapshots"
     record = root / "discord" / "target" / "text-snapshots.ndjson"
