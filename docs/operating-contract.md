@@ -35,6 +35,19 @@
 9. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
 10. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
+## ローカルcache解決と鮮度判断
+
+- 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
+- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
+- `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
+- Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
+- `codex_chrome_bundle_smoke.py` はbrowser bundleの通常importと、host側の保護済み`process`がある条件でのimportだけを検査する。Node REPL接続、Chrome接続、Discord DOM到達、投稿成功の保証には使わない。
+- browser bundleが`protected_process_conflict`なら、Chrome可視読取へ進まず、人間語の原因とread-only fallbackを返す。生成済みplugin cacheを直接書き換えず、修正元sourceまたは上流更新で直す。
+- `pdca_e2e_inventory.py` はE2E caseを一度ずつbounded実行し、成功、証拠不足、コード修正、環境、外部依存、人間レビューへ分類する。同じ失敗経路を無制限に再試行せず、timeout等の一時失敗だけ最大1回再試行する。
+- PDCA runnerは別orchestratorである`ops_check.py`を既定で入れ子実行しない。`--include-ops-fast`が明示された場合だけ含める。コード自動修正、設定変更、Discord writeは行わない。
+- 前回reportを指定した場合、case単位で`resolved`、`persisting`、`new_issues`を返し、既に解消したfailureを再調査対象にしない。
+
 ## 返信前最低文脈 gate
 
 返信支援の生成入口は fail-closed とする。本文が1件以上あることや、人間が理解確認を押したことだけでは返信候補を生成しない。

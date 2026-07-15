@@ -30,6 +30,14 @@ required_commands:
     purpose: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
   - command: cache-first-intake
     purpose: ローカル cache / snapshot を先に見て private book を作る
+  - command: cache-inventory
+    purpose: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
+  - command: configure-local-cache
+    purpose: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する
+  - command: desktop-cache-probe
+    purpose: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
+  - command: python3 scripts/pdca_e2e_inventory.py --json
+    purpose: E2E caseをbounded実行し、失敗を修正・環境・外部依存・人間レビューへ分類する
   - command: coverage-report
     purpose: Discord URL / target_key の coverage と freshness を本文なしで確認する
   - command: chrome-visible-fallback-guard
@@ -53,3 +61,5 @@ verification_commands:
     purpose: Discord 文脈取得で Playwright を既定経路にしない運用を確認する
   - command: python3 scripts/ops_check.py --gh
     purpose: test / smoke / secret scan / GitHub account をまとめて確認する
+  - command: python3 scripts/codex_chrome_bundle_smoke.py --json
+    purpose: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する

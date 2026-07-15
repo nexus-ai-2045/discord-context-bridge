@@ -74,6 +74,17 @@ from .credentials import (
 )
 from .site_adapter_runtime import build_capture, build_manifest, select_adapter
 from .site_adapter_store import store_capture
+from .cache_inventory import build_cache_inventory
+from .desktop_cache import (
+    parse_simple_cache_entry,
+    probe_discord_desktop_cache,
+    resolve_discord_user_data_dir,
+)
+from .local_config import (
+    build_configure_local_cache,
+    default_config_path,
+    resolve_shared_snapshot_root,
+)
 
 __all__ = [
     "DisabledCapability",
@@ -150,4 +161,11 @@ __all__ = [
     "build_capture",
     "build_manifest",
     "store_capture",
+    "build_cache_inventory",
+    "parse_simple_cache_entry",
+    "probe_discord_desktop_cache",
+    "resolve_discord_user_data_dir",
+    "build_configure_local_cache",
+    "default_config_path",
+    "resolve_shared_snapshot_root",
 ]
