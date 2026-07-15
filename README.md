@@ -17,6 +17,10 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 | 返信前の最低文脈を確認する | `reply-context-plan` |
 | 返信前に本文を確認する | `review-draft` / `guide-reply` |
 | Discord URLの保存済みsnapshotを見る | `report-latest` / `coverage-report` |
+| URL完全一致のローカル保存量・title根拠・鮮度を見る | `cache-inventory` |
+| ローカルcache場所を確認・保存する | `configure-local-cache` |
+| Discord Desktop cacheに対象参照があるか確認する | `desktop-cache-probe` |
+| E2Eを一周だけ回し、失敗の次行動を分類する | `python3 scripts/pdca_e2e_inventory.py --json` |
 | 下書き入力直前のgateを作る | `stage-discord-send` |
 | Chrome fill-only のdry-runを確認する | `verify-chrome-fill-dry-run` |
 | private adapter の自動送信許可を判定する | `auto-send-preflight` |
@@ -71,6 +75,64 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --understanding-confirmed \
   --draft "まず前提を確認してから返事します。"
 ```
+
+### ローカルcacheを先に判断する
+
+`cache-inventory` は対象URLの完全一致snapshot、Markdown件数、title根拠、鮮度を本文なしで返します。`decision` が `use_local_snapshot` なら保存済みsnapshotを使い、`refresh_exact_url_snapshot` または `capture_visible_or_read_only_adapter` なら最新取得へ進みます。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  cache-inventory \
+  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
+  --json
+```
+
+cache場所は `CLI引数 > 環境変数 > user config > OS既定` の順で解決します。保存は既定でdry-runであり、`--apply` を指定した時だけ行います。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  configure-local-cache \
+  --shared-snapshot-root /private/path/to/raw-snapshots \
+  --json
+
+# dry-run結果を人間が確認した後だけ保存
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  configure-local-cache \
+  --shared-snapshot-root /private/path/to/raw-snapshots \
+  --apply \
+  --json
+```
+
+Discord Desktop cacheは正規化済みsnapshotの正本ではなく、対象URLの参照候補を見つけるread-only補助経路です。本文は返しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  desktop-cache-probe \
+  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
+  --json
+```
+
+### 疲れないPDCA E2E
+
+`pdca_e2e_inventory.py` はfixture、route、送信境界、Chrome bootstrap、SSOT projectionを一度ずつ実行し、`passed`、`partial_evidence`、`code_repair_required`、`environment_blocked`、`external_dependency_blocked`、`human_review_required`へ分類します。同じcaseを無制限に繰り返さず、timeout等だけ最大1回再試行します。
+
+```bash
+# まず実行caseだけ見る
+python3 scripts/pdca_e2e_inventory.py --dry-run --json
+
+# 通常のbounded cycle
+python3 scripts/pdca_e2e_inventory.py \
+  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
+  --output .local/discord-context-bridge/pdca-e2e-latest.json \
+  --json
+
+# 前回から「解消 / 継続 / 新規」を比較
+python3 scripts/pdca_e2e_inventory.py \
+  --previous-report .local/discord-context-bridge/pdca-e2e-latest.json \
+  --json
+```
+
+時間のかかるDesktop cache走査は`--include-desktop-cache`、重複する並列`ops_check`は`--include-ops-fast`を明示した時だけ含めます。runnerはコード修正、設定変更、Discord送信を自動実行しません。
 
 ## 送信テストの運転表
 

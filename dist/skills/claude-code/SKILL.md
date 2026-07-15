@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for claude-code; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 91f968b9c810946359174dc0ac31817df9899e6a
+ssot_commit: 51e68212fea3271da63618d95f434c63a4ed2aa3
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: b3089566edb7c6fabe6683288bea699067fefe99e2b29fbf3db6d60679867a92
-contract_checksum: c52f902b50664055d1d685a6a3ba2076ac4a883b23fb33c5f525cbfac82cb03b
-generated_at: 2026-07-13T12:21:10+00:00
+manifest_checksum: 9abb205b5483140c870b070881acf0d412bbcc747e4ac261ef5abc6f005281de
+contract_checksum: ebd8c66c77ba4f71481192300bd117d0033cfdfa21caddf6edc5904aff7a61a6
+generated_at: 2026-07-15T10:01:12+00:00
 runtime_target: claude-code
 ---
 
@@ -52,6 +52,19 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 8. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
 9. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
 10. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+
+## ローカルcache解決と鮮度判断
+
+- 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
+- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
+- `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
+- Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
+- `codex_chrome_bundle_smoke.py` はbrowser bundleの通常importと、host側の保護済み`process`がある条件でのimportだけを検査する。Node REPL接続、Chrome接続、Discord DOM到達、投稿成功の保証には使わない。
+- browser bundleが`protected_process_conflict`なら、Chrome可視読取へ進まず、人間語の原因とread-only fallbackを返す。生成済みplugin cacheを直接書き換えず、修正元sourceまたは上流更新で直す。
+- `pdca_e2e_inventory.py` はE2E caseを一度ずつbounded実行し、成功、証拠不足、コード修正、環境、外部依存、人間レビューへ分類する。同じ失敗経路を無制限に再試行せず、timeout等の一時失敗だけ最大1回再試行する。
+- PDCA runnerは別orchestratorである`ops_check.py`を既定で入れ子実行しない。`--include-ops-fast`が明示された場合だけ含める。コード自動修正、設定変更、Discord writeは行わない。
+- 前回reportを指定した場合、case単位で`resolved`、`persisting`、`new_issues`を返し、既に解消したfailureを再調査対象にしない。
 
 ## 返信前最低文脈 gate
 
@@ -199,6 +212,10 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
+- `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
+- `configure-local-cache`: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する
+- `desktop-cache-probe`: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
+- `python3 scripts/pdca_e2e_inventory.py --json`: E2E caseをbounded実行し、失敗を修正・環境・外部依存・人間レビューへ分類する
 - `coverage-report`: Discord URL / target_key の coverage と freshness を本文なしで確認する
 - `chrome-visible-fallback-guard`: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
 - `import-visible-text`: 可視テキストをローカル event store に取り込む
@@ -213,3 +230,4 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/lint_runtime_skill_sync.py --target codex=/path/to/SKILL.md --json`: runtime skill directory の実体が SSOT 生成物と一致するか read-only で確認する
 - `python3 scripts/lint_ingest_route_policy.py --json`: Discord 文脈取得で Playwright を既定経路にしない運用を確認する
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する
+- `python3 scripts/codex_chrome_bundle_smoke.py --json`: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
