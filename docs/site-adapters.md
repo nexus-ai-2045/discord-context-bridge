@@ -101,6 +101,20 @@ drift は失敗ではなく、adapter 更新が必要な観測状態として ma
 5. drift 判定を manifest に出し、ユーザー報告では `本文全文` と `添付紐づけ` を別々に表示する。
 6. fixture HTML、innerText fixture、drift fixture で回帰テストする。
 
+## Runtime 接続（2026-07-14）
+
+`capture-visible-snapshot` は既存の可視テキストまたは structured JSON を producer として受け取り、`discord.v1` の選択、drift 判定、private atomic 保存を一つのread-only経路で行う。
+
+```text
+discord-context-bridge capture-visible-snapshot \
+  --source-url <Discord channel URL> \
+  --input <visible text file> \
+  --output-root <.local private root> \
+  --json
+```
+
+標準出力は `capture_id`、capture状態、drift有無、review要否だけのmetadata-onlyで、本文、参加者名、source URL、絶対pathは返さない。保存は同一captureに対して冪等で、temporary fileを同一directoryへ書いてからatomic replaceする。adapterは観測と保存だけを担当し、`outbound_actions=disabled`を変更しない。
+
 ## 採用しないもの
 
 - Playwright やスクレイピング OSS の大型依存を DCB の中核にはしない。
