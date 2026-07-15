@@ -14,6 +14,10 @@ discord-context-bridge = "discord_context_bridge.cli:main"
 discord-context-bridge-mcp = "discord_context_bridge.mcp_server:main"
 discord-context-bridge-mcp-http = "discord_context_bridge.mcp_server:main_http"
 
+[tool.setuptools.data-files]
+"share/discord-context-bridge/site_adapters" = ["site_adapters/index.json", "site_adapters/discord.v1.json"]
+"share/discord-context-bridge/schemas" = ["schemas/dcb_raw_capture.v1.schema.json", "schemas/dcb_capture_manifest.v1.schema.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

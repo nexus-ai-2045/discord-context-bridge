@@ -2,8 +2,9 @@ from pathlib import Path
 import json
 
 import pytest
+from jsonschema import ValidationError
 
-from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES, MAX_MESSAGES, build_capture, build_manifest, load_adapter_definition, select_adapter
+from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES, MAX_MESSAGES, build_capture, build_manifest, load_adapter_definition, select_adapter, validate_artifact
 
 
 URL = "https://discord.com/channels/1/2/3"
@@ -146,3 +147,44 @@ def test_manifest_is_metadata_only_and_rejects_absolute_paths(tmp_path: Path):
     assert manifest["outbound_actions"] == "disabled"
     assert {"coverage", "freshness", "drift"} <= manifest.keys()
     assert manifest["adapter_version"] == "1"
+
+
+def test_null_message_fields_remain_missing_and_trigger_drift():
+    capture = build_capture(URL, structured={"messages": [{"body_text": None, "author_label": None, "visible_timestamp": None}]})
+    assert capture["messages"][0]["body_text"] == ""
+    assert "timestamp_or_author_or_body_missing_repeatedly" in capture["drift"]["items"]
+
+
+def test_invalid_extraction_confidence_is_rejected_early():
+    with pytest.raises(ValueError, match="extraction_confidence"):
+        build_capture(URL, structured={"messages": [{"extraction_confidence": "PRIVATE"}]})
+
+
+@pytest.mark.parametrize("value", [None, "2", 1.5, True])
+def test_invalid_missing_field_streak_is_rejected(value):
+    with pytest.raises(ValueError, match="missing_field_streak"):
+        build_capture(URL, structured={"messages": [], "missing_field_streak": value})
+
+
+@pytest.mark.parametrize("path", ["C:/Users/example/raw.json", r"\\server\share\raw.json"])
+def test_manifest_rejects_windows_absolute_artifact_paths(path):
+    from pathlib import PurePosixPath
+    from unittest.mock import patch
+
+    with patch("discord_context_bridge.site_adapter_runtime.PurePath", PurePosixPath):
+        with pytest.raises(ValueError, match="relative"):
+            build_manifest(build_capture(URL, body_text="x"), raw_json=path)
+
+
+def test_manifest_schema_rejects_full_state_when_status_is_partial():
+    manifest = build_manifest(build_capture(URL, body_text="x"), raw_json="raw/x.json")
+    manifest["capture_state"] = "full"
+    with pytest.raises(ValidationError):
+        validate_artifact(manifest, "dcb_capture_manifest.v1.schema.json")
+
+
+def test_packaged_resources_work_without_repository_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("discord_context_bridge.site_adapter_runtime.REPO_ROOT", tmp_path / "not-a-checkout")
+    monkeypatch.setattr("discord_context_bridge.site_adapter_runtime.INSTALLED_RESOURCE_ROOT", Path(__file__).parents[1])
+    assert load_adapter_definition()["adapter_id"] == "discord.v1"
+    validate_artifact(build_capture(URL, body_text="x"), "dcb_raw_capture.v1.schema.json")

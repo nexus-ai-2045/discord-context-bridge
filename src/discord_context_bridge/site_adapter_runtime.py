@@ -3,18 +3,25 @@ from __future__ import annotations
 import hashlib
 import fnmatch
 import json
+import sysconfig
 from datetime import datetime, timezone
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlparse
 from jsonschema import validate
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+INSTALLED_RESOURCE_ROOT = Path(sysconfig.get_path("data")) / "share" / "discord-context-bridge"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_MESSAGES = 2_000
 MAX_BODY_TEXT_CHARS = 1_000_000
 MAX_ATTACHMENTS_PER_MESSAGE = 100
+
+
+def _resource_file(relative: str) -> Path:
+    checkout_path = REPO_ROOT / relative
+    return checkout_path if checkout_path.is_file() else INSTALLED_RESOURCE_ROOT / relative
 
 
 def enforce_capture_budget(payload: Any) -> None:
@@ -29,12 +36,12 @@ def enforce_capture_budget(payload: Any) -> None:
 def load_adapter_definition(
     *, index_path: Path | None = None, definition_path: Path | None = None
 ) -> dict[str, Any]:
-    index_path = index_path or REPO_ROOT / "site_adapters" / "index.json"
+    index_path = index_path or _resource_file("site_adapters/index.json")
     index = json.loads(index_path.read_text(encoding="utf-8"))
     entry = next((item for item in index.get("adapters", []) if item.get("adapter_id") == "discord.v1"), None)
     if not entry:
         raise ValueError("site adapter definition drift: discord.v1 missing from index")
-    definition_path = definition_path or REPO_ROOT / entry["definition"]
+    definition_path = definition_path or _resource_file(entry["definition"])
     definition = json.loads(definition_path.read_text(encoding="utf-8"))
     expected_fields = ["source_url", "captured_at", "site", "adapter_id", "adapter_version", "capture_method", "read_scope", "messages", "messages.ordinal", "messages.visible_timestamp", "messages.author_label", "messages.body_text", "messages.attachments", "messages.extraction_confidence"]
     if (
@@ -73,16 +80,21 @@ def _message(item: dict[str, Any], ordinal: int) -> dict[str, Any]:
         raise ValueError("attachments must be a list of strings or objects")
     if len(attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
         raise ValueError("attachment limit exceeded")
-    body_text = str(item.get("body_text", ""))
+    body_text = "" if item.get("body_text") is None else str(item.get("body_text"))
     if len(body_text) > MAX_BODY_TEXT_CHARS:
         raise ValueError("message body limit exceeded")
+    confidence = item.get("extraction_confidence", "high")
+    if confidence not in {"high", "medium", "low"}:
+        raise ValueError("extraction_confidence must be high, medium, or low")
+    visible_timestamp = "" if item.get("visible_timestamp") is None else str(item.get("visible_timestamp"))
+    author_label = "" if item.get("author_label") is None else str(item.get("author_label"))
     return {
         "ordinal": ordinal,
-        "visible_timestamp": str(item.get("visible_timestamp", "")),
-        "author_label": str(item.get("author_label", "")),
+        "visible_timestamp": visible_timestamp,
+        "author_label": author_label,
         "body_text": body_text,
         "attachments": attachments,
-        "extraction_confidence": item.get("extraction_confidence", "high"),
+        "extraction_confidence": confidence,
     }
 
 
@@ -115,7 +127,10 @@ def build_capture(
             drift.append("timestamp_or_author_or_body_missing_repeatedly")
         if not any(message["body_text"] for message in messages) and structured.get("body_text_present"):
             drift.append("structured_dom_empty_but_body_text_present")
-        if structured.get("missing_field_streak", 0) >= 2:
+        missing_field_streak = structured.get("missing_field_streak", 0)
+        if not isinstance(missing_field_streak, int) or isinstance(missing_field_streak, bool):
+            raise ValueError("missing_field_streak must be an integer")
+        if missing_field_streak >= 2:
             drift.append("timestamp_or_author_or_body_missing_repeatedly")
         if structured.get("selector_hit_rate_drop"):
             drift.append("selector_hit_rate_drop")
@@ -164,7 +179,9 @@ def capture_id(capture: dict[str, Any]) -> str:
 
 def _relative_path(value: str) -> str:
     path = PurePath(value)
-    if path.is_absolute() or ".." in path.parts:
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(value)
+    if path.is_absolute() or windows_path.is_absolute() or posix_path.is_absolute() or ".." in path.parts:
         raise ValueError("artifact path must be relative")
     return path.as_posix()
 
@@ -196,5 +213,5 @@ def build_manifest(capture: dict[str, Any], *, raw_json: str) -> dict[str, Any]:
 
 
 def validate_artifact(payload: dict[str, Any], schema_name: str) -> None:
-    schema = json.loads((REPO_ROOT / "schemas" / schema_name).read_text(encoding="utf-8"))
+    schema = json.loads(_resource_file(f"schemas/{schema_name}").read_text(encoding="utf-8"))
     validate(instance=payload, schema=schema)

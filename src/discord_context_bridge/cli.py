@@ -659,7 +659,7 @@ def _cmd_capture_visible_snapshot(args: argparse.Namespace) -> int:
         print(_json(receipt) if args.json else "site adapter capture blocked")
         return 2
     print(_json(result) if args.json else f"capture_id={result['capture_id']} status={result['status']}")
-    return 0
+    return 2 if result.get("status") == "blocked" else 0
 
 
 def _cmd_import_visible_text(args: argparse.Namespace) -> int:

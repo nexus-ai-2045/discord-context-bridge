@@ -92,6 +92,10 @@
     {
       "if": {"properties": {"status": {"const": "captured"}}, "required": ["status"]},
       "then": {"properties": {"capture_state": {"const": "full"}}}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["partial", "drift_detected"]}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "partial"}}}
     }
   ],
   "additionalProperties": true

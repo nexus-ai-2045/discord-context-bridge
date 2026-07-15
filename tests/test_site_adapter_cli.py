@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from unittest.mock import patch
 
 from discord_context_bridge.cli import main
 from discord_context_bridge.site_adapter_runtime import MAX_INPUT_BYTES
@@ -63,3 +64,11 @@ def test_oversized_input_is_blocked_before_reading_and_stays_public_safe(tmp_pat
     payload = json.loads(captured.out)
     assert payload["failure_stage"] == "input_validation"
     assert str(tmp_path) not in captured.out + captured.err
+
+
+def test_private_persistence_failure_returns_nonzero(tmp_path, capsys):
+    source = tmp_path / "input.txt"
+    source.write_text("visible", encoding="utf-8")
+    blocked = {"capture_state": "blocked", "status": "blocked", "failure_stage": "private_persistence"}
+    with patch("discord_context_bridge.cli.store_capture", return_value=blocked):
+        assert main(["capture-visible-snapshot", "--source-url", URL, "--input", str(source), "--output-root", str(tmp_path / ".local"), "--json"]) == 2
