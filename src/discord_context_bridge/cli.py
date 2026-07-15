@@ -15,6 +15,15 @@ from typing import Any
 from .process_runner import minimal_child_env, run_process
 from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
+from .cache_inventory import build_cache_inventory
+from .desktop_cache import probe_discord_desktop_cache
+from .local_config import (
+    LocalConfigError,
+    build_configure_local_cache,
+    configured_discord_user_data_dir,
+    default_config_path,
+    resolve_shared_snapshot_root,
+)
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -353,10 +362,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cache_first.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
     cache_first.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
-    cache_first.add_argument("--cache-root", type=Path, default=DEFAULT_SHARED_RAW_SNAPSHOT_ROOT, help="shared raw snapshot root。出力には表示しません")
+    cache_first.add_argument("--cache-root", type=Path, default=None, help="shared raw snapshot root。未指定時は env / user config / OS既定の順で解決します")
+    cache_first.add_argument("--config-path", type=Path, default=default_config_path(), help="local cache config。出力には表示しません")
     cache_first.add_argument("--book-output", type=Path, default=None, help="生成する private Markdown book。出力には表示しません")
     cache_first.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     cache_first.set_defaults(handler=_cmd_cache_first_intake)
+
+    cache_inventory = sub.add_parser(
+        "cache-inventory",
+        help="URL完全一致のsnapshot・Markdown件数・title evidence・鮮度判断をmetadata-onlyで返す",
+    )
+    cache_inventory.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    cache_inventory.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE)
+    cache_inventory.add_argument("--cache-root", type=Path, default=None)
+    cache_inventory.add_argument("--config-path", type=Path, default=default_config_path())
+    cache_inventory.add_argument("--include-private-title", action="store_true", help="private consoleにtitle値を含める")
+    cache_inventory.add_argument("--json", action="store_true")
+    cache_inventory.set_defaults(handler=_cmd_cache_inventory)
+
+    configure_cache = sub.add_parser(
+        "configure-local-cache",
+        help="local cache場所をdry-runし、--apply指定時だけuser configへ保存する",
+    )
+    configure_cache.add_argument("--shared-snapshot-root", type=Path)
+    configure_cache.add_argument("--discord-user-data-dir", type=Path)
+    configure_cache.add_argument("--config-path", type=Path, default=default_config_path())
+    configure_cache.add_argument("--apply", action="store_true", help="確認した設定をlocal user configへ保存する")
+    configure_cache.add_argument("--json", action="store_true")
+    configure_cache.set_defaults(handler=_cmd_configure_local_cache)
+
+    desktop_cache = sub.add_parser(
+        "desktop-cache-probe",
+        help="実行中Discord Desktopのcacheから対象設定をmetadata-onlyで確認する",
+    )
+    desktop_cache.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
+    desktop_cache.add_argument("--user-data-dir", type=Path, help="Discord user-data-dir。出力には表示しません")
+    desktop_cache.add_argument("--config-path", type=Path, default=default_config_path())
+    desktop_cache.add_argument("--include-labels", action="store_true", help="private consoleにchannel/tag labelを含める")
+    desktop_cache.add_argument("--max-files", type=int, default=50_000, help="1 cycleで読むcache file上限")
+    desktop_cache.add_argument("--max-scan-seconds", type=float, default=30.0, help="1 cycleの走査秒数上限")
+    desktop_cache.add_argument("--json", action="store_true")
+    desktop_cache.set_defaults(handler=_cmd_desktop_cache_probe)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -1146,12 +1192,17 @@ def _cmd_reply_context_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
+    resolved_root = resolve_shared_snapshot_root(
+        explicit=args.cache_root,
+        config_path=args.config_path,
+    )
     payload = build_cache_first_intake(
         url=args.url,
         snapshot_store=args.snapshot_store,
-        cache_root=args.cache_root,
+        cache_root=resolved_root.path,
         book_output=args.book_output,
     )
+    payload["cache"]["configuration_source"] = resolved_root.source
     if args.json:
         print(_json(payload))
         return 0 if payload["ok"] else 2
@@ -1164,6 +1215,73 @@ def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
     print(f"raw_text_returned: {str(payload['raw_text_returned']).lower()}")
     print("path_output: omitted")
     print("outbound: disabled")
+    return 0 if payload["ok"] else 2
+
+
+def _cmd_cache_inventory(args: argparse.Namespace) -> int:
+    payload = build_cache_inventory(
+        url=args.url,
+        snapshot_store=args.snapshot_store,
+        cache_root=args.cache_root,
+        config_path=args.config_path,
+        include_private_title=args.include_private_title,
+    )
+    if args.json:
+        print(_json(payload))
+    else:
+        print(f"state: {payload['state']}")
+        print(f"ok: {str(payload['ok']).lower()}")
+        print(f"decision: {payload.get('decision', 'none')}")
+        print(f"markdown_file_count: {payload.get('inventory', {}).get('markdown_file_count', 0)}")
+        print(f"exact_snapshot_record_count: {payload.get('inventory', {}).get('exact_snapshot_record_count', 0)}")
+        print(f"title_available: {str(payload.get('title', {}).get('available', False)).lower()}")
+        if args.include_private_title and payload.get("title", {}).get("value"):
+            print(f"title: {payload['title']['value']}")
+        print("path_output: omitted")
+        print("outbound: disabled")
+    return 0 if payload["ok"] else 2
+
+
+def _cmd_configure_local_cache(args: argparse.Namespace) -> int:
+    payload = build_configure_local_cache(
+        config_path=args.config_path,
+        shared_snapshot_root=args.shared_snapshot_root,
+        discord_desktop_user_data_dir=args.discord_user_data_dir,
+        apply=args.apply,
+    )
+    if args.json:
+        print(_json(payload))
+    else:
+        print(f"dry_run: {str(payload['dry_run']).lower()}")
+        print(f"would_change: {str(payload['would_change']).lower()}")
+        print(f"changed: {str(payload['changed']).lower()}")
+        print("configured_paths_output: omitted")
+        print("outbound: disabled")
+    return 0
+
+
+def _cmd_desktop_cache_probe(args: argparse.Namespace) -> int:
+    explicit_user_data_dir = args.user_data_dir or configured_discord_user_data_dir(
+        config_path=args.config_path
+    )
+    payload = probe_discord_desktop_cache(
+        url=args.url,
+        explicit_user_data_dir=explicit_user_data_dir,
+        include_labels=args.include_labels,
+        max_files=args.max_files,
+        max_scan_seconds=args.max_scan_seconds,
+    )
+    if args.json:
+        print(_json(payload))
+    else:
+        print(f"state: {payload['state']}")
+        print(f"ok: {str(payload['ok']).lower()}")
+        print(f"platform: {payload['platform']}")
+        print(f"user_data_dir_source: {payload['user_data_dir']['source']}")
+        print(f"tag_count: {(payload.get('metadata') or {}).get('tag_count', 0)}")
+        print("raw_text_returned: false")
+        print("path_output: omitted")
+        print("outbound: disabled")
     return 0 if payload["ok"] else 2
 
 
@@ -1754,7 +1872,21 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except LocalConfigError as exc:
+        payload = {
+            "language": "ja",
+            "schema": "discord_context_bridge_local_config_error.v1",
+            "ok": False,
+            "state": "blocked",
+            "reason": str(exc),
+            "message": "ローカルcache設定を読めません。JSON形式と読取権限を確認してください。",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+        print(_json(payload) if getattr(args, "json", False) else payload["message"])
+        return 2
 
 
 if __name__ == "__main__":
