@@ -72,6 +72,8 @@ from .credentials import (
     configured_bot_token_provider,
     load_bot_token_from_provider,
 )
+from .site_adapter_runtime import build_capture, build_manifest, select_adapter
+from .site_adapter_store import store_capture
 
 __all__ = [
     "DisabledCapability",
@@ -144,4 +146,8 @@ __all__ = [
     "BotTokenLoadResult",
     "configured_bot_token_provider",
     "load_bot_token_from_provider",
+    "select_adapter",
+    "build_capture",
+    "build_manifest",
+    "store_capture",
 ]

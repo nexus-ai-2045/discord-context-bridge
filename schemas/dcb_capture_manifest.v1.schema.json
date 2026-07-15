@@ -8,10 +8,14 @@
     "capture_id",
     "site",
     "adapter_id",
+    "adapter_version",
     "status",
     "raw_json",
-    "markdown",
     "source_url_hash",
+    "capture_state",
+    "coverage",
+    "freshness",
+    "drift",
     "review_required",
     "outbound_actions"
   ],
@@ -28,6 +32,9 @@
     "adapter_id": {
       "const": "discord.v1"
     },
+    "adapter_version": {
+      "type": "string"
+    },
     "status": {
       "enum": [
         "captured",
@@ -35,6 +42,9 @@
         "drift_detected",
         "blocked"
       ]
+    },
+    "capture_state": {
+      "enum": ["blocked", "partial", "full"]
     },
     "raw_json": {
       "type": "string"
@@ -44,6 +54,18 @@
     },
     "source_url_hash": {
       "type": "string"
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["visible_message_count", "required_fields_complete"]
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["captured_at", "viewport_bottom_confirmed"]
+    },
+    "drift": {
+      "type": "object",
+      "required": ["detected", "items"]
     },
     "title_safe_label": {
       "type": "string"
@@ -62,5 +84,19 @@
       "const": "disabled"
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "blocked"}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "blocked"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "captured"}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "full"}}}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["partial", "drift_detected"]}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "partial"}}}
+    }
+  ],
   "additionalProperties": true
 }

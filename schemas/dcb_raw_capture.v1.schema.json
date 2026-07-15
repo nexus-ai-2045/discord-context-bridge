@@ -7,6 +7,7 @@
     "schema",
     "site",
     "adapter_id",
+    "adapter_version",
     "source_url",
     "captured_at",
     "capture_method",
@@ -52,10 +53,13 @@
     },
     "messages": {
       "type": "array",
+      "maxItems": 2000,
       "items": {
         "type": "object",
         "required": [
           "ordinal",
+          "visible_timestamp",
+          "author_label",
           "body_text",
           "attachments",
           "extraction_confidence"
@@ -72,10 +76,12 @@
             "type": "string"
           },
           "body_text": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 1000000
           },
           "attachments": {
-            "type": "array"
+            "type": "array",
+            "maxItems": 100
           },
           "nearby_attachment_urls": {
             "type": "array"
@@ -98,7 +104,17 @@
       "type": "array"
     },
     "unattributed_cache_candidates": {
-      "type": "array"
+      "type": "array",
+      "maxItems": 2000
+    },
+    "completion_evidence": {
+      "type": "object",
+      "required": ["source", "trusted"],
+      "properties": {
+        "source": {"const": "caller_supplied"},
+        "trusted": {"const": false}
+      },
+      "additionalProperties": false
     },
     "drift": {
       "type": "object",
