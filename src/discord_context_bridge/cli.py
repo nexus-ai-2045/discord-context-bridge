@@ -24,6 +24,7 @@ from .local_config import (
     default_config_path,
     resolve_shared_snapshot_root,
 )
+from .obsidian_projection import export_obsidian_projection
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -226,6 +227,25 @@ def build_parser() -> argparse.ArgumentParser:
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
     report_latest.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     report_latest.set_defaults(handler=_cmd_report_latest)
+
+    export_obsidian = sub.add_parser(
+        "export-obsidian",
+        help="保存済み snapshot からObsidian用Markdown projectionを作る",
+    )
+    export_obsidian.add_argument(
+        "--snapshot-store",
+        type=Path,
+        default=DEFAULT_TEXT_SNAPSHOT_STORE,
+        help="保存済み可視テキスト snapshot のローカルファイル",
+    )
+    export_obsidian.add_argument(
+        "--output-root",
+        type=Path,
+        required=True,
+        help="Obsidian Vault内のprivate出力ディレクトリ",
+    )
+    export_obsidian.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
+    export_obsidian.set_defaults(handler=_cmd_export_obsidian)
 
     fast_path = sub.add_parser(
         "url-intake-fast-path",
@@ -912,6 +932,19 @@ def _cmd_report_latest(args: argparse.Namespace) -> int:
         print(f"reason: {report['reason']}")
     print("outbound: disabled")
     return 0 if report["ok"] else 2
+
+
+def _cmd_export_obsidian(args: argparse.Namespace) -> int:
+    result = export_obsidian_projection(snapshot_store=args.snapshot_store, output_root=args.output_root)
+    if args.json:
+        print(_json(result))
+    else:
+        print(result["message"])
+        print(
+            f"対象: {result['projected_target_count']} / 更新: {result['written_file_count']} / "
+            f"未変更: {result['unchanged_file_count']} / {result['elapsed_ms']} ms"
+        )
+    return 0
 
 
 def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:
