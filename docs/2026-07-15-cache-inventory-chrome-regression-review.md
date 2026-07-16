@@ -4,7 +4,7 @@
 
 この変更は、Discord URLを受け取った後に「保存済みを使うか、最新取得へ進むか」をmetadata-onlyで決める入口を追加する。ローカル設定、正規化済みsnapshot、Discord Desktop cache、Chrome browser bundleを別レイヤーとして扱う。
 
-コミット・push・runtime skillへの反映は、人間レビュー後に行う。
+PR #24は2026-07-15に人間レビュー後マージ済みである。生成runtime skillは後続PR #25のprovenance更新を含め、Codex / Claude Codeのinstalled copyと一致している。
 
 ## アーキテクチャ
 
@@ -32,13 +32,13 @@
 
 `codex_chrome_bundle_smoke.py` はinstalled bundleの最新版を自動検出する。本変更が恒常的に保証するのは、同じbootstrap不具合を投稿や読取の直前ではなく、外部操作なしのpreflightで検出し、Chrome成功と誤認しないことまでである。bundle更新後は同じsmokeと実機E2Eを再実行する。チャンネル名・本文・投稿までの保証は今回のread-only E2Eに含めない。
 
-## 人間レビュー項目
+## 初回レビューで確認した項目
 
 - 出力にraw本文、実ID、title値、local absolute pathが既定で含まれないか。
 - configの優先順位と`--apply`停止線が妥当か。
 - Desktop cacheを正本や完全保存として扱っていないか。
 - Chrome bundle smokeの保証範囲を実機E2Eと混同していないか。
-- レビュー後にcommit、runtime skill生成、read-only同期確認、pushへ進めてよいか。
+- レビュー後にcommit、runtime skill生成、read-only同期確認、pushへ進めてよいか。承認後にPR #24で実施し、マージ済み。
 
 ## レビュー時点の検証状態
 
@@ -47,7 +47,33 @@
 - `ops_check.py --profile fast`: 全9チェック成功。
 - boundary logic / ingest route policy / secret scan / compile / `git diff --check`: 成功。
 - 実cache inventory / Desktop cache probe / Chrome bundle smoke / Chrome read-only E2E: 実行済み。
-- commit / push / installed runtime skill同期: 未実行。
+- PR #24: 必須CI 4件成功後にマージ済み。head branch削除済み。
+- runtime skill projection: PR #25後のprovenance検証成功。Codex / Claude Codeのinstalled copyと生成物のchecksum一致。
+
+## 2026-07-16 運用closeout追補
+
+現行`main`で、site adapterのschema依存が未導入のPythonからPDCA runnerを直接起動すると、runner自身が分類前に停止する運用gapを確認した。原因はpackage rootとCLIがsite adapterをeager importし、cache inventoryやPDCA計画まで同じ依存に結合していたことである。
+
+運用境界を次のように修正する。
+
+- package rootとCLIはsite adapterを使用時だけ遅延読込する。
+- site adapter依存不足はtracebackではなく`dependency_missing`として返す。
+- PDCA runnerは同じfailureを`environment_blocked`へ分類し、コード不良と混同しない。
+- clean installの正規経路はREADMEの仮想環境と`pip install -e .`に固定する。
+- `python -S`回帰で、外部site packageが無くてもPDCA dry-runとcache inventoryが起動することを検査する。
+- repo残務closeoutがfull運用チェックを待てるよう、外側timeoutを30秒から180秒へ広げ、正常実行中の終了コード124を防ぐ。
+
+この追補が保証するのは、ローカルread-only入口の起動、依存不足の安全な分類、生成skillの同期までである。Chrome/Discordの外部UI状態、Discord本文の完全保存、投稿成功は実行時の別証拠が必要であり、恒久保証には含めない。
+
+### 追補の検証結果
+
+- clean仮想環境へのeditable install: 成功。
+- 全回帰: 460 passed。
+- `ops_check.py --profile fast`: 全9チェック成功。
+- `repo_goal_status.py --run-smoke`: full運用チェック成功。残るdirty判定は人間レビュー前の未commit差分だけ。
+- SSOT projection / boundary logic / installed Codex・Claude Code skill同期: 全て成功。
+- 実URLのbounded PDCA: 8ケース中6件成功。exact snapshot未保存とDesktop cache partial scanの2件は`partial_evidence`。コード修正、認証、Chrome bundle、人間承認のblockerは0件。
+- 安全境界: Discord write、settings変更、自動コード修正は無効。raw本文とlocal pathは出力しない。
 
 ## PDCA運用
 

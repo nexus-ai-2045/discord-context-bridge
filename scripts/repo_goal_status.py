@@ -27,8 +27,8 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def run_command(command: list[str]) -> ProcessResult:
-    return run_process(command, cwd=ROOT, timeout=30)
+def run_command(command: list[str], *, timeout: float = 30) -> ProcessResult:
+    return run_process(command, cwd=ROOT, timeout=timeout)
 
 
 def compact_output(text: str, *, limit: int = 1200) -> str:
@@ -50,7 +50,7 @@ def requirement(name: str, ok: bool, evidence: str, blocker: str | None = None) 
 
 
 def run_smoke() -> dict[str, Any]:
-    completed = run_command([sys.executable, "scripts/ops_check.py"])
+    completed = run_command([sys.executable, "scripts/ops_check.py"], timeout=180)
     return {
         "command": "python scripts/ops_check.py",
         "exit_code": completed.returncode,

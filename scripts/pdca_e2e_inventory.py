@@ -155,6 +155,8 @@ def _parse_json(text: str) -> dict[str, Any] | None:
 def _failure_signal(payload: dict[str, Any] | None, result: ExecutionResult) -> str:
     if result.failure_stage:
         return result.failure_stage
+    if "ModuleNotFoundError" in result.stderr or "No module named" in result.stderr:
+        return "dependency_missing"
     if not payload:
         return "command_failed" if result.returncode else "none"
     checks = payload.get("checks") or {}

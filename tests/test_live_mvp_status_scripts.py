@@ -1490,6 +1490,26 @@ def test_repo_goal_status_includes_ops_smoke_failure(monkeypatch):
     assert {item["name"]: item["status"] for item in payload["requirements"]}["ops_smoke"] == "blocked"
 
 
+def test_repo_goal_status_allows_full_ops_smoke_to_finish(monkeypatch):
+    import repo_goal_status
+
+    captured = {}
+
+    def fake_run_command(command, *, timeout=30):
+        captured.update(command=command, timeout=timeout)
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": "ok", "stderr": ""},
+        )()
+
+    monkeypatch.setattr(repo_goal_status, "run_command", fake_run_command)
+    smoke = repo_goal_status.run_smoke()
+
+    assert smoke["ok"] is True
+    assert captured["timeout"] == 180
+
+
 def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()

@@ -72,8 +72,6 @@ from .credentials import (
     configured_bot_token_provider,
     load_bot_token_from_provider,
 )
-from .site_adapter_runtime import build_capture, build_manifest, select_adapter
-from .site_adapter_store import store_capture
 from .cache_inventory import build_cache_inventory
 from .desktop_cache import (
     parse_simple_cache_entry,
@@ -169,3 +167,21 @@ __all__ = [
     "default_config_path",
     "resolve_shared_snapshot_root",
 ]
+
+
+def __getattr__(name: str):
+    """Load the site-adapter surface only when a caller actually uses it.
+
+    Most local-first commands use only the standard library.  Keeping the
+    schema-backed adapter lazy prevents an unrelated dependency problem from
+    breaking cache inventory, PDCA planning, or other read-only entrypoints.
+    """
+    if name in {"build_capture", "build_manifest", "select_adapter"}:
+        from . import site_adapter_runtime
+
+        return getattr(site_adapter_runtime, name)
+    if name == "store_capture":
+        from .site_adapter_store import store_capture
+
+        return store_capture
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
