@@ -43,9 +43,10 @@ def resolve_latest_bundle(*, chrome_cache_root: Path | None = None) -> Path | No
 
 def _run_import(*, node: str, bundle: Path, protected: bool, timeout: float) -> tuple[str, int | None]:
     script = PROTECTED_PROCESS_IMPORT if protected else NORMAL_IMPORT
+    bundle_specifier = bundle.resolve().as_uri()
     try:
         completed = subprocess.run(
-            [node, "--input-type=module", "-e", script, str(bundle)],
+            [node, "--input-type=module", "-e", script, bundle_specifier],
             check=False,
             capture_output=True,
             text=True,
