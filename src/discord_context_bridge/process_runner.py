@@ -23,6 +23,9 @@ _CHILD_ENV_ALLOWLIST = (
     "TMP",
     "HOME",
     "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
     "LANG",
     "LC_ALL",
 )
