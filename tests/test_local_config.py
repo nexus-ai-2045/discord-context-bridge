@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from discord_context_bridge.local_config import (
@@ -55,7 +56,8 @@ def test_configure_local_cache_is_dry_run_by_default_and_applies_atomically(tmp_
     )
     assert applied["changed"] is True
     assert json.loads(config_path.read_text(encoding="utf-8"))["shared_snapshot_root"] == str(root)
-    assert config_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert config_path.stat().st_mode & 0o777 == 0o600
     assert str(tmp_path) not in json.dumps(applied)
 
 

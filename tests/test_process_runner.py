@@ -80,6 +80,7 @@ def test_minimal_child_env_keeps_launch_requirements_without_arbitrary_parent_va
         "PATH": "tools",
         "SystemRoot": r"C:\Windows",
         "TEMP": r"C:\Temp",
+        "APPDATA": r"C:\Users\tester\AppData\Roaming",
         "DCB_PARENT_SECRET": "must-not-leak",
     }
 
@@ -88,6 +89,7 @@ def test_minimal_child_env_keeps_launch_requirements_without_arbitrary_parent_va
     assert result["PATH"] == "tools"
     assert result["SystemRoot"] == r"C:\Windows"
     assert result["TEMP"] == r"C:\Temp"
+    assert result["APPDATA"] == r"C:\Users\tester\AppData\Roaming"
     assert "DCB_PARENT_SECRET" not in result
 
 
