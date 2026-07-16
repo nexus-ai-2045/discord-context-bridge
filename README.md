@@ -29,6 +29,16 @@ AIが安全に扱える文脈、返信前レビュー、送信直前の確認ロ
 
 ## すぐ使う
 
+初回だけ依存関係を入れます。以後の例は、この仮想環境を有効にした状態を前提にします。
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+依存関係が未導入でも、`cache-inventory`、`configure-local-cache`、PDCAのdry-runなど、site adapterを使わないread-only入口は起動できます。site adapterが必要な操作は、tracebackではなく`dependency_missing`として停止します。
+
 ```mermaid
 flowchart LR
   input["Discord可視文脈"] --> bridge["discord-context-bridge"]

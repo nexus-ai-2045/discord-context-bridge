@@ -10,11 +10,17 @@ if str(ROOT / "scripts") not in sys.path:
 import pdca_e2e_inventory
 
 
-def _result(*, returncode: int, payload: dict | None = None, failure_stage: str | None = None):
+def _result(
+    *,
+    returncode: int,
+    payload: dict | None = None,
+    failure_stage: str | None = None,
+    stderr: str = "private error omitted",
+):
     return pdca_e2e_inventory.ExecutionResult(
         returncode=returncode,
         stdout=json.dumps(payload or {}),
-        stderr="private error omitted",
+        stderr=stderr,
         failure_stage=failure_stage,
         elapsed_seconds=0.01,
     )
@@ -42,6 +48,20 @@ def test_classifies_snapshot_missing_as_partial_evidence() -> None:
     )
     assert classified["classification"] == "partial_evidence"
     assert classified["retryable"] is False
+
+
+def test_classifies_missing_python_dependency_as_environment_blocked() -> None:
+    classified = pdca_e2e_inventory.classify_case(
+        _spec("dependency"),
+        _result(
+            returncode=1,
+            payload=None,
+            stderr="ModuleNotFoundError: No module named 'example_dependency'",
+        ),
+    )
+    assert classified["classification"] == "environment_blocked"
+    assert classified["failure_signal"] == "dependency_missing"
+    assert "example_dependency" not in json.dumps(classified)
 
 
 def test_retries_timeout_once_but_not_human_gate() -> None:

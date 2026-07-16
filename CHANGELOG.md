@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- site adapter依存を遅延読込にし、cache inventoryとPDCA計画が無関係な依存不足で停止しないようにしました。依存不足はmetadata-onlyな`dependency_missing`として分類します。
+- repo残務closeoutからfull運用チェックを呼ぶ時の外側timeoutを実測時間より長くし、成功中のsmokeを終了コード124へ誤分類しないようにしました。
+- READMEに初回の仮想環境・依存導入手順を追加しました。
 - `send-operation-status` を追加し、既存の staging / dry-run / closeout JSON ログからDiscord送信テスト運転表を作れるようにしました。
 - README を短い入口に圧縮し、詳細手順を `docs/discord-send-operation-runbook.md` と `docs/full-reference.md` へ分離しました。
 - `PROCESS_BOUNDARY.md` を追加し、Discord Context Bridge を「公開チャンネルに入る前の文脈理解と下書き補助」に絞る開発境界を明文化しました。

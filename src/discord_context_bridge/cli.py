@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from .process_runner import minimal_child_env, run_process
-from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
-from .site_adapter_store import store_capture
 from .cache_inventory import build_cache_inventory
 from .desktop_cache import probe_discord_desktop_cache
 from .local_config import (
@@ -72,6 +70,25 @@ from .core import (
     verify_chrome_extension_fill_only_dry_run,
     write_attachment_ocr_log,
 )
+
+
+MAX_INPUT_BYTES: int | None = None
+build_capture: Any = None
+store_capture: Any = None
+
+
+def _load_site_adapter() -> None:
+    """Populate the adapter seam lazily while preserving its test patch points."""
+    global MAX_INPUT_BYTES, build_capture, store_capture
+    if MAX_INPUT_BYTES is None or build_capture is None:
+        from . import site_adapter_runtime
+
+        MAX_INPUT_BYTES = site_adapter_runtime.MAX_INPUT_BYTES
+        build_capture = site_adapter_runtime.build_capture
+    if store_capture is None:
+        from .site_adapter_store import store_capture as adapter_store_capture
+
+        store_capture = adapter_store_capture
 
 
 SENSITIVE_ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -688,6 +705,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _cmd_capture_visible_snapshot(args: argparse.Namespace) -> int:
     try:
+        _load_site_adapter()
+        assert MAX_INPUT_BYTES is not None
+
         input_path = args.structured_input or args.input
         with input_path.open("rb") as handle:
             raw_input = handle.read(MAX_INPUT_BYTES + 1)
@@ -700,7 +720,18 @@ def _cmd_capture_visible_snapshot(args: argparse.Namespace) -> int:
         else:
             capture = build_capture(args.source_url, body_text=input_text)
         result = store_capture(capture, args.output_root)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except ModuleNotFoundError:
+        receipt = {
+            "capture_state": "blocked",
+            "status": "blocked",
+            "recoverable": True,
+            "failure_stage": "dependency_missing",
+            "review_required": True,
+            "outbound_actions": "disabled",
+        }
+        print(_json(receipt) if args.json else "site adapter dependency missing")
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError):
         receipt = {"capture_state": "blocked", "status": "blocked", "recoverable": True, "failure_stage": "input_validation", "review_required": True, "outbound_actions": "disabled"}
         print(_json(receipt) if args.json else "site adapter capture blocked")
         return 2
