@@ -532,6 +532,8 @@ def test_bridge_intake_runs_snapshot_coverage_passport_and_optional_guide(tmp_pa
     ]
     assert payload["snapshot"]["saved"] is True
     assert payload["coverage"]["exact_coverage"] is True
+    assert payload["coverage"]["target_match"] is True
+    assert payload["coverage"]["full_capture_confirmed"] is False
     assert payload["context_passport"]["built"] is True
     assert payload["context_passport"]["parsed"] >= 1
     assert payload["guide_reply"]["built"] is True
@@ -2043,7 +2045,7 @@ def test_cli_snapshot_discord_url_text_json_is_metadata_only(tmp_path, capsys):
     assert "discord.com/channels" not in output
 
 
-def test_plan_full_thread_capture_blocks_visible_dom_only(tmp_path):
+def test_plan_full_thread_capture_allows_dom_traversal_but_does_not_claim_full(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     url = "https://discord.com/channels/4/5/6"
     snapshot_visible_text(
@@ -2060,11 +2062,18 @@ def test_plan_full_thread_capture_blocks_visible_dom_only(tmp_path):
     )
 
     assert plan["schema"] == "discord_full_thread_capture_plan.v1"
-    assert plan["ok"] is False
-    assert plan["state"] == "blocked_missing_full_thread_route"
+    assert plan["ok"] is True
+    assert plan["state"] == "ready_for_full_capture"
     assert plan["coverage_now"]["saved_snapshot_count"] == 1
     assert plan["coverage_now"]["visible_dom_is_full_thread_proof"] is False
-    assert "rest_backfill_not_configured" in plan["blockers"]
+    assert plan["coverage_now"]["full_thread_confirmed"] is False
+    assert plan["coverage_now"]["completion_gate"] == "strict_full_capture_v1"
+    assert plan["route_allocation"]["visible_dom"]["required_for_full_thread"] is True
+    assert plan["route_allocation"]["visible_dom"]["policy"]["scroll_order"][0] == "scoped_element_dom_scroll"
+    assert plan["execution_lanes"]["immediate_visible"]["may_claim_full"] is False
+    assert plan["execution_lanes"]["background_full"]["partial_is_terminal"] is False
+    assert plan["fde_envelope"]["decision"] == "full_partial_blocked"
+    assert plan["blockers"] == []
     assert plan["raw_text_returned"] is False
 
 
@@ -2094,15 +2103,29 @@ def test_cli_thread_capture_plan_is_metadata_only(tmp_path, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)
 
-    assert result == 2
-    assert payload["state"] == "blocked_missing_full_thread_route"
-    assert payload["route_allocation"]["visible_dom"]["required_for_full_thread"] is False
-    assert payload["route_allocation"]["rest_backfill"]["required_for_full_thread"] is True
+    assert result == 0
+    assert payload["state"] == "ready_for_full_capture"
+    assert payload["route_allocation"]["visible_dom"]["required_for_full_thread"] is True
+    assert payload["coverage_now"]["full_thread_confirmed"] is False
     assert payload["raw_text_returned"] is False
     assert "private thread text" not in output
     assert "member-d" not in output
     assert url not in output
     assert str(snapshot_store) not in output
+
+
+def test_thread_capture_plan_selects_chrome_extension_scroll_policy(tmp_path):
+    plan = plan_full_thread_capture(
+        url="https://discord.com/channels/7/8/9",
+        snapshot_store=tmp_path / "missing.ndjson",
+        visible_dom_available=True,
+        browser_route="chrome_extension",
+    )
+
+    policy = plan["route_allocation"]["visible_dom"]["policy"]
+    assert policy["route"] == "chrome_extension"
+    assert policy["scroll_order"][0] == "scoped_element_dom_scroll"
+    assert policy["completion_gate"] == "strict_full_capture_v1"
 
 
 def test_cli_thread_capture_plan_detects_rest_env_without_claiming_full_capture(tmp_path, capsys, monkeypatch):
