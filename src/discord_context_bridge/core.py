@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .full_capture import build_capture_route_policy
+
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
@@ -481,6 +483,9 @@ def build_coverage_report(
             "ai_log_checked": True,
             "ai_log_match_count": len(ai_matches),
             "exact_coverage": exact_coverage,
+            "target_match": exact_coverage,
+            "full_capture_confirmed": False,
+            "full_capture_gate": "strict_full_capture_v1",
         },
         "fallback_policy": {
             "allowed": "dom_export_or_manual_paste_only",
@@ -676,6 +681,9 @@ def build_bridge_intake(
         "snapshot": snapshot_meta,
         "coverage": {
             "exact_coverage": bool(coverage.get("coverage", {}).get("exact_coverage")),
+            "target_match": bool(coverage.get("coverage", {}).get("target_match")),
+            "full_capture_confirmed": False,
+            "full_capture_gate": "strict_full_capture_v1",
             "snapshot_status": str(coverage.get("snapshot_status") or ""),
             "recency": dict(coverage.get("recency") or {}),
             "stale_policy": dict(coverage.get("stale_policy") or {}),
@@ -1528,13 +1536,14 @@ def plan_full_thread_capture(
     bot_inbox_ready: bool = False,
     private_adapter_configured: bool = False,
     visible_dom_available: bool = False,
+    browser_route: str = "in_app_browser",
 ) -> dict[str, Any]:
     """Return a metadata-only plan for capturing an entire Discord thread.
 
-    A visible DOM snapshot is useful evidence, but it is not a full-thread
-    capture mechanism because Discord virtualizes long timelines. Full capture
-    requires a backfill/export route or a configured private adapter that can
-    traverse the whole target safely.
+    A one-shot visible DOM snapshot is partial evidence. A browser DOM route may
+    perform full capture only when it traverses the scoped message list from
+    oldest to latest, repeats the scan until stable, and passes the strict
+    completion gate.
     """
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
@@ -1556,6 +1565,7 @@ def plan_full_thread_capture(
     target_key = target_key_for_url(url)
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
+    browser_policy = build_capture_route_policy(browser_route)
     full_routes = {
         "rest_backfill": {
             "configured": rest_configured,
@@ -1584,11 +1594,12 @@ def plan_full_thread_capture(
         },
         "visible_dom": {
             "configured": visible_dom_available or bool(saved_matches),
-            "required_for_full_thread": False,
-            "role": "現在表示中の補助 snapshot。Discord の仮想リストにより全文保証には使えません。",
+            "required_for_full_thread": True,
+            "role": "現在範囲を即時保存後、対象message listを先頭・末尾までDOM走査し、再走査安定を確認する主経路。one-shot DOMだけでは全文証明になりません。",
+            "policy": browser_policy,
         },
     }
-    primary_available = bool(rest_configured or private_adapter_configured or raw_matches)
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_available)
     state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
     blockers = [] if primary_available else [
         "rest_backfill_not_configured",
@@ -1598,13 +1609,14 @@ def plan_full_thread_capture(
     next_actions = (
         [
             "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
-            "visible DOM は差分確認と最新表示補完としてだけ使います。",
+            "browser DOM routeでは現在範囲を即時保存し、背後で先頭・末尾・再走査安定まで取得します。",
+            "full-capture-gateでraw / Markdown / ledger / attachment件数を検証します。",
         ]
         if primary_available
         else [
             "rest_backfill または private adapter を配線する。",
             "既存の raw export/cache がある場合は target_key exact match で取り込む。",
-            "Chrome visible DOM だけで全文取得済みとは扱わない。",
+            "内部ブラウザまたはChrome拡張のDOM routeを明示許可し、scoped message listを全走査する。",
         ]
     )
     return {
@@ -1623,7 +1635,8 @@ def plan_full_thread_capture(
             "saved_snapshot_count": len(saved_matches),
             "raw_cache_match_count": len(raw_matches),
             "visible_dom_is_full_thread_proof": False,
-            "full_thread_confirmed": primary_available and bool(raw_matches),
+            "full_thread_confirmed": False,
+            "completion_gate": "strict_full_capture_v1",
             "reason": (
                 "full thread 主経路が利用可能です。"
                 if primary_available
@@ -1631,6 +1644,29 @@ def plan_full_thread_capture(
             ),
         },
         "route_allocation": full_routes,
+        "execution_lanes": {
+            "immediate_visible": {
+                "mode": "foreground_fast_path",
+                "purpose": "現在見えている範囲を即時保存し、暫定判断と不足範囲を返す。",
+                "completion": "visible_snapshot_saved",
+                "may_claim_full": False,
+            },
+            "background_full": {
+                "mode": "background_until_terminal_state",
+                "purpose": "先頭・末尾・再走査安定、添付保存、raw/Markdown/ledger整合まで継続する。",
+                "completion": "strict_full_capture_v1",
+                "terminal_states": ["full", "blocked"],
+                "partial_is_terminal": False,
+            },
+        },
+        "fde_envelope": {
+            "entry": "discord_url",
+            "packet": "route_specific_capture_plan",
+            "evidence": "boundaries_artifacts_attachments_rescan",
+            "decision": "full_partial_blocked",
+            "closure": "full_capture_gate_then_context_understanding",
+            "route_failure": "none",
+        },
         "blockers": blockers,
         "next_actions": next_actions,
         "raw_text_returned": False,
