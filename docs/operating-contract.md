@@ -22,6 +22,18 @@
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
+## Discord OSS 参照境界
+
+Discord 関連の外部 OSS を参照する場合は、DCB の read-only / metadata-only 境界を先に固定し、実装パターンは次の順に照合する。
+
+1. API 仕様の根拠は `discord/discord-api-docs` を優先する。
+2. bot route を明示的に扱う時だけ、SDK 挙動の比較として `discordjs/discord.js` または `Rapptz/discord.py` を見る。
+3. bot 構成や command lifecycle は、`sapphiredev/framework` や `KevinNovak/Discord-Bot-TypeScript-Template` などの成熟した bot template を比較材料にする。
+4. export / archive 系は `Tyrrrz/DiscordChatExporter` を比較材料にする。ただし user account automation / selfbot 的な使い方は DCB の通常経路にしない。
+5. Discord MCP 実装は比較材料に限る。read、send、reaction、role、channel、moderation tool が同一面に露出している実装を取り込む場合は、read-only ingress と write/mutation を分離し、現在会話の人間承認 gate を追加するまで採用しない。
+
+DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 非表示、token/cookie/profile 抽出禁止、外部送信なし、生成 skill への安全境界反映を満たすものだけに限定する。selfbot、user token automation、browser console token extraction、MITM capture は実装パターンとして採用しない。
+
 ## 標準フロー
 
 1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
