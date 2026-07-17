@@ -177,6 +177,11 @@ visible inputを次に分類する。
 - event identity、hash、取得range、history end、attachment ledgerを別々に評価する。
 - 既存partial snapshotを削除・上書きせず、新しい観測とreconcileする。
 - full判定は本文件数だけでなく、履歴終端と添付整合を要求する。
+- full判定は自己申告の件数だけを信用しない。対象/capture ID結合、evidence schemaと鮮度、message ID集合、順序digest、artifact hash、duplicate/gap、添付ID集合、manifest schema、pending retry、2回以上の安定走査を照合する。
+- zero attachmentは件数0の一致だけでは閉じず、attachment inventory完了による不存在証明を要求する。
+- 可視範囲はforeground laneで即時保存し、全文取得はcheckpoint付きbackground laneとしてpartialから再開する。partialを正常終了として扱わない。
+- DOM/API操作を第一経路にし、Computer Use、wheel、key入力は明示承認があるまで`paused_human_approval`に遷移する。route不明を推測で進めない。
+- capture closureとcontext understandingを別stateにし、全文保存後に資料抽出・読解へ進める。
 
 ## 10. security設計
 

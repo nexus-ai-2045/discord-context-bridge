@@ -26,6 +26,8 @@ required_commands:
     purpose: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
   - command: thread-capture-plan
     purpose: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
+  - command: full-capture-gate
+    purpose: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
   - command: reply-context-plan
     purpose: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
   - command: cache-first-intake

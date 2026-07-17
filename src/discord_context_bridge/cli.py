@@ -25,6 +25,7 @@ from .local_config import (
     resolve_shared_snapshot_root,
 )
 from .obsidian_projection import export_obsidian_projection
+from .full_capture import build_capture_route_policy, evaluate_full_capture
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -368,8 +369,23 @@ def build_parser() -> argparse.ArgumentParser:
     full_thread.add_argument("--bot-inbox-ready", action="store_true", help="bot text event inbox が利用可能")
     full_thread.add_argument("--private-adapter-configured", action="store_true", help="private adapter が利用可能")
     full_thread.add_argument("--visible-dom-available", action="store_true", help="Chrome visible DOM snapshot が利用可能")
+    full_thread.add_argument(
+        "--browser-route",
+        choices=["in_app_browser", "chrome_extension", "discord_desktop_accessibility"],
+        default="in_app_browser",
+        help="visible routeの実行面。経路ごとのscroll policyを選びます",
+    )
     full_thread.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     full_thread.set_defaults(handler=_cmd_thread_capture_plan)
+
+    full_gate = sub.add_parser(
+        "full-capture-gate",
+        help="全文取得の境界・件数・添付・再走査整合を fail-closed で判定する",
+    )
+    full_gate.add_argument("--evidence", type=Path, required=True, help="private capture evidence JSON。本文は出力しません")
+    full_gate.add_argument("--route", default="", help="evidence内routeを上書きする安全な経路ラベル")
+    full_gate.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
+    full_gate.set_defaults(handler=_cmd_full_capture_gate)
 
     reply_context = sub.add_parser("reply-context-plan", help="返信前の起点・対象・直前10件を本文なしで判定する")
     _add_reply_context_args(reply_context)
@@ -1202,6 +1218,7 @@ def _cmd_thread_capture_plan(args: argparse.Namespace) -> int:
         bot_inbox_ready=args.bot_inbox_ready,
         private_adapter_configured=args.private_adapter_configured,
         visible_dom_available=args.visible_dom_available,
+        browser_route=args.browser_route,
     )
     if args.json:
         print(_json(payload))
@@ -1216,6 +1233,30 @@ def _cmd_thread_capture_plan(args: argparse.Namespace) -> int:
     print("path_output: omitted")
     print("outbound: disabled")
     return 0 if payload["ok"] else 2
+
+
+def _cmd_full_capture_gate(args: argparse.Namespace) -> int:
+    try:
+        if args.evidence.stat().st_size > MAX_INPUT_BYTES:
+            raise ValueError("evidence_too_large")
+        evidence = json.loads(
+            args.evidence.read_text(encoding="utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"non_finite:{value}")),
+        )
+    except (OSError, json.JSONDecodeError, UnicodeError, ValueError):
+        payload = evaluate_full_capture({})
+        payload["blockers"] = ["evidence_unreadable"]
+        payload["status"] = "blocked"
+        payload["full_capture_confirmed"] = False
+    else:
+        if not isinstance(evidence, dict):
+            evidence = {}
+        if args.route:
+            evidence["route"] = args.route
+        payload = evaluate_full_capture(evidence)
+    payload["route_policy"] = build_capture_route_policy(str(payload.get("route") or "unknown"))
+    print(_json(payload))
+    return 0 if payload["full_capture_confirmed"] else 2
 
 
 def _cmd_reply_context_plan(args: argparse.Namespace) -> int:
