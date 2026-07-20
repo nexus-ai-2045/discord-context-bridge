@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: e5ee272bf56f07cb3584bf7c734381f184202dcf
+ssot_commit: 53a1d2f71ad5f3b0c95f4871539466dbb150d88e
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: b58be4c139f93cf85bc06bb63ced03f0019c8b43231f27dd96086d38ad085a5c
 contract_checksum: 00bdf9963d87a8e4cb3cae3e96a7822f2c21aa670bafb4097af1105d81b8eff3
-generated_at: 2026-07-17T19:48:00+00:00
+generated_at: 2026-07-20T11:47:27+00:00
 runtime_target: antigravity
 ---
 
