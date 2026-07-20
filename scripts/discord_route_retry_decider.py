@@ -7,12 +7,19 @@ import os
 import platform
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 import discord_bot_route_preflight
 import discord_channel_event_probe
+from discord_context_bridge.credentials import split_secret_command
 from route_timing_log import append_entry, compact_entry
 
 
@@ -27,9 +34,11 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     started = time.perf_counter()
     stdout = ""
     stderr = ""
+    # shell=True は使わない (process_runner.py と同じ argv 方針)。
+    # 運用者設定のコマンド文字列は split_secret_command で shell 解釈なしに分割する。
     process = subprocess.Popen(
-        command,
-        shell=True,
+        split_secret_command(command),
+        shell=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -148,7 +148,8 @@ def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
     assert result["parsed"] == 3
     assert result["appended"] == 0
     assert result["message"] == "保存せずに取り込み結果を確認しました。"
-    assert result["preview"][0]["author_label"] == "member-a"
+    assert result["preview"][0]["author_label"] == "participant-001"
+    assert result["preview"][0]["text_snippet"] == "omitted"
     assert result["briefing"]["event_count"] == 3
     assert not store.exists()
 
@@ -796,7 +797,8 @@ def test_guide_reply_from_text_returns_conversation_guide():
     assert guide["language"] == "ja"
     assert guide["message"] == "Discord 返信ガイドを作成しました。"
     assert guide["parsed"] == 3
-    assert "公開時期の話ですよね" in guide["counterparty_context"]
+    assert guide["counterparty_context"] == "可視発言 3 件を確認済み (本文は omitted)"
+    assert "公開時期の話ですよね" not in json.dumps(guide, ensure_ascii=False)
     assert guide["reply_review"]["ok_to_reply_label"] == "返信してよさそうです。"
     assert guide["reply_review"]["quick_verdict"] == "go"
     assert guide["reply_review"]["quick_verdict_label"].startswith("go:")
@@ -1629,9 +1631,11 @@ def test_context_passport_from_text_summarizes_thread_context():
     assert passport["parsed"] == 4
     assert "相談" in passport["thread_purpose"]
     assert "公開時期" in passport["thread_purpose"]
-    assert "このチャンネルは公開前の企画相談用です" in passport["conversation_flow"]
-    assert passport["rule_notes"]
-    assert "未確認の断定は禁止" in passport["rule_notes"][0]
+    assert passport["conversation_flow"] == "omitted"
+    assert "このチャンネルは公開前の企画相談用です" not in json.dumps(passport, ensure_ascii=False)
+    assert passport["rule_notes"] == []
+    assert passport["visible_rule_note_count"] >= 1
+    assert "ルール言及" in passport["rule_notes_label"]
     assert passport["people_temperature"] == "serious"
     assert passport["context_ready"] is True
     assert passport["send_capability"] == "disabled"
@@ -5358,6 +5362,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             calls.append((self, kwargs))
 
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
         [
@@ -5369,6 +5374,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             "8787",
             "--path",
             "/mcp",
+            "--allow-unauthenticated",
         ]
     )
 
@@ -5439,12 +5445,14 @@ def test_http_mcp_require_safe_store_allows_safe_store(monkeypatch, tmp_path):
             return register
 
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
         [
             "--store",
             str(store),
             "--require-safe-store",
+            "--allow-unauthenticated",
         ],
         run=lambda server: calls.append(server),
     )

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hmac
+import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -487,6 +490,57 @@ def main(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = N
     return 0
 
 
+DEFAULT_HTTP_AUTH_TOKEN_ENV = "DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN"
+
+
+class BearerAuthASGI:
+    """HTTP MCP transport 用の最小 Bearer 認証 ASGI ラッパ。
+
+    token 不一致は 401 で fail-closed。lifespan は素通し、websocket は拒否する。
+    """
+
+    def __init__(self, app: Any, token: str) -> None:
+        self._app = app
+        self._token = token
+
+    def _authorized(self, scope: dict[str, Any]) -> bool:
+        headers = dict(scope.get("headers") or [])
+        provided = headers.get(b"authorization", b"").decode("latin-1").strip()
+        expected = f"Bearer {self._token}"
+        return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "lifespan":
+            await self._app(scope, receive, send)
+            return
+        if scope.get("type") == "http" and self._authorized(scope):
+            await self._app(scope, receive, send)
+            return
+        if scope.get("type") == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        body = json.dumps({"error": "unauthorized", "auth": "bearer_token_required"}).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"www-authenticate", b"Bearer"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+def _run_http_app(app: Any, *, host: str, port: int) -> None:
+    try:
+        import uvicorn
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
+    uvicorn.run(app, host=host, port=port)
+
+
 def build_http_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Discord Context Bridge を streamable HTTP MCP server として起動する"
@@ -499,7 +553,23 @@ def build_http_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-safe-store",
         action="store_true",
-        help="起動前に event store を監査し、安全でない場合は HTTP MCP server を起動しない",
+        help="event store 監査は既定で有効。本フラグは後方互換のため残置 (指定は無害)",
+    )
+    parser.add_argument(
+        "--allow-unsafe-store",
+        action="store_true",
+        help="起動前の event store 監査を明示的にスキップする (非推奨)",
+    )
+    parser.add_argument(
+        "--auth-token-env",
+        default=DEFAULT_HTTP_AUTH_TOKEN_ENV,
+        help="Bearer token を読む環境変数名。既定は "
+        f"{DEFAULT_HTTP_AUTH_TOKEN_ENV}",
+    )
+    parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="認証なしで HTTP MCP server を起動する (非推奨。localhost 限定運用のみ)",
     )
     return parser
 
@@ -507,13 +577,22 @@ def build_http_parser() -> argparse.ArgumentParser:
 def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = None) -> int:
     parser = build_http_parser()
     args = parser.parse_args(argv)
-    if args.require_safe_store:
+    if args.require_safe_store and args.allow_unsafe_store:
+        raise SystemExit("--require-safe-store と --allow-unsafe-store は同時に指定できません。")
+    if not args.allow_unsafe_store:
         audit = audit_event_store(args.store)
         if not audit["safe_for_tunnel"]:
             raise SystemExit(
                 "保存データの監査に失敗しました: "
                 f"外部公開前に確認が必要です issue_count={audit['issue_count']} store={audit['store']}"
             )
+    token = os.environ.get(args.auth_token_env, "").strip()
+    if not token and not args.allow_unauthenticated:
+        raise SystemExit(
+            "HTTP MCP server は認証必須です: "
+            f"環境変数 {args.auth_token_env} に Bearer token を設定するか、"
+            "localhost 限定運用に限り --allow-unauthenticated を明示してください。"
+        )
     server = build_server(
         store=args.store,
         context_store=args.context_store,
@@ -521,6 +600,13 @@ def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | Non
         port=args.port,
         http_path=args.path,
     )
+    if token:
+        app = BearerAuthASGI(server.streamable_http_app(), token)
+        if run is not None:
+            run(app)
+        else:
+            _run_http_app(app, host=args.host, port=args.port)
+        return 0
     if run is not None:
         run(server)
     else:
