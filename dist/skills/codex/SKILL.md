@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: c772adfb1530505d1f1080f3b6f69e9c32fcf181
+ssot_commit: e5ee272bf56f07cb3584bf7c734381f184202dcf
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 7c688ca5f6298c0bc56fd65f770c2e01c83991934ceb016a88ffe7a981815ceb
+manifest_checksum: b58be4c139f93cf85bc06bb63ced03f0019c8b43231f27dd96086d38ad085a5c
 contract_checksum: 00bdf9963d87a8e4cb3cae3e96a7822f2c21aa670bafb4097af1105d81b8eff3
-generated_at: 2026-07-17T19:44:56+00:00
+generated_at: 2026-07-17T19:48:00+00:00
 runtime_target: codex
 ---
 
@@ -231,7 +231,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 ## Commands
 
-- `rest-backfill`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
+- `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
@@ -241,7 +241,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `desktop-cache-probe`: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
 - `python3 scripts/pdca_e2e_inventory.py --json`: E2E caseをbounded実行し、失敗を修正・環境・外部依存・人間レビューへ分類する
 - `coverage-report`: Discord URL / target_key の coverage と freshness を本文なしで確認する
-- `chrome-visible-fallback-guard`: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
+- `python3 scripts/chrome_visible_fallback_guard.py --json`: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
 - `import-visible-text`: 可視テキストをローカル event store に取り込む
 - `context-passport`: 可視テキストから文脈カードを作る
 - `guide-reply`: 可視テキストと下書きから返信前ガイドを作る

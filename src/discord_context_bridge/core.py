@@ -2311,12 +2311,19 @@ def append_events(events: Iterable[DiscordEvent], path: Path = DEFAULT_STORE) ->
     return {"appended": appended, "duplicate": duplicate}
 
 
-def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+def public_participant_aliases(events: Iterable[DiscordEvent]) -> dict[str, str]:
     author_aliases: dict[str, str] = {}
-    safe_events: list[DiscordEvent] = []
     for event in events:
         if event.author_label not in author_aliases:
             author_aliases[event.author_label] = f"participant-{len(author_aliases) + 1:03d}"
+    return author_aliases
+
+
+def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+    events = list(events)
+    author_aliases = public_participant_aliases(events)
+    safe_events: list[DiscordEvent] = []
+    for event in events:
         safe_events.append(
             DiscordEvent.from_dict(
                 {
@@ -2415,16 +2422,19 @@ def import_visible_text(
     )
     safe_events = public_safe_events(events)
     result = {"appended": 0, "duplicate": 0} if dry_run else append_events(safe_events, path)
-    loaded_events = events if dry_run else load_events(path)
+    loaded_events = safe_events if dry_run else load_events(path)
     return {
         **result,
         "dry_run": dry_run,
         "language": DEFAULT_LANGUAGE,
         "message": "Discord の可視テキストを取り込みました。" if not dry_run else "保存せずに取り込み結果を確認しました。",
         "parsed": len(events),
-        "store": str(path),
-        "preview": [event.to_dict() for event in events],
+        "store": "omitted",
+        "path_output": "omitted",
+        "preview": [event.to_dict() for event in safe_events],
         "briefing": fast_briefing(loaded_events),
+        "raw_text_returned": False,
+        "participant_names_returned": False,
     }
 
 
@@ -2599,21 +2609,25 @@ def build_context_passport(
     briefing = fast_briefing(events, limit=5)
     purpose, purpose_label = summarize_thread_purpose(events, context_documents)
     temperature, temperature_label = classify_thread_temperature(events, context_documents)
-    visible_rule_notes = extract_matching_snippets(events, RULE_KEYWORDS)
+    # 可視本文由来の snippet は件数だけを公開出力へ出す (raw 本文は含めない)。
+    # 明示文脈ドキュメント (ユーザー自身の入力) 由来の note はそのまま出す。
+    visible_rule_note_count = len(extract_matching_snippets(events, RULE_KEYWORDS))
     context_rule_notes = extract_context_rule_notes(context_documents)
-    rule_notes = context_rule_notes + visible_rule_notes
+    rule_notes = context_rule_notes
     premise_notes = [
         f"{document['source_label']}: {document['summary']}"
         for document in context_documents
         if any(keyword in document["text"] for keyword in ("前提", "目的", "ルール", "方針", "禁止", "注意"))
-    ]
-    premise_notes += extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
-    premise_notes = premise_notes[:5]
+    ][:5]
+    visible_premise_note_count = len(
+        extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
+    )
     topics = sorted(detect_topics(briefing["briefing"] + " " + context_documents_text(context_documents)))
-    authors = [event.author_label for event in events[-5:]]
+    author_aliases = public_participant_aliases(events)
+    authors = [author_aliases[event.author_label] for event in events[-5:]]
     context_sources = [document["source"] for document in context_documents]
     natural_entry_angles: list[str] = []
-    if rule_notes:
+    if rule_notes or visible_rule_note_count:
         natural_entry_angles.append("先にルールや注意点を踏まえていることを示す。")
     if context_documents:
         natural_entry_angles.append("サーバー・チャンネル・スレッドの明示文脈を優先して確認する。")
@@ -2637,15 +2651,35 @@ def build_context_passport(
         "context_sources_label": "文脈ソース: " + ("、".join(document["source_label"] for document in context_documents) if context_documents else "可視本文のみ"),
         "thread_purpose": purpose,
         "thread_purpose_label": purpose_label,
-        "conversation_flow": briefing["briefing_label"],
-        "conversation_flow_label": "直近の流れ: " + briefing["briefing_label"],
+        "conversation_flow": "omitted",
+        "conversation_flow_label": f"直近の流れ: 可視発言 {briefing['event_count']} 件を確認済み (本文はローカル保存のみ)",
         "implicit_premises": premise_notes,
-        "implicit_premises_label": "暗黙の前提候補: " + (" / ".join(premise_notes) if premise_notes else "まだ強い前提は見つかりません。"),
+        "implicit_premises_label": "暗黙の前提候補: " + (
+            " / ".join(premise_notes)
+            if premise_notes
+            else (
+                f"可視本文から前提らしき発言 {visible_premise_note_count} 件 (本文は omitted)"
+                if visible_premise_note_count
+                else "まだ強い前提は見つかりません。"
+            )
+        ),
+        "visible_premise_note_count": visible_premise_note_count,
         "rule_notes": rule_notes,
-        "rule_notes_label": "ルール注意: " + (" / ".join(rule_notes) if rule_notes else "直近可視範囲では明示ルールは見つかりません。"),
+        "rule_notes_label": "ルール注意: " + (
+            " / ".join(rule_notes)
+            if rule_notes
+            else (
+                f"可視本文からルール言及 {visible_rule_note_count} 件 (本文は omitted)"
+                if visible_rule_note_count
+                else "直近可視範囲では明示ルールは見つかりません。"
+            )
+        ),
+        "visible_rule_note_count": visible_rule_note_count,
         "people_temperature": temperature,
         "people_temperature_label": temperature_label,
         "recent_authors": authors,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
         "natural_entry_angles": natural_entry_angles,
         "context_ready": context_ready,
         "context_ready_label": "発話前チェックに使える文脈があります。" if context_ready else "文脈が不足しています。先にスレッド本文を取り込んでください。",
@@ -3134,8 +3168,8 @@ def review_reply_intent(
             "missing_knowledge": gap["knowledge_gap"],
             "missing_knowledge_label": "理解確認gateで停止中です。",
             "topic_warning_label": gap["topic_warning_label"],
-            "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
-            "suggested_correction": gap["recommended_briefing"],
+            "likely_counterparty_meaning": "omitted" if loaded else "",
+            "suggested_correction": "omitted" if loaded else gap["recommended_briefing"],
             "understanding_gate": understanding_gate,
             "final_candidate": "",
             "human_gate": human_gate,
@@ -3187,8 +3221,8 @@ def review_reply_intent(
         "missing_knowledge": missing_knowledge,
         "missing_knowledge_label": missing_knowledge_label,
         "topic_warning_label": gap["topic_warning_label"],
-        "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
-        "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+        "likely_counterparty_meaning": "omitted" if loaded else "",
+        "suggested_correction": ("omitted" if loaded else gap["recommended_briefing"]) if needs_check else "",
         "understanding_gate": understanding_gate,
         "final_candidate": final_candidate,
         "human_gate": human_gate,
@@ -3402,7 +3436,12 @@ def guide_reply_from_text(
         "language": DEFAULT_LANGUAGE,
         "message": "Discord 返信ガイドを作成しました。",
         "parsed": len(events),
-        "counterparty_context": briefing["briefing_label"],
+        "counterparty_context": (
+            f"可視発言 {briefing['event_count']} 件を確認済み (本文は omitted)"
+            if events
+            else "直近の文脈はまだ取り込まれていません。"
+        ),
+        "raw_text_returned": False,
         "reply_review": review,
         "next_actions": next_actions,
         "send_capability": "disabled",
