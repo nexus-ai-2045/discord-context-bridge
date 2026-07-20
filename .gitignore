@@ -7,3 +7,4 @@ __pycache__/
 *.ndjson
 .env
 .env.*
+.codex/
