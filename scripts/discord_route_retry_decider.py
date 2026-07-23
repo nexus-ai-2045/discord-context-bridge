@@ -38,6 +38,10 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     # 運用者設定のコマンド文字列は split_secret_command で shell 解釈なしに分割する。
     # 実行ファイル欠如や分割失敗は例外ではなく failed probe として分類する。
     try:
+        # Windows の CommandLineToArgvW は空文字列で自プロセスパスを返すため、
+        # 空 command はここで先に spawn_failed に落とす。
+        if not command.strip():
+            raise ValueError("empty command")
         argv = split_secret_command(command)
         if not argv:
             raise ValueError("empty command")
