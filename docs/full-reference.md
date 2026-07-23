@@ -1114,7 +1114,7 @@ ChatGPT の connector URL に `https://.../mcp` を登録します。
 - tunnel で外部公開する前に、event store に実 private data が混ざっていないか確認してください。
 - `audit-store` または `audit_event_store_before_tunnel` が `safe_for_tunnel=true` になることを確認してください。
 - event store の起動前監査は既定で有効です。監査に失敗した event store では HTTP MCP server が起動しません (`--allow-unsafe-store` で明示 opt-out。非推奨)。
-- Bearer token 認証が既定で必須です。`DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN` に token を設定し、client 側は `Authorization: Bearer <token>` を送ります。localhost 限定運用に限り `--allow-unauthenticated` で opt-out できます。
+- `Bearer` 方式の token 認証が既定で必須です。`DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN` に token を設定し、client 側は HTTP の authorization header に `Bearer` 形式で token を載せます。localhost 限定運用に限り `--allow-unauthenticated` で opt-out できます。
 - この package は送信 tool を公開しません。
 - Discord token、cookie、webhook URL は不要です。
 

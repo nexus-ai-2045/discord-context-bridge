@@ -322,7 +322,7 @@ discord-context-bridge-mcp-http \
   --store /tmp/discord-context-events.ndjson
 ```
 
-HTTP MCP server は Bearer token 認証が既定で必須です (`DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN`)。
+HTTP MCP server は `Bearer` 方式の token 認証が既定で必須です (`DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN`)。
 event store の起動前監査も既定で有効です。localhost 限定運用に限り `--allow-unauthenticated` で opt-out できます。
 
 MCPでも送信toolは公開しません。

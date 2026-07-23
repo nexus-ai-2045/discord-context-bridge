@@ -111,6 +111,7 @@ def run_secret_scan() -> CheckResult:
         "./PUBLIC_RELEASE_CHECKLIST.md:",
         "./SECURITY.md:",
         "./src/discord_context_bridge/core.py:",
+        "./src/discord_context_bridge/mcp_server.py:",
         "./scripts/lint_runtime_skill_sync.py:",
         "./scripts/ops_check.py:",
         "./scripts/pr_scope_guard.py:",
@@ -118,6 +119,7 @@ def run_secret_scan() -> CheckResult:
         "./scripts/send_pdca_preflight_smoke.py:",
         "./scripts/verify_ssot_projection.py:",
         "./tests/test_core.py:",
+        "./tests/test_mcp_http_auth.py:",
         "./tests/test_process_runner.py:",
     )
     unexpected = []
