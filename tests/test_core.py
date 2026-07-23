@@ -211,6 +211,34 @@ def test_snapshot_visible_text_appends_every_observation(tmp_path):
     assert stored[1]["duplicate_content"] is True
 
 
+def test_snapshot_visible_text_redacts_sensitive_values_before_local_storage(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    secret = "https://discord.com/api/webhooks/123456789012345678/synthetic-secret"
+
+    snapshot_visible_text(
+        text=f"member-a: {secret}",
+        url="https://discord.com/channels/1/2/3",
+        path=snapshot_store,
+    )
+
+    stored = load_text_snapshots(snapshot_store)
+    serialized = snapshot_store.read_text(encoding="utf-8")
+    assert secret not in serialized
+    assert "[discord webhook omitted]" in stored[0]["text"]
+
+
+def test_snapshot_visible_text_redacts_authorization_before_local_storage(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+
+    snapshot_visible_text(
+        text="Authorization: Bearer synthetic-secret-value",
+        url="https://discord.com/channels/1/2/4",
+        path=snapshot_store,
+    )
+
+    assert "synthetic-secret-value" not in snapshot_store.read_text(encoding="utf-8")
+
+
 def test_snapshot_visible_text_uses_legacy_count_as_previous_sequence(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     url = "https://discord.com/channels/1/2/3"
@@ -5369,7 +5397,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             "--store",
             str(tmp_path / "events.ndjson"),
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             "8787",
             "--path",
@@ -5380,7 +5408,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
 
     assert result == 0
     server, run_kwargs = calls[0]
-    assert server.settings["host"] == "0.0.0.0"
+    assert server.settings["host"] == "127.0.0.1"
     assert server.settings["port"] == 8787
     assert server.settings["streamable_http_path"] == "/mcp"
     assert run_kwargs == {"transport": "streamable-http", "mount_path": "/mcp"}

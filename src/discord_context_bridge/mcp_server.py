@@ -493,6 +493,11 @@ def main(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = N
 DEFAULT_HTTP_AUTH_TOKEN_ENV = "DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN"
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower().strip("[]")
+    return normalized in {"localhost", "::1"} or normalized.startswith("127.")
+
+
 class BearerAuthASGI:
     """HTTP MCP transport 用の最小 Bearer 認証 ASGI ラッパ。
 
@@ -592,6 +597,12 @@ def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | Non
             "HTTP MCP server は認証必須です: "
             f"環境変数 {args.auth_token_env} に Bearer token を設定するか、"
             "localhost 限定運用に限り --allow-unauthenticated を明示してください。"
+        )
+    if not token and not _is_loopback_host(args.host):
+        raise SystemExit(
+            "--allow-unauthenticated は loopback host 限定です: "
+            f"host={args.host} では認証なし起動を許可しません。"
+            f"環境変数 {args.auth_token_env} に token を設定してください。"
         )
     server = build_server(
         store=args.store,

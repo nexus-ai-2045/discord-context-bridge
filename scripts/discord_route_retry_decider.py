@@ -36,14 +36,29 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     stderr = ""
     # shell=True は使わない (process_runner.py と同じ argv 方針)。
     # 運用者設定のコマンド文字列は split_secret_command で shell 解釈なしに分割する。
-    process = subprocess.Popen(
-        split_secret_command(command),
-        shell=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    # 実行ファイル欠如や分割失敗は例外ではなく failed probe として分類する。
+    try:
+        argv = split_secret_command(command)
+        if not argv:
+            raise ValueError("empty command")
+        process = subprocess.Popen(
+            argv,
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return {
+            "ok": False,
+            "failure_stage": "spawn_failed",
+            "returncode": 127,
+            "elapsed_ms": (time.perf_counter() - started) * 1000,
+            "stdout_chars": 0,
+            "stderr_chars": 0,
+            "text_output": "omitted",
+        }
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

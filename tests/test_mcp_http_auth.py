@@ -44,6 +44,37 @@ def test_http_mcp_refuses_to_start_without_auth_token(monkeypatch, tmp_path):
         )
 
 
+def test_http_mcp_allow_unauthenticated_is_loopback_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
+
+    with pytest.raises(SystemExit, match="loopback host 限定"):
+        mcp_server.main_http(
+            [
+                "--store",
+                str(tmp_path / "events.ndjson"),
+                "--host",
+                "0.0.0.0",
+                "--allow-unauthenticated",
+            ],
+            run=lambda app: None,
+        )
+
+    launched = []
+    result = mcp_server.main_http(
+        [
+            "--store",
+            str(tmp_path / "events.ndjson"),
+            "--host",
+            "127.0.0.1",
+            "--allow-unauthenticated",
+        ],
+        run=lambda server: launched.append(server),
+    )
+    assert result == 0
+    assert len(launched) == 1
+
+
 def test_http_mcp_conflicting_store_flags_are_rejected(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
 

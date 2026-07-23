@@ -13,6 +13,7 @@ from pathlib import Path
 
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.core import (
+    append_event,
     context_passport_from_text,
     guide_reply_from_text,
     import_visible_text,
@@ -55,6 +56,21 @@ def test_import_visible_text_result_is_public_safe(tmp_path):
         assert result["parsed"] == 3
         assert result["preview"][0]["author_label"].startswith("participant-")
         assert result["preview"][0]["text_snippet"] == "omitted"
+
+
+def test_import_visible_text_sanitizes_legacy_raw_store(tmp_path):
+    # 旧 release が作った store には raw event が残り得る。
+    # briefing はその場合も redact されなければならない。
+    store = tmp_path / "events.ndjson"
+    legacy_raw = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    for event in legacy_raw:
+        append_event(event, store)
+
+    result = import_visible_text("new-member: 新しい発言です。", path=store)
+
+    dumped = json.dumps(result, ensure_ascii=False)
+    _assert_no_raw(dumped)
+    assert "new-member" not in dumped
 
 
 def test_context_passport_result_is_public_safe():
