@@ -22,10 +22,12 @@ stoplines:
   - no_visible_read_route_expansion_after_blocked_need_chrome_visible_read_go
   - no_cross_route_webhook_or_bot_guessing
 required_commands:
-  - command: rest-backfill
+  - command: python3 scripts/discord_rest_backfill.py --url <discord-url> --json
     purpose: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
   - command: thread-capture-plan
     purpose: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
+  - command: full-capture-gate
+    purpose: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
   - command: reply-context-plan
     purpose: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
   - command: cache-first-intake
@@ -40,7 +42,7 @@ required_commands:
     purpose: E2E caseをbounded実行し、失敗を修正・環境・外部依存・人間レビューへ分類する
   - command: coverage-report
     purpose: Discord URL / target_key の coverage と freshness を本文なしで確認する
-  - command: chrome-visible-fallback-guard
+  - command: python3 scripts/chrome_visible_fallback_guard.py --json
     purpose: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
   - command: import-visible-text
     purpose: 可視テキストをローカル event store に取り込む

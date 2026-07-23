@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,46 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             continue
         raise ValueError(f"unsupported manifest line: {raw_line}")
     return payload
+
+
+def _cli_subcommands() -> set[str]:
+    src_dir = str(ROOT / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    from discord_context_bridge.cli import build_parser
+
+    parser = build_parser()
+    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return set(action.choices)
+
+
+def validate_manifest_commands(manifest: dict[str, Any]) -> list[str]:
+    """required/verification commands が実行可能な形で書かれているか検証する。
+
+    - 素の名前は CLI サブコマンドとして build_parser に登録済みであること
+    - `python3 scripts/...` 形式は参照先スクリプトが実在すること
+    生成 skill を読んだ runtime が存在しないコマンドを叩く drift をここで止める。
+    """
+    issues: list[str] = []
+    known_subcommands = _cli_subcommands()
+    for section in ("required_commands", "verification_commands"):
+        for item in manifest.get(section, []):
+            command = str(item.get("command") or "").strip()
+            if not command:
+                issues.append(f"{section}: command が空です")
+                continue
+            tokens = command.split()
+            if tokens[0] in {"python", "python3"}:
+                if len(tokens) < 2:
+                    issues.append(f"{section}: interpreter のみでスクリプト指定がありません: {command}")
+                elif not (ROOT / tokens[1]).is_file():
+                    issues.append(f"{section}: 参照スクリプトが存在しません: {tokens[1]}")
+            elif tokens[0] not in known_subcommands:
+                issues.append(
+                    f"{section}: CLI 未登録のサブコマンドです: {tokens[0]} "
+                    "(独立スクリプトなら 'python3 scripts/<name>.py ...' 形式で書く)"
+                )
+    return issues
 
 
 def canonical_json(payload: dict[str, Any]) -> str:
@@ -179,6 +220,9 @@ def export_runtime_skills(
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     manifest = load_manifest(manifest_path)
+    command_issues = validate_manifest_commands(manifest)
+    if command_issues:
+        raise ValueError("manifest command validation failed: " + " / ".join(command_issues))
     contract_text = contract_path.read_text(encoding="utf-8")
     ssot_commit = resolve_git_commit(ssot_commit or "HEAD")
     generated_at = generated_at or git_commit_generated_at(ssot_commit)

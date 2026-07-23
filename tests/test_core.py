@@ -148,7 +148,8 @@ def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
     assert result["parsed"] == 3
     assert result["appended"] == 0
     assert result["message"] == "保存せずに取り込み結果を確認しました。"
-    assert result["preview"][0]["author_label"] == "member-a"
+    assert result["preview"][0]["author_label"] == "participant-001"
+    assert result["preview"][0]["text_snippet"] == "omitted"
     assert result["briefing"]["event_count"] == 3
     assert not store.exists()
 
@@ -532,6 +533,8 @@ def test_bridge_intake_runs_snapshot_coverage_passport_and_optional_guide(tmp_pa
     ]
     assert payload["snapshot"]["saved"] is True
     assert payload["coverage"]["exact_coverage"] is True
+    assert payload["coverage"]["target_match"] is True
+    assert payload["coverage"]["full_capture_confirmed"] is False
     assert payload["context_passport"]["built"] is True
     assert payload["context_passport"]["parsed"] >= 1
     assert payload["guide_reply"]["built"] is True
@@ -794,7 +797,8 @@ def test_guide_reply_from_text_returns_conversation_guide():
     assert guide["language"] == "ja"
     assert guide["message"] == "Discord 返信ガイドを作成しました。"
     assert guide["parsed"] == 3
-    assert "公開時期の話ですよね" in guide["counterparty_context"]
+    assert guide["counterparty_context"] == "可視発言 3 件を確認済み (本文は omitted)"
+    assert "公開時期の話ですよね" not in json.dumps(guide, ensure_ascii=False)
     assert guide["reply_review"]["ok_to_reply_label"] == "返信してよさそうです。"
     assert guide["reply_review"]["quick_verdict"] == "go"
     assert guide["reply_review"]["quick_verdict_label"].startswith("go:")
@@ -1627,9 +1631,11 @@ def test_context_passport_from_text_summarizes_thread_context():
     assert passport["parsed"] == 4
     assert "相談" in passport["thread_purpose"]
     assert "公開時期" in passport["thread_purpose"]
-    assert "このチャンネルは公開前の企画相談用です" in passport["conversation_flow"]
-    assert passport["rule_notes"]
-    assert "未確認の断定は禁止" in passport["rule_notes"][0]
+    assert passport["conversation_flow"] == "omitted"
+    assert "このチャンネルは公開前の企画相談用です" not in json.dumps(passport, ensure_ascii=False)
+    assert passport["rule_notes"] == []
+    assert passport["visible_rule_note_count"] >= 1
+    assert "ルール言及" in passport["rule_notes_label"]
     assert passport["people_temperature"] == "serious"
     assert passport["context_ready"] is True
     assert passport["send_capability"] == "disabled"
@@ -2043,7 +2049,7 @@ def test_cli_snapshot_discord_url_text_json_is_metadata_only(tmp_path, capsys):
     assert "discord.com/channels" not in output
 
 
-def test_plan_full_thread_capture_blocks_visible_dom_only(tmp_path):
+def test_plan_full_thread_capture_allows_dom_traversal_but_does_not_claim_full(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     url = "https://discord.com/channels/4/5/6"
     snapshot_visible_text(
@@ -2060,11 +2066,18 @@ def test_plan_full_thread_capture_blocks_visible_dom_only(tmp_path):
     )
 
     assert plan["schema"] == "discord_full_thread_capture_plan.v1"
-    assert plan["ok"] is False
-    assert plan["state"] == "blocked_missing_full_thread_route"
+    assert plan["ok"] is True
+    assert plan["state"] == "ready_for_full_capture"
     assert plan["coverage_now"]["saved_snapshot_count"] == 1
     assert plan["coverage_now"]["visible_dom_is_full_thread_proof"] is False
-    assert "rest_backfill_not_configured" in plan["blockers"]
+    assert plan["coverage_now"]["full_thread_confirmed"] is False
+    assert plan["coverage_now"]["completion_gate"] == "strict_full_capture_v1"
+    assert plan["route_allocation"]["visible_dom"]["required_for_full_thread"] is True
+    assert plan["route_allocation"]["visible_dom"]["policy"]["scroll_order"][0] == "scoped_element_dom_scroll"
+    assert plan["execution_lanes"]["immediate_visible"]["may_claim_full"] is False
+    assert plan["execution_lanes"]["background_full"]["partial_is_terminal"] is False
+    assert plan["fde_envelope"]["decision"] == "full_partial_blocked"
+    assert plan["blockers"] == []
     assert plan["raw_text_returned"] is False
 
 
@@ -2094,15 +2107,29 @@ def test_cli_thread_capture_plan_is_metadata_only(tmp_path, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)
 
-    assert result == 2
-    assert payload["state"] == "blocked_missing_full_thread_route"
-    assert payload["route_allocation"]["visible_dom"]["required_for_full_thread"] is False
-    assert payload["route_allocation"]["rest_backfill"]["required_for_full_thread"] is True
+    assert result == 0
+    assert payload["state"] == "ready_for_full_capture"
+    assert payload["route_allocation"]["visible_dom"]["required_for_full_thread"] is True
+    assert payload["coverage_now"]["full_thread_confirmed"] is False
     assert payload["raw_text_returned"] is False
     assert "private thread text" not in output
     assert "member-d" not in output
     assert url not in output
     assert str(snapshot_store) not in output
+
+
+def test_thread_capture_plan_selects_chrome_extension_scroll_policy(tmp_path):
+    plan = plan_full_thread_capture(
+        url="https://discord.com/channels/7/8/9",
+        snapshot_store=tmp_path / "missing.ndjson",
+        visible_dom_available=True,
+        browser_route="chrome_extension",
+    )
+
+    policy = plan["route_allocation"]["visible_dom"]["policy"]
+    assert policy["route"] == "chrome_extension"
+    assert policy["scroll_order"][0] == "scoped_element_dom_scroll"
+    assert policy["completion_gate"] == "strict_full_capture_v1"
 
 
 def test_cli_thread_capture_plan_detects_rest_env_without_claiming_full_capture(tmp_path, capsys, monkeypatch):
@@ -5335,6 +5362,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             calls.append((self, kwargs))
 
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
         [
@@ -5346,6 +5374,7 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
             "8787",
             "--path",
             "/mcp",
+            "--allow-unauthenticated",
         ]
     )
 
@@ -5416,12 +5445,14 @@ def test_http_mcp_require_safe_store_allows_safe_store(monkeypatch, tmp_path):
             return register
 
     monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
         [
             "--store",
             str(store),
             "--require-safe-store",
+            "--allow-unauthenticated",
         ],
         run=lambda server: calls.append(server),
     )

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .full_capture import build_capture_route_policy
+
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
@@ -481,6 +483,9 @@ def build_coverage_report(
             "ai_log_checked": True,
             "ai_log_match_count": len(ai_matches),
             "exact_coverage": exact_coverage,
+            "target_match": exact_coverage,
+            "full_capture_confirmed": False,
+            "full_capture_gate": "strict_full_capture_v1",
         },
         "fallback_policy": {
             "allowed": "dom_export_or_manual_paste_only",
@@ -676,6 +681,9 @@ def build_bridge_intake(
         "snapshot": snapshot_meta,
         "coverage": {
             "exact_coverage": bool(coverage.get("coverage", {}).get("exact_coverage")),
+            "target_match": bool(coverage.get("coverage", {}).get("target_match")),
+            "full_capture_confirmed": False,
+            "full_capture_gate": "strict_full_capture_v1",
             "snapshot_status": str(coverage.get("snapshot_status") or ""),
             "recency": dict(coverage.get("recency") or {}),
             "stale_policy": dict(coverage.get("stale_policy") or {}),
@@ -1528,13 +1536,14 @@ def plan_full_thread_capture(
     bot_inbox_ready: bool = False,
     private_adapter_configured: bool = False,
     visible_dom_available: bool = False,
+    browser_route: str = "in_app_browser",
 ) -> dict[str, Any]:
     """Return a metadata-only plan for capturing an entire Discord thread.
 
-    A visible DOM snapshot is useful evidence, but it is not a full-thread
-    capture mechanism because Discord virtualizes long timelines. Full capture
-    requires a backfill/export route or a configured private adapter that can
-    traverse the whole target safely.
+    A one-shot visible DOM snapshot is partial evidence. A browser DOM route may
+    perform full capture only when it traverses the scoped message list from
+    oldest to latest, repeats the scan until stable, and passes the strict
+    completion gate.
     """
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
@@ -1556,6 +1565,7 @@ def plan_full_thread_capture(
     target_key = target_key_for_url(url)
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
+    browser_policy = build_capture_route_policy(browser_route)
     full_routes = {
         "rest_backfill": {
             "configured": rest_configured,
@@ -1584,11 +1594,12 @@ def plan_full_thread_capture(
         },
         "visible_dom": {
             "configured": visible_dom_available or bool(saved_matches),
-            "required_for_full_thread": False,
-            "role": "現在表示中の補助 snapshot。Discord の仮想リストにより全文保証には使えません。",
+            "required_for_full_thread": True,
+            "role": "現在範囲を即時保存後、対象message listを先頭・末尾までDOM走査し、再走査安定を確認する主経路。one-shot DOMだけでは全文証明になりません。",
+            "policy": browser_policy,
         },
     }
-    primary_available = bool(rest_configured or private_adapter_configured or raw_matches)
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_available)
     state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
     blockers = [] if primary_available else [
         "rest_backfill_not_configured",
@@ -1598,13 +1609,14 @@ def plan_full_thread_capture(
     next_actions = (
         [
             "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
-            "visible DOM は差分確認と最新表示補完としてだけ使います。",
+            "browser DOM routeでは現在範囲を即時保存し、背後で先頭・末尾・再走査安定まで取得します。",
+            "full-capture-gateでraw / Markdown / ledger / attachment件数を検証します。",
         ]
         if primary_available
         else [
             "rest_backfill または private adapter を配線する。",
             "既存の raw export/cache がある場合は target_key exact match で取り込む。",
-            "Chrome visible DOM だけで全文取得済みとは扱わない。",
+            "内部ブラウザまたはChrome拡張のDOM routeを明示許可し、scoped message listを全走査する。",
         ]
     )
     return {
@@ -1623,7 +1635,8 @@ def plan_full_thread_capture(
             "saved_snapshot_count": len(saved_matches),
             "raw_cache_match_count": len(raw_matches),
             "visible_dom_is_full_thread_proof": False,
-            "full_thread_confirmed": primary_available and bool(raw_matches),
+            "full_thread_confirmed": False,
+            "completion_gate": "strict_full_capture_v1",
             "reason": (
                 "full thread 主経路が利用可能です。"
                 if primary_available
@@ -1631,6 +1644,29 @@ def plan_full_thread_capture(
             ),
         },
         "route_allocation": full_routes,
+        "execution_lanes": {
+            "immediate_visible": {
+                "mode": "foreground_fast_path",
+                "purpose": "現在見えている範囲を即時保存し、暫定判断と不足範囲を返す。",
+                "completion": "visible_snapshot_saved",
+                "may_claim_full": False,
+            },
+            "background_full": {
+                "mode": "background_until_terminal_state",
+                "purpose": "先頭・末尾・再走査安定、添付保存、raw/Markdown/ledger整合まで継続する。",
+                "completion": "strict_full_capture_v1",
+                "terminal_states": ["full", "blocked"],
+                "partial_is_terminal": False,
+            },
+        },
+        "fde_envelope": {
+            "entry": "discord_url",
+            "packet": "route_specific_capture_plan",
+            "evidence": "boundaries_artifacts_attachments_rescan",
+            "decision": "full_partial_blocked",
+            "closure": "full_capture_gate_then_context_understanding",
+            "route_failure": "none",
+        },
         "blockers": blockers,
         "next_actions": next_actions,
         "raw_text_returned": False,
@@ -2275,12 +2311,19 @@ def append_events(events: Iterable[DiscordEvent], path: Path = DEFAULT_STORE) ->
     return {"appended": appended, "duplicate": duplicate}
 
 
-def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+def public_participant_aliases(events: Iterable[DiscordEvent]) -> dict[str, str]:
     author_aliases: dict[str, str] = {}
-    safe_events: list[DiscordEvent] = []
     for event in events:
         if event.author_label not in author_aliases:
             author_aliases[event.author_label] = f"participant-{len(author_aliases) + 1:03d}"
+    return author_aliases
+
+
+def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+    events = list(events)
+    author_aliases = public_participant_aliases(events)
+    safe_events: list[DiscordEvent] = []
+    for event in events:
         safe_events.append(
             DiscordEvent.from_dict(
                 {
@@ -2379,16 +2422,19 @@ def import_visible_text(
     )
     safe_events = public_safe_events(events)
     result = {"appended": 0, "duplicate": 0} if dry_run else append_events(safe_events, path)
-    loaded_events = events if dry_run else load_events(path)
+    loaded_events = safe_events if dry_run else load_events(path)
     return {
         **result,
         "dry_run": dry_run,
         "language": DEFAULT_LANGUAGE,
         "message": "Discord の可視テキストを取り込みました。" if not dry_run else "保存せずに取り込み結果を確認しました。",
         "parsed": len(events),
-        "store": str(path),
-        "preview": [event.to_dict() for event in events],
+        "store": "omitted",
+        "path_output": "omitted",
+        "preview": [event.to_dict() for event in safe_events],
         "briefing": fast_briefing(loaded_events),
+        "raw_text_returned": False,
+        "participant_names_returned": False,
     }
 
 
@@ -2563,21 +2609,25 @@ def build_context_passport(
     briefing = fast_briefing(events, limit=5)
     purpose, purpose_label = summarize_thread_purpose(events, context_documents)
     temperature, temperature_label = classify_thread_temperature(events, context_documents)
-    visible_rule_notes = extract_matching_snippets(events, RULE_KEYWORDS)
+    # 可視本文由来の snippet は件数だけを公開出力へ出す (raw 本文は含めない)。
+    # 明示文脈ドキュメント (ユーザー自身の入力) 由来の note はそのまま出す。
+    visible_rule_note_count = len(extract_matching_snippets(events, RULE_KEYWORDS))
     context_rule_notes = extract_context_rule_notes(context_documents)
-    rule_notes = context_rule_notes + visible_rule_notes
+    rule_notes = context_rule_notes
     premise_notes = [
         f"{document['source_label']}: {document['summary']}"
         for document in context_documents
         if any(keyword in document["text"] for keyword in ("前提", "目的", "ルール", "方針", "禁止", "注意"))
-    ]
-    premise_notes += extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
-    premise_notes = premise_notes[:5]
+    ][:5]
+    visible_premise_note_count = len(
+        extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
+    )
     topics = sorted(detect_topics(briefing["briefing"] + " " + context_documents_text(context_documents)))
-    authors = [event.author_label for event in events[-5:]]
+    author_aliases = public_participant_aliases(events)
+    authors = [author_aliases[event.author_label] for event in events[-5:]]
     context_sources = [document["source"] for document in context_documents]
     natural_entry_angles: list[str] = []
-    if rule_notes:
+    if rule_notes or visible_rule_note_count:
         natural_entry_angles.append("先にルールや注意点を踏まえていることを示す。")
     if context_documents:
         natural_entry_angles.append("サーバー・チャンネル・スレッドの明示文脈を優先して確認する。")
@@ -2601,15 +2651,35 @@ def build_context_passport(
         "context_sources_label": "文脈ソース: " + ("、".join(document["source_label"] for document in context_documents) if context_documents else "可視本文のみ"),
         "thread_purpose": purpose,
         "thread_purpose_label": purpose_label,
-        "conversation_flow": briefing["briefing_label"],
-        "conversation_flow_label": "直近の流れ: " + briefing["briefing_label"],
+        "conversation_flow": "omitted",
+        "conversation_flow_label": f"直近の流れ: 可視発言 {briefing['event_count']} 件を確認済み (本文はローカル保存のみ)",
         "implicit_premises": premise_notes,
-        "implicit_premises_label": "暗黙の前提候補: " + (" / ".join(premise_notes) if premise_notes else "まだ強い前提は見つかりません。"),
+        "implicit_premises_label": "暗黙の前提候補: " + (
+            " / ".join(premise_notes)
+            if premise_notes
+            else (
+                f"可視本文から前提らしき発言 {visible_premise_note_count} 件 (本文は omitted)"
+                if visible_premise_note_count
+                else "まだ強い前提は見つかりません。"
+            )
+        ),
+        "visible_premise_note_count": visible_premise_note_count,
         "rule_notes": rule_notes,
-        "rule_notes_label": "ルール注意: " + (" / ".join(rule_notes) if rule_notes else "直近可視範囲では明示ルールは見つかりません。"),
+        "rule_notes_label": "ルール注意: " + (
+            " / ".join(rule_notes)
+            if rule_notes
+            else (
+                f"可視本文からルール言及 {visible_rule_note_count} 件 (本文は omitted)"
+                if visible_rule_note_count
+                else "直近可視範囲では明示ルールは見つかりません。"
+            )
+        ),
+        "visible_rule_note_count": visible_rule_note_count,
         "people_temperature": temperature,
         "people_temperature_label": temperature_label,
         "recent_authors": authors,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
         "natural_entry_angles": natural_entry_angles,
         "context_ready": context_ready,
         "context_ready_label": "発話前チェックに使える文脈があります。" if context_ready else "文脈が不足しています。先にスレッド本文を取り込んでください。",
@@ -3098,8 +3168,8 @@ def review_reply_intent(
             "missing_knowledge": gap["knowledge_gap"],
             "missing_knowledge_label": "理解確認gateで停止中です。",
             "topic_warning_label": gap["topic_warning_label"],
-            "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
-            "suggested_correction": gap["recommended_briefing"],
+            "likely_counterparty_meaning": "omitted" if loaded else "",
+            "suggested_correction": "omitted" if loaded else gap["recommended_briefing"],
             "understanding_gate": understanding_gate,
             "final_candidate": "",
             "human_gate": human_gate,
@@ -3151,8 +3221,8 @@ def review_reply_intent(
         "missing_knowledge": missing_knowledge,
         "missing_knowledge_label": missing_knowledge_label,
         "topic_warning_label": gap["topic_warning_label"],
-        "likely_counterparty_meaning": fast_briefing(loaded)["briefing"],
-        "suggested_correction": gap["recommended_briefing"] if needs_check else "",
+        "likely_counterparty_meaning": "omitted" if loaded else "",
+        "suggested_correction": ("omitted" if loaded else gap["recommended_briefing"]) if needs_check else "",
         "understanding_gate": understanding_gate,
         "final_candidate": final_candidate,
         "human_gate": human_gate,
@@ -3366,7 +3436,12 @@ def guide_reply_from_text(
         "language": DEFAULT_LANGUAGE,
         "message": "Discord 返信ガイドを作成しました。",
         "parsed": len(events),
-        "counterparty_context": briefing["briefing_label"],
+        "counterparty_context": (
+            f"可視発言 {briefing['event_count']} 件を確認済み (本文は omitted)"
+            if events
+            else "直近の文脈はまだ取り込まれていません。"
+        ),
+        "raw_text_returned": False,
         "reply_review": review,
         "next_actions": next_actions,
         "send_capability": "disabled",

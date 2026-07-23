@@ -201,7 +201,7 @@ def build_manifest(capture: dict[str, Any], *, raw_json: str) -> dict[str, Any]:
         "adapter_id": capture["adapter_id"],
         "adapter_version": capture["adapter_version"],
         "status": state,
-        "capture_state": "full" if state == "captured" else "partial",
+        "capture_state": "partial",
         "raw_json": raw_json,
         "source_url_hash": hashlib.sha256(capture["source_url"].encode("utf-8")).hexdigest(),
         "coverage": {"visible_message_count": len(messages), "required_fields_complete": full_fields},

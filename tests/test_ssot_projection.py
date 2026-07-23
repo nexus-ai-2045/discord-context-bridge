@@ -31,6 +31,35 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert "no_cross_route_webhook_or_bot_guessing" in manifest["stoplines"]
 
 
+def test_manifest_commands_are_executable_as_written():
+    module = load_script_module("export_runtime_skills_cmd_check", ROOT / "scripts" / "export_runtime_skills.py")
+
+    manifest = module.load_manifest(ROOT / "capability" / "manifest.yaml")
+
+    assert module.validate_manifest_commands(manifest) == []
+
+
+def test_validate_manifest_commands_rejects_unknown_subcommand_and_missing_script():
+    module = load_script_module("export_runtime_skills_cmd_reject", ROOT / "scripts" / "export_runtime_skills.py")
+
+    manifest = {
+        "required_commands": [
+            {"command": "rest-backfill", "purpose": "CLI 未登録の素の名前"},
+            {"command": "python3 scripts/no_such_script.py --json", "purpose": "実在しないスクリプト"},
+            {"command": "coverage-report", "purpose": "正しい CLI サブコマンド"},
+        ],
+        "verification_commands": [
+            {"command": "python3 scripts/verify_ssot_projection.py --json", "purpose": "実在するスクリプト"},
+        ],
+    }
+
+    issues = module.validate_manifest_commands(manifest)
+
+    assert len(issues) == 2
+    assert any("rest-backfill" in issue for issue in issues)
+    assert any("no_such_script.py" in issue for issue in issues)
+
+
 def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
     export_module = load_script_module("export_runtime_skills_tmp", ROOT / "scripts" / "export_runtime_skills.py")
 
