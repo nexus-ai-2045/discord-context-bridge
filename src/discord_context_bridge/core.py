@@ -40,6 +40,7 @@ DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d{1
 DISCORD_TOKEN_RE = re.compile(
     r"(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})"
 )
+AUTH_HEADER_RE = re.compile(r"(?i)\b(?:authorization\s*:\s*(?:bearer\s+)?|bearer\s+)[^\s,;]+")
 DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
 LOCAL_ABSOLUTE_PATH_RE = re.compile(
     r"(?:/var/tmp/dcb-user/[^ \n]+|/var/tmp/dcb-home/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
@@ -2019,6 +2020,9 @@ def snapshot_visible_text(
     content = text.strip() or normalize_message_text(message_list)
     if not content:
         raise ValueError("snapshot する text または messages が必要です。")
+    # Snapshot はローカル保存でも平文の認証情報を残さない。後段の文脈処理は
+    # この安全化済み本文を正本として扱い、元の本文をファイルへ渡さない。
+    content = redact_sensitive_storage_text(content)
     target_identity = url.strip() or title.strip() or content[:120]
     target_key = stable_text_hash(target_identity)
     content_hash = stable_text_hash(content)
@@ -2422,7 +2426,9 @@ def import_visible_text(
     )
     safe_events = public_safe_events(events)
     result = {"appended": 0, "duplicate": 0} if dry_run else append_events(safe_events, path)
-    loaded_events = safe_events if dry_run else load_events(path)
+    # 旧 release が作った store には raw event が残り得るため、
+    # 読み出し側でも public_safe_events を通してから briefing を作る。
+    loaded_events = safe_events if dry_run else public_safe_events(load_events(path))
     return {
         **result,
         "dry_run": dry_run,
@@ -3306,6 +3312,14 @@ def redact_artifact_text(text: str) -> str:
     redacted = DISCORD_SNOWFLAKE_RE.sub("[discord id omitted]", redacted)
     redacted = re.sub(r"https?://\S+", "[url omitted]", redacted)
     redacted = re.sub(r"\bmember-[A-Za-z0-9_-]+\b", "safe-member", redacted)
+    return redacted.strip()
+
+
+def redact_sensitive_storage_text(text: str) -> str:
+    """ローカル snapshot に保存してよい範囲だけをマスクする。"""
+    redacted = DISCORD_WEBHOOK_RE.sub("[discord webhook omitted]", text)
+    redacted = DISCORD_TOKEN_RE.sub("[discord token omitted]", redacted)
+    redacted = AUTH_HEADER_RE.sub("[authorization omitted]", redacted)
     return redacted.strip()
 
 
