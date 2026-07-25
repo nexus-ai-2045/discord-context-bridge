@@ -27,7 +27,8 @@
         "url_hash_16",
         "title_fallback_16",
         "content_hash_24",
-        "source_url_hash_64"
+        "source_url_hash_64",
+        "content_fallback_16"
       ]
     },
     "url": {

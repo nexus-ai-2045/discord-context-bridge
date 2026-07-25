@@ -106,8 +106,38 @@ def test_valid_key_schemes_and_sources_match_spec():
         "title_fallback_16",
         "content_hash_24",
         "source_url_hash_64",
+        "content_fallback_16",
     }
     assert VALID_SOURCES == {"capture", "backfill", "manual"}
+
+
+def test_register_target_with_content_fallback_scheme_matches_schema(tmp_path):
+    path = tmp_path / "targets.ndjson"
+    register_target(
+        target_key="content-fallback-key",
+        key_scheme="content_fallback_16",
+        channel_label=None,
+        path=path,
+    )
+    entry = load_target_registry(path)[0]
+    assert entry["key_scheme"] == "content_fallback_16"
+    validate_artifact(entry, SCHEMA_NAME)
+
+
+def test_register_target_rejects_entry_failing_schema_validation(tmp_path, monkeypatch):
+    """M8: append 前に schema validate する。invalid schema value は書き込みを止める。"""
+    import discord_context_bridge.target_registry as target_registry_module
+
+    path = tmp_path / "targets.ndjson"
+
+    def _broken_validate(entry, schema_name):
+        raise ValueError("schema_validation_failed")
+
+    monkeypatch.setattr(target_registry_module, "validate_artifact", _broken_validate)
+
+    with pytest.raises(ValueError):
+        register_target(target_key="abc123", key_scheme="url_hash_16", url="https://x", path=path)
+    assert load_target_registry(path) == []
 
 
 def test_register_target_without_url_uses_title_fallback(tmp_path):
