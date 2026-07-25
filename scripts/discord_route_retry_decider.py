@@ -7,12 +7,19 @@ import os
 import platform
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 import discord_bot_route_preflight
 import discord_channel_event_probe
+from discord_context_bridge.credentials import split_secret_command
 from route_timing_log import append_entry, compact_entry
 
 
@@ -27,14 +34,35 @@ def run_local_command(command: str, timeout: float) -> dict[str, Any]:
     started = time.perf_counter()
     stdout = ""
     stderr = ""
-    process = subprocess.Popen(
-        command,
-        shell=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    # shell=True は使わない (process_runner.py と同じ argv 方針)。
+    # 運用者設定のコマンド文字列は split_secret_command で shell 解釈なしに分割する。
+    # 実行ファイル欠如や分割失敗は例外ではなく failed probe として分類する。
+    try:
+        # Windows の CommandLineToArgvW は空文字列で自プロセスパスを返すため、
+        # 空 command はここで先に spawn_failed に落とす。
+        if not command.strip():
+            raise ValueError("empty command")
+        argv = split_secret_command(command)
+        if not argv:
+            raise ValueError("empty command")
+        process = subprocess.Popen(
+            argv,
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return {
+            "ok": False,
+            "failure_stage": "spawn_failed",
+            "returncode": 127,
+            "elapsed_ms": (time.perf_counter() - started) * 1000,
+            "stdout_chars": 0,
+            "stderr_chars": 0,
+            "text_output": "omitted",
+        }
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

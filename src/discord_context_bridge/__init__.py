@@ -73,6 +73,7 @@ from .credentials import (
     load_bot_token_from_provider,
 )
 from .site_adapter_runtime import build_capture, build_manifest, select_adapter
+from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .site_adapter_store import store_capture
 from .cache_inventory import build_cache_inventory
 from .desktop_cache import (
@@ -168,4 +169,6 @@ __all__ = [
     "build_configure_local_cache",
     "default_config_path",
     "resolve_shared_snapshot_root",
+    "build_capture_route_policy",
+    "evaluate_full_capture",
 ]
