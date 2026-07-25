@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from discord_context_bridge.site_adapter_runtime import validate_artifact
 from discord_context_bridge.target_registry import (
     VALID_KEY_SCHEMES,
     VALID_SOURCES,
@@ -10,6 +11,8 @@ from discord_context_bridge.target_registry import (
     resolve_target,
     safe_target_label,
 )
+
+SCHEMA_NAME = "dcb_target_registry_entry.v1.schema.json"
 
 
 def test_register_target_appends_one_entry(tmp_path):
@@ -151,3 +154,27 @@ def test_entries_are_ndjson_lines(tmp_path):
     lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     json.loads(lines[0])
+
+
+def test_entry_matches_schema(tmp_path):
+    path = tmp_path / "targets.ndjson"
+    register_target(
+        target_key="abc123",
+        key_scheme="url_hash_16",
+        url="https://x",
+        server_label="example-community",
+        channel_label="planning",
+        aliases=["旧チャンネル"],
+        source="backfill",
+        source_ref="text-snapshots.ndjson",
+        path=path,
+    )
+    entry = load_target_registry(path)[0]
+    validate_artifact(entry, SCHEMA_NAME)
+
+
+def test_entry_without_url_matches_schema(tmp_path):
+    path = tmp_path / "targets.ndjson"
+    register_target(target_key="title-key", key_scheme="title_fallback_16", path=path)
+    entry = load_target_registry(path)[0]
+    validate_artifact(entry, SCHEMA_NAME)
