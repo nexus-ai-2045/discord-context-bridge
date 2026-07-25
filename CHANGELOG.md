@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- ADR-0162 Phase 1 の capture ingest / target registry / capture store layout lint / backfill を、実 capture artifact のフラットな shape、event envelope 整合、dedupe の編集検知、symlink・非UTF-8耐性、schema validate 付きの append を反映したレビュー指摘対応版に更新しました。
 - `send-operation-status` を追加し、既存の staging / dry-run / closeout JSON ログからDiscord送信テスト運転表を作れるようにしました。
 - README を短い入口に圧縮し、詳細手順を `docs/discord-send-operation-runbook.md` と `docs/full-reference.md` へ分離しました。
 - `PROCESS_BOUNDARY.md` を追加し、Discord Context Bridge を「公開チャンネルに入る前の文脈理解と下書き補助」に絞る開発境界を明文化しました。
