@@ -16,13 +16,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .site_adapter_runtime import validate_artifact
+
 DEFAULT_TARGET_REGISTRY_STORE = Path(".local/discord-context-bridge/targets.ndjson")
+
+TARGET_REGISTRY_ENTRY_SCHEMA_NAME = "dcb_target_registry_entry.v1.schema.json"
 
 VALID_KEY_SCHEMES = {
     "url_hash_16",
     "title_fallback_16",
     "content_hash_24",
     "source_url_hash_64",
+    # url/title 無し時の本文由来 fallback identity 専用 (M3)。title_fallback_16
+    # とは導出元が異なるため区別する (ingest.py の `_target_identity` 参照)。
+    "content_fallback_16",
 }
 VALID_SOURCES = {"capture", "backfill", "manual"}
 
@@ -139,6 +146,9 @@ def register_target(
         "source": source,
         "source_ref": source_ref or None,
     }
+    # append 前に schema validate する (M8)。append-only ledger へ壊れた行を
+    # 書き込む前に fail-closed で止める。
+    validate_artifact(entry, TARGET_REGISTRY_ENTRY_SCHEMA_NAME)
     _append(entry, path)
     return {"registered": True, "target_key": target_key}
 
