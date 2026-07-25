@@ -7,13 +7,19 @@
 チェック内容:
 
 (a) 許可リスト外のパス検知。許可: `text-snapshots.ndjson` / `events.ndjson` /
-    `messages.ndjson` / `targets.ndjson` / `lint-baseline.json` / `raw/` /
-    `manifests/` / `attachments/by-sha256/` / `projections/` / `archive/`
+    `messages.ndjson` / `targets.ndjson` / `lint-baseline.json` /
+    `context-library.json` / `review-registry.json` /
+    `attachment-ledger.md` (現行 writer の既定出力。core.py の DEFAULT_*
+    を参照) / `raw/` / `manifests/` / `attachments/by-sha256/` /
+    `projections/` / `archive/` / `inbox/` (rest-backfill 系の既定出力)
 (b) 許可領域内 JSON / NDJSON の schema キー検査 (`schema` キーが必須。
     `schema_version` やキー無しは violation)
 (c) 既知 schema 値のリスト外検知
 
 `archive/` 配下は意図的に旧形式を退避する領域のため schema 検査は行わない。
+`events.ndjson` も同様に対象外とする (ADR-0162 Phase 2/3 で単一 ledger へ
+統合予定の旧形式のため、現時点では schema キー未整備の行が残り得る)。
+symlink はファイル自体・親ディレクトリ共に走査対象から除外する。
 
 baseline: `--write-baseline` で現状の violation を記録し、以後は baseline に
 無い新規 violation だけを fail 対象にする (レガシー山を即 fail させないため)。
@@ -25,8 +31,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from discord_context_bridge.core import stable_text_hash  # noqa: E402
 
 DEFAULT_STORE_ROOT = Path(".local/discord-context-bridge")
 
@@ -36,11 +50,19 @@ ALLOWED_TOP_LEVEL_FILES = {
     "messages.ndjson",
     "targets.ndjson",
     "lint-baseline.json",
+    # 現行 writer の既定出力 (core.py DEFAULT_CONTEXT_STORE /
+    # DEFAULT_REVIEW_STORE / DEFAULT_ATTACHMENT_LEDGER)。
+    "context-library.json",
+    "review-registry.json",
+    "attachment-ledger.md",
 }
-ALLOWED_TOP_LEVEL_DIRS = {"raw", "manifests", "attachments", "projections", "archive"}
+ALLOWED_TOP_LEVEL_DIRS = {"raw", "manifests", "attachments", "projections", "archive", "inbox"}
 # 'attachments' は 'attachments/by-sha256' のみ許可 (2階層目まで見る)
 ALLOWED_NESTED_ATTACHMENT_DIR = "by-sha256"
 NO_SCHEMA_CHECK_DIRS = {"archive"}
+# events.ndjson は ADR-0162 Phase 2/3 で単一 ledger へ移行予定の旧形式。
+# schema キー未整備の行が残り得るため、現時点では schema 検査対象外。
+NO_SCHEMA_CHECK_TOP_LEVEL_FILES = {"events.ndjson"}
 
 KNOWN_SCHEMA_VALUES = {
     "discord_context_bridge_text_snapshot_observation.v1",
@@ -108,8 +130,31 @@ def _schema_violations_for_record(record: Any, *, path: str) -> list[dict[str, s
         return [{"path": path, "kind": "missing_schema_key", "detail": detail}]
     schema_value = record["schema"]
     if not isinstance(schema_value, str) or schema_value not in KNOWN_SCHEMA_VALUES:
-        return [{"path": path, "kind": "unknown_schema_value", "detail": str(schema_value)}]
+        # ファイル内容 (schema 値) を verbatim で stdout へ反射しない (C1)。
+        # 未知値は stable_text_hash の先頭16桁で表し、baseline 上の dedupe
+        # だけ成立させる。
+        detail = stable_text_hash(str(schema_value))
+        return [{"path": path, "kind": "unknown_schema_value", "detail": detail}]
     return []
+
+
+def _is_symlink_or_escapes_root(path: Path, store_root: Path, resolved_root: Path) -> bool:
+    """symlink ファイル / symlink 経由の親ディレクトリ / root 外への resolve を検知する。
+
+    `site_adapter_store.py` の `_safe_artifact_path` と同じ判定方針。
+    """
+    if path.is_symlink():
+        return True
+    relative = path.relative_to(store_root)
+    current = store_root
+    for part in relative.parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            return True
+    try:
+        return not path.resolve().is_relative_to(resolved_root)
+    except OSError:
+        return True
 
 
 def collect_violations(store_root: Path) -> list[dict[str, str]]:
@@ -117,7 +162,10 @@ def collect_violations(store_root: Path) -> list[dict[str, str]]:
     if not store_root.exists():
         return violations
 
+    resolved_root = store_root.resolve()
     for path in sorted(p for p in store_root.rglob("*") if p.is_file()):
+        if _is_symlink_or_escapes_root(path, store_root, resolved_root):
+            continue
         relative = path.relative_to(store_root)
         relative_posix = relative.as_posix()
         parts = relative.parts
@@ -126,7 +174,7 @@ def collect_violations(store_root: Path) -> list[dict[str, str]]:
             violations.append({"path": relative_posix, "kind": "disallowed_path", "detail": "outside_allow_list"})
             continue
 
-        if parts[0] in NO_SCHEMA_CHECK_DIRS:
+        if parts[0] in NO_SCHEMA_CHECK_DIRS or relative_posix in NO_SCHEMA_CHECK_TOP_LEVEL_FILES:
             continue
 
         suffix = path.suffix.lower()
@@ -201,7 +249,10 @@ def build_report(
         "violations": violations,
         "known_violation_count": len(known_violations),
         "new_violations": new_violations,
-        "path_output": "omitted",
+        # violations には store-root 相対パスを実際に含めるため "omitted" は
+        # 実態と食い違う (C1)。絶対パス・url・本文は出さないが、相対パスは
+        # 出す、という実際の挙動を自己申告する。
+        "path_output": "relative_only",
         "outbound_actions": "disabled",
     }
 

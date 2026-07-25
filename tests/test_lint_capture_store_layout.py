@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -53,7 +55,7 @@ def test_clean_layout_has_no_violations(tmp_path):
 def test_disallowed_top_level_file_is_a_violation(tmp_path):
     store_root = tmp_path / "store"
     _build_clean_store(store_root)
-    (store_root / "review-registry.json").write_text("{}", encoding="utf-8")
+    (store_root / "another-stray-file.json").write_text("{}", encoding="utf-8")
 
     report = lint.build_report(store_root=store_root, baseline_path=None)
 
@@ -61,8 +63,40 @@ def test_disallowed_top_level_file_is_a_violation(tmp_path):
     kinds = {violation["kind"] for violation in report["violations"]}
     assert "disallowed_path" in kinds
     paths = {violation["path"] for violation in report["violations"]}
-    assert "review-registry.json" in paths
+    assert "another-stray-file.json" in paths
     assert str(store_root) not in json.dumps(report)
+
+
+def test_current_writer_default_outputs_are_allowed(tmp_path):
+    """H4: 現行 writer (core.py の DEFAULT_*) が既定で作るパスは violation にしない。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    (store_root / "context-library.json").write_text(
+        json.dumps({"schema": "dcb.context_library.v1"}), encoding="utf-8"
+    )
+    (store_root / "review-registry.json").write_text(
+        json.dumps({"schema": "dcb.review_registry.v1"}), encoding="utf-8"
+    )
+    (store_root / "attachment-ledger.md").write_text("# ledger\n", encoding="utf-8")
+    (store_root / "inbox" / "raw" / "rest-backfill.ndjson").parent.mkdir(parents=True, exist_ok=True)
+    (store_root / "inbox" / "raw" / "rest-backfill.ndjson").write_text("", encoding="utf-8")
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    kinds = {violation["kind"] for violation in report["violations"]}
+    assert "disallowed_path" not in kinds
+
+
+def test_events_ndjson_is_excluded_from_schema_key_check(tmp_path):
+    """H4: events.ndjson は ADR-0162 Phase 2/3 移行対象のため schema キー検査から除外する。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_ndjson(store_root / "events.ndjson", [{"no_schema_key": True}])
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
 
 
 def test_missing_schema_key_is_a_violation(tmp_path):
@@ -131,3 +165,67 @@ def test_cli_json_output_has_no_absolute_paths(tmp_path, capsys):
     payload = json.loads(output)
     assert payload["ok"] is True
     assert str(store_root) not in output
+
+
+def test_unknown_schema_value_is_not_reflected_verbatim(tmp_path):
+    """C1: 未知 schema 値は verbatim ではなく stable_text_hash の先頭16桁で表す。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    secret_looking_value = "PRIVATE-BODY-TEXT-should-not-leak-into-stdout"
+    _write_json(store_root / "manifests" / "cap2.json", {"schema": secret_looking_value})
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is False
+    assert secret_looking_value not in json.dumps(report)
+    unknown = [v for v in report["violations"] if v["kind"] == "unknown_schema_value"][0]
+    assert unknown["detail"] != secret_looking_value
+    assert len(unknown["detail"]) == 16
+
+
+def test_unknown_schema_value_detail_is_stable_for_baseline_dedupe(tmp_path):
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_json(store_root / "manifests" / "cap2.json", {"schema": "totally.unknown.v1"})
+
+    first = lint.build_report(store_root=store_root, baseline_path=None)
+    second = lint.build_report(store_root=store_root, baseline_path=None)
+
+    detail_first = [v["detail"] for v in first["violations"] if v["kind"] == "unknown_schema_value"][0]
+    detail_second = [v["detail"] for v in second["violations"] if v["kind"] == "unknown_schema_value"][0]
+    assert detail_first == detail_second
+
+
+def test_path_output_self_report_matches_actual_output(tmp_path):
+    """C1: path_output の自己申告と実出力を整合させる。violations に相対パスが
+    実際に出ている時は "omitted" と自己申告しない。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    (store_root / "another-stray-file.json").write_text("{}", encoding="utf-8")
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["violations"]
+    assert report["path_output"] != "omitted"
+
+    written = lint.build_report(store_root=store_root, baseline_path=tmp_path / "baseline.json", write_baseline=True)
+    assert "violations" not in written
+    assert written["path_output"] == "omitted"
+
+
+def test_symlink_files_are_excluded_from_scan(tmp_path):
+    """M6: symlink は走査対象から除外する (site_adapter_store.py の判定に合わせる)。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"schema": "totally.unknown.v1"}), encoding="utf-8")
+    link = store_root / "manifests" / "linked.json"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
