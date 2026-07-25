@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -151,3 +153,82 @@ def test_json_output_never_contains_raw_urls(tmp_path, capsys):
     assert "discord.com" not in output
     payload = json.loads(output)
     assert payload["dry_run"] is True
+
+
+def test_dry_run_reports_would_register_and_already_registered_counts(tmp_path):
+    """R4: dry-run でも registry を読み込み would_register / already_registered を数える。"""
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    registry_path = store_root / "targets.ndjson"
+
+    backfill.build_report(store_root=store_root, registry_store=registry_path, apply=True)
+    dry_run = backfill.build_report(store_root=store_root, registry_store=registry_path, apply=False)
+
+    assert dry_run["ok"] is True
+    assert dry_run["dry_run"] is True
+    assert dry_run["already_registered"] >= 1
+    assert dry_run["would_register"] == 0
+    assert not (registry_path.with_suffix(".ndjson.tmp")).exists()
+
+
+def test_non_utf8_json_artifact_is_skipped_without_crashing(tmp_path):
+    """H5: UnicodeDecodeError を捕捉して skipped 扱いにする (lint 側と同じ流儀)。"""
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    (store_root / "raw" / "binary-garbage.json").write_bytes(b"\xff\xfe\x00\x01not-utf8")
+    registry_path = store_root / "targets.ndjson"
+
+    report = backfill.build_report(store_root=store_root, registry_store=registry_path, apply=False)
+
+    assert report["ok"] is True
+
+
+def test_non_utf8_text_snapshots_ndjson_is_skipped_without_crashing(tmp_path):
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    (store_root / "text-snapshots-binary.ndjson").write_bytes(b"\xff\xfe\x00\x01not-utf8")
+    registry_path = store_root / "targets.ndjson"
+
+    report = backfill.build_report(store_root=store_root, registry_store=registry_path, apply=False)
+
+    assert report["ok"] is True
+
+
+def test_symlinked_json_artifact_is_excluded(tmp_path):
+    """M6: symlink 経由のファイルは走査対象から除外する。"""
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"schema": "dcb.raw_capture.v1", "source_url": "https://evil.example/x"}), encoding="utf-8")
+    link = store_root / "raw" / "linked.json"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    registry_path = store_root / "targets.ndjson"
+
+    report = backfill.build_report(store_root=store_root, registry_store=registry_path, apply=True)
+
+    assert report["ok"] is True
+    from discord_context_bridge.target_registry import load_target_registry
+
+    entries = load_target_registry(registry_path)
+    assert not any((entry.get("url") or "") == "https://evil.example/x" for entry in entries)
+
+
+def test_unrelated_json_without_known_schema_is_not_recursively_scanned(tmp_path):
+    """M7: schema フィールドを持たない (または既知でない) JSON からは url / target_key を拾わない。"""
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    (store_root / "captures" / "unrelated.json").parent.mkdir(parents=True, exist_ok=True)
+    (store_root / "captures" / "unrelated.json").write_text(
+        json.dumps({"nested": {"url": "https://unrelated.example/should-not-be-collected"}}), encoding="utf-8"
+    )
+
+    baseline = backfill.build_report(store_root=store_root, registry_store=store_root / "targets-baseline.ndjson", apply=False)
+    (store_root / "captures" / "unrelated.json").unlink()
+    without_unrelated = backfill.build_report(
+        store_root=store_root, registry_store=store_root / "targets-baseline2.ndjson", apply=False
+    )
+
+    assert baseline["candidates_total"] == without_unrelated["candidates_total"]

@@ -12,7 +12,14 @@ target_key <-> url / label の対応を集めて `target_registry` へ登録す�
   `url` / `source_url` / `target_key` フィールドを再帰探索する
 
 既定は dry-run。`--apply` を付けた時だけ台帳へ書き込む。stdout は
-metadata-only とし、url の値そのものは出力しない。
+metadata-only とし、url の値そのものは出力しない。dry-run 時も
+`resolve_target` で pre-registration state を読み、`would_register` /
+`already_registered` を報告する (R4)。
+
+再帰探索 (`_find_first`) は既知 schema 値を持つ JSON artifact からのみ
+候補を集める。schema フィールドが無い / 未知の JSON は無関係な url を
+拾わないようスキップする (M7)。symlink 経由のファイルは走査対象から
+除外する (M6)。
 """
 
 from __future__ import annotations
@@ -32,10 +39,50 @@ from discord_context_bridge.core import stable_text_hash  # noqa: E402
 from discord_context_bridge.target_registry import (  # noqa: E402
     DEFAULT_TARGET_REGISTRY_STORE,
     register_target,
+    resolve_target,
 )
 
 DEFAULT_STORE_ROOT = Path(".local/discord-context-bridge")
 _RECURSIVE_SEARCH_KEYS = ("url", "source_url", "target_key")
+# 再帰探索の対象にしてよい既知 schema 値 (M7)。schema フィールドを持たない、
+# または未知の JSON からは url / target_key を拾わない。
+_RECURSIVE_SEARCH_KNOWN_SCHEMAS = {
+    "dcb.raw_capture.v1",
+    "dcb.capture_manifest.v1",
+    "dcb.visible_message_record.v1",
+    "dcb.incremental_visible_message.v1",
+}
+
+
+def _iter_files_excluding_symlinks(root: Path, pattern: str) -> list[Path]:
+    """symlink ファイル / symlink 経由の親ディレクトリ / root 外への resolve を除外して列挙する。
+
+    `site_adapter_store.py` の `_safe_artifact_path` と同じ判定方針。
+    """
+    resolved_root = root.resolve()
+    results: list[Path] = []
+    for path in root.rglob(pattern):
+        if not path.is_file():
+            continue
+        if path.is_symlink():
+            continue
+        relative = path.relative_to(root)
+        current = root
+        escaped = False
+        for part in relative.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                escaped = True
+                break
+        if escaped:
+            continue
+        try:
+            if not path.resolve().is_relative_to(resolved_root):
+                continue
+        except OSError:
+            continue
+        results.append(path)
+    return sorted(results)
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -61,7 +108,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _load_ndjson(path: Path) -> list[dict[str, Any]]:
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     records: list[dict[str, Any]] = []
     for line in text.splitlines():
@@ -79,7 +126,7 @@ def _load_ndjson(path: Path) -> list[dict[str, Any]]:
 def _load_json(path: Path) -> dict[str, Any] | None:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return loaded if isinstance(loaded, dict) else None
 
@@ -116,7 +163,7 @@ def _classify_bare_target_key(value: str) -> tuple[str, str]:
 def collect_from_text_snapshots(store_root: Path) -> tuple[list[dict[str, Any]], int]:
     candidates: list[dict[str, Any]] = []
     skipped = 0
-    for path in sorted(store_root.rglob("text-snapshots.ndjson")):
+    for path in _iter_files_excluding_symlinks(store_root, "text-snapshots.ndjson"):
         for record in _load_ndjson(path):
             target_key = str(record.get("target_key") or "").strip()
             url = str(record.get("url") or "").strip()
@@ -152,7 +199,7 @@ def collect_from_text_snapshots(store_root: Path) -> tuple[list[dict[str, Any]],
 def collect_from_json_artifacts(store_root: Path) -> tuple[list[dict[str, Any]], int]:
     candidates: list[dict[str, Any]] = []
     skipped = 0
-    for path in sorted(store_root.rglob("*.json")):
+    for path in _iter_files_excluding_symlinks(store_root, "*.json"):
         payload = _load_json(path)
         if payload is None:
             skipped += 1
@@ -183,6 +230,13 @@ def collect_from_json_artifacts(store_root: Path) -> tuple[list[dict[str, Any]],
                         "source_ref": path.name,
                     }
                 )
+            continue
+
+        schema_value = payload.get("schema")
+        if not isinstance(schema_value, str) or schema_value not in _RECURSIVE_SEARCH_KNOWN_SCHEMAS:
+            # 既知 schema 値を持たない JSON からは再帰探索で url を拾わない
+            # (M7)。無関係な artifact の url フィールドを誤登録する事故を防ぐ。
+            skipped += 1
             continue
 
         found = _find_first(payload, _RECURSIVE_SEARCH_KEYS)
@@ -240,6 +294,21 @@ def build_report(
     all_candidates = snapshot_candidates + artifact_candidates
     skipped = snapshot_skipped + artifact_skipped
 
+    # R4: apply の有無に関わらず、mutate 前の registry 状態を基準に
+    # would_register / already_registered を数える。dry-run でも判断材料に
+    # なるようにする (register_target() の重複判定と同じ簡易ルール)。
+    would_register = 0
+    already_registered = 0
+    for candidate in all_candidates:
+        existing = resolve_target(candidate["target_key"], registry_path)
+        is_duplicate = bool(existing) and (candidate["url"] or None) == (existing.get("url") or None) and not (
+            candidate["channel_label"] and candidate["channel_label"] != existing.get("channel_label")
+        )
+        if is_duplicate:
+            already_registered += 1
+        else:
+            would_register += 1
+
     registered = 0
     if apply:
         for candidate in all_candidates:
@@ -263,6 +332,8 @@ def build_report(
         "text_snapshot_candidates": len(snapshot_candidates),
         "json_artifact_candidates": len(artifact_candidates),
         "registered": registered,
+        "would_register": would_register,
+        "already_registered": already_registered,
         "skipped_unresolvable": skipped,
         "path_output": "omitted",
         "url_output": "omitted",
