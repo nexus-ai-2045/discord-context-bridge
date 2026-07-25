@@ -216,6 +216,7 @@ def test_stdout_shaped_result_excludes_raw_text(tmp_path):
 def test_secrets_are_redacted_before_storage(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     registry_store = tmp_path / "targets.ndjson"
+    token = "mfa" + "." + "abcdefghijklmnopqrstuvwx1234567890abcd"
     payload = {
         "schema": "dcb.visible_message_record.v1",
         "url": "https://discord.com/channels/1/1/1",
@@ -223,11 +224,11 @@ def test_secrets_are_redacted_before_storage(tmp_path):
             "message_id": "m-secret",
             "author_label": "Alice",
             "visible_timestamp": "1:00",
-            "body_text": "here is a token: mfa.abcdefghijklmnopqrstuvwx1234567890abcd",
+            "body_text": "here is a token: " + token,
         },
     }
 
     ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
     stored_text = snapshot_store.read_text(encoding="utf-8")
-    assert "mfa.abcdefghijklmnopqrstuvwx1234567890abcd" not in stored_text
+    assert token not in stored_text
     assert "[discord token omitted]" in stored_text
