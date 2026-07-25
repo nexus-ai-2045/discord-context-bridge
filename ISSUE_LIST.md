@@ -63,6 +63,19 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 | P3-2 | later | production send runbook を実運用で固定する | safe label、失敗時回復、送信後確認者が決まる | runbook review |
 | P3-3 | later | optional private adapters を採用判断する | public repoにcredential/raw本文を入れず、failure reason だけを出す | private adapter smoke |
 
+## P4: PR #29 レビューbot 指摘の残件 (2026-07-23)
+
+PR #29 の自動レビュー指摘のうち、PR scope 外 (先行実装由来) として merge 時に繰り越したもの。
+
+| ID | 状態 | TODO | 出典 (file:line 目安) |
+|---|---|---|---|
+| P4-1 | open | `full-capture-gate` が caller 手書きの evidence flags を再計算せず信用する経路を、bound evidence からの再計算に寄せる | `full_capture.py:167` 付近 |
+| P4-2 | open | Obsidian projection で target の表示 title 変更時に旧 channel index が残る問題を掃除する | `obsidian_projection.py:326` 付近 |
+| P4-3 | open | capture orchestrator: 承認を要求した fallback action と実際に承認された action の紐付けを厳密化する | `capture/orchestrator.py:103` 付近 |
+| P4-4 | open | capture orchestrator: blocker event 重複時に resume state を上書きしない | `capture/orchestrator.py:89` 付近 |
+| P4-5 | open | capture orchestrator: 完了 gate が blocked の時に orchestrator を close する | `capture/orchestrator.py:29` 付近 |
+| P4-6 | open | capture planning: `visible_dom_available=True` かつ非対応 browser route の組合せを reject する | `core.py:1603` 付近 |
+
 ## すぐ直す順序
 
 1. P1-3: context parser quality を fixture で測る。

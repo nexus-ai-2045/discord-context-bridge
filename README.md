@@ -314,12 +314,15 @@ discord-context-bridge-mcp
 HTTP connectorとして使う場合:
 
 ```bash
+export DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN='<bearer-token>'
 discord-context-bridge-mcp-http \
   --host 127.0.0.1 \
   --port 8000 \
   --path /mcp \
-  --store /tmp/discord-context-events.ndjson \
-  --require-safe-store
+  --store /tmp/discord-context-events.ndjson
 ```
+
+HTTP MCP server は `Bearer` 方式の token 認証が既定で必須です (`DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN`)。
+event store の起動前監査も既定で有効です。localhost 限定運用に限り `--allow-unauthenticated` で opt-out できます。
 
 MCPでも送信toolは公開しません。

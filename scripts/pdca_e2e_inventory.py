@@ -201,9 +201,9 @@ def classify_case(spec: CaseSpec, result: ExecutionResult) -> dict[str, Any]:
     elif any(term in normalized for term in ("rate_limit", "external", "service_unavailable")):
         classification = "external_dependency_blocked"
         next_action = "外部状態が回復した後に、このcaseだけ再実行します。"
-    elif any(term in normalized for term in ("node_missing", "bundle_missing", "extension_unavailable", "dependency_missing")):
+    elif any(term in normalized for term in ("node_missing", "bundle_missing", "extension_unavailable", "dependency_missing", "main_route_not_ready")):
         classification = "environment_blocked"
-        next_action = "不足runtimeを直した後に、このcaseだけ再実行します。"
+        next_action = "不足runtimeまたはroute設定を整えた後に、このcaseだけ再実行します。"
     else:
         classification = "code_repair_required"
         next_action = "最小failing checkとして実装修正へ戻し、修正後にこのcaseだけ再実行します。"
