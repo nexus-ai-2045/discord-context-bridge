@@ -28,7 +28,8 @@
         "title_fallback_16",
         "content_hash_24",
         "source_url_hash_64",
-        "content_fallback_16"
+        "content_fallback_16",
+        "stream_id_hash_16"
       ]
     },
     "url": {

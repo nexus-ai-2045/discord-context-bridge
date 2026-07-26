@@ -4,6 +4,7 @@ from discord_context_bridge.core import (
     canonical_event_hash,
     load_text_snapshots,
     snapshot_visible_text,
+    stable_text_hash,
     utc_now,
 )
 from discord_context_bridge.target_registry import load_target_registry, resolve_target
@@ -187,6 +188,55 @@ def test_incremental_visible_message_ingests_single_flat_message(tmp_path):
     assert result["events_appended"] == 1
     records = load_text_snapshots(snapshot_store)
     assert records[0]["message_id"] == "m-2"
+
+
+def test_incremental_message_with_only_stream_id_derives_target_from_stream(tmp_path):
+    """P1: stream_id を持つが target_key/url/title が無い実 capture artifact 実測ケース。
+    本文ハッシュへフォールバックすると本文が変わるたびに別 target へ分裂していた
+    (codex review #8)。stream_id から安定した target を導出する。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+
+    result = ingest_capture(
+        INCREMENTAL_MESSAGE, snapshot_store=snapshot_store, registry_store=registry_store, apply=True
+    )
+
+    assert result["ok"] is True
+    assert result["target_key"] == stable_text_hash(INCREMENTAL_MESSAGE["stream_id"])
+    resolved = resolve_target(result["target_key"], registry_store)
+    assert resolved is not None
+    assert resolved["key_scheme"] == "stream_id_hash_16"
+
+
+def test_stream_id_target_is_stable_across_batches_with_different_content(tmp_path):
+    """P1 裏返し: 同一 stream_id の別バッチ (本文が違う) でも同じ target に集約される。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    batch_1 = [dict(INCREMENTAL_MESSAGE, message_id="m-1", body_text="first batch text")]
+    batch_2 = [dict(INCREMENTAL_MESSAGE, message_id="m-2", body_text="second batch, totally different content")]
+
+    result_1 = ingest_capture(batch_1, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+    result_2 = ingest_capture(batch_2, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result_1["ok"] is True
+    assert result_2["ok"] is True
+    assert result_1["target_key"] == result_2["target_key"]
+
+
+def test_ndjson_batch_rejects_mixed_stream_id(tmp_path):
+    """P1: stream_id が行ごとに違う場合も混在として reject する。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    rows = [
+        dict(INCREMENTAL_MESSAGE, message_id="m-a", stream_id="stream-a"),
+        dict(INCREMENTAL_MESSAGE, message_id="m-b", stream_id="stream-b"),
+    ]
+
+    result = ingest_capture(rows, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "ndjson_batch_mixed_target"
+    assert not snapshot_store.exists()
 
 
 def test_ndjson_batch_rows_share_one_target(tmp_path):

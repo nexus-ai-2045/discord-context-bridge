@@ -107,6 +107,7 @@ def test_valid_key_schemes_and_sources_match_spec():
         "content_hash_24",
         "source_url_hash_64",
         "content_fallback_16",
+        "stream_id_hash_16",
     }
     assert VALID_SOURCES == {"capture", "backfill", "manual"}
 

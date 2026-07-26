@@ -30,6 +30,9 @@ VALID_KEY_SCHEMES = {
     # url/title 無し時の本文由来 fallback identity 専用 (M3)。title_fallback_16
     # とは導出元が異なるため区別する (ingest.py の `_target_identity` 参照)。
     "content_fallback_16",
+    # target_key/url/title 無しだが stream_id を持つ実 capture artifact
+    # (`dcb.incremental_visible_message.v1`) 専用 (codex review #8)。
+    "stream_id_hash_16",
 }
 VALID_SOURCES = {"capture", "backfill", "manual"}
 
