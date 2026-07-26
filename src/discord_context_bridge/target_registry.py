@@ -130,12 +130,16 @@ def register_target(
     existing = resolve_target(target_key, path)
     if existing:
         new_aliases = [alias for alias in alias_list if alias not in (existing.get("aliases") or [])]
-        same_url = (url or None) == (existing.get("url") or None)
+        # URL 省略 (url が falsy) は「更新なし」として扱う。呼び出し側が非空の
+        # 新しい url を渡した時だけ「URL 変更」と判定する (既存 url を上書きする
+        # 意図がない限り、null-URL の補完行を無駄に追記しない)。
+        stripped_url = url.strip() if isinstance(url, str) else url
+        url_changed = bool(stripped_url) and stripped_url != (existing.get("url") or None)
         has_new_label = bool(
             (server_label and server_label != existing.get("server_label"))
             or (channel_label and channel_label != existing.get("channel_label"))
         )
-        if same_url and not new_aliases and not has_new_label:
+        if not url_changed and not new_aliases and not has_new_label:
             return {"registered": False, "reason": "already_registered", "target_key": target_key}
 
     entry = {
