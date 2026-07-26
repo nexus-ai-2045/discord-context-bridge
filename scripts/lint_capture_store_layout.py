@@ -112,7 +112,13 @@ def _load_ndjson_records(path: Path) -> list[Any] | None:
     except (OSError, UnicodeDecodeError):
         return None
     records: list[Any] = []
-    for line in text.splitlines():
+    # `str.splitlines()` は U+2028/U+2029/U+0085 等の Unicode 行区切りも分割対象にし、
+    # 値にそれらを含む有効な NDJSON 行を途中で分断してしまう
+    # (writer は ensure_ascii=False で書くため生のまま残り得る)。NDJSON は "\n" 区切りの
+    # 契約なので、ingest_capture.py の `_read_payload` / `load_target_registry` と同じ
+    # "\n" だけの分割にする。
+    for line in text.split("\n"):
+        line = line.rstrip("\r")
         if not line.strip():
             continue
         try:
