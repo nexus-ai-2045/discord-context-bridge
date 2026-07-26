@@ -94,6 +94,18 @@ def _first_nonempty(rows: list[dict[str, Any]], key: str) -> str:
     return ""
 
 
+def _require_consistent_identity(rows: list[dict[str, Any]], key: str) -> None:
+    """`rows` 内で `key` が非空の値を持つ行が複数あり、かつ値が食い違う場合は reject する。
+
+    先頭行の identity だけを見て全行を同じ target へ ingest すると、複数
+    target/url が混在する NDJSON バッチを黙って先頭 target の下へ取り込んで
+    しまう (codex review #1)。target 識別に使う全フィールドで一貫性を検証する。
+    """
+    distinct_values = {str(row.get(key) or "").strip() for row in rows}
+    distinct_values.discard("")
+    _require(len(distinct_values) <= 1, "ndjson_batch_mixed_target")
+
+
 def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str, str, str]:
     """`dcb.visible_message_record.v1` / `dcb.incremental_visible_message.v1` 用アダプタ。
 
@@ -103,6 +115,8 @@ def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str,
     """
     messages = [_normalize_message(row) for row in rows]
     _require(len(messages) > 0, "messages_empty")
+    for key in ("target_key", "url", "title"):
+        _require_consistent_identity(rows, key)
     target_key_hint = _first_nonempty(rows, "target_key")
     url = _first_nonempty(rows, "url")
     title = _first_nonempty(rows, "title")
