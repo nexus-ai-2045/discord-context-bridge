@@ -213,6 +213,24 @@ def test_path_output_self_report_matches_actual_output(tmp_path):
     assert written["path_output"] == "omitted"
 
 
+def test_ndjson_with_unicode_line_separator_in_value_is_not_split(tmp_path):
+    """M6 系: `str.splitlines()` は U+2028/U+0085/U+2029 等も分割対象にし、値にそれらを
+    含む有効な NDJSON 行を途中で分断して unreadable 扱いにしてしまう。ingest_capture.py の
+    `_read_payload` / `load_target_registry` と同じ `\\n` 区切りだけの分割に揃える。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    label = "before midtail end"
+    _write_ndjson(
+        store_root / "targets.ndjson",
+        [{"schema": "dcb.target_registry_entry.v1", "target_key": "a" * 16, "channel_label": label}],
+    )
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
+
+
 def test_symlink_files_are_excluded_from_scan(tmp_path):
     """M6: symlink は走査対象から除外する (site_adapter_store.py の判定に合わせる)。"""
     store_root = tmp_path / "store"
