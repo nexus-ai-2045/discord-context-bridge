@@ -2160,6 +2160,36 @@ def test_thread_capture_plan_selects_chrome_extension_scroll_policy(tmp_path):
     assert policy["completion_gate"] == "strict_full_capture_v1"
 
 
+def test_visible_dom_available_with_unsupported_browser_route_is_rejected(tmp_path):
+    plan = plan_full_thread_capture(
+        url="https://discord.com/channels/7/8/9",
+        snapshot_store=tmp_path / "missing.ndjson",
+        visible_dom_available=True,
+        browser_route="unsupported_route_xyz",
+    )
+
+    assert plan["ok"] is False
+    assert plan["state"] == "blocked_missing_full_thread_route"
+    assert plan["route_allocation"]["visible_dom"]["configured"] is False
+    assert "visible_dom_available_with_unsupported_browser_route" in plan["blockers"]
+
+
+def test_visible_dom_available_with_non_dom_route_is_rejected(tmp_path):
+    # supported だが DOM 走査できない route (rest_backfill / saved_artifacts) を
+    # visible_dom の主経路として受理しないこと。
+    for route in ("rest_backfill", "saved_artifacts"):
+        plan = plan_full_thread_capture(
+            url="https://discord.com/channels/7/8/9",
+            snapshot_store=tmp_path / "missing.ndjson",
+            visible_dom_available=True,
+            browser_route=route,
+        )
+
+        assert plan["state"] == "blocked_missing_full_thread_route", route
+        assert plan["route_allocation"]["visible_dom"]["configured"] is False, route
+        assert "visible_dom_available_with_unsupported_browser_route" in plan["blockers"], route
+
+
 def test_cli_thread_capture_plan_detects_rest_env_without_claiming_full_capture(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("DISCORD_" + "BOT_TOKEN", "synthetic-secret")
 

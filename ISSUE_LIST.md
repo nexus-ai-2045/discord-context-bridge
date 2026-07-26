@@ -67,14 +67,14 @@ Discord 側では対象メッセージ、スレッド、チャンネルを見つ
 
 PR #29 の自動レビュー指摘のうち、PR scope 外 (先行実装由来) として merge 時に繰り越したもの。
 
-| ID | 状態 | TODO | 出典 (file:line 目安) |
+| ID | 状態 | TODO | 検証 |
 |---|---|---|---|
-| P4-1 | open | `full-capture-gate` が caller 手書きの evidence flags を再計算せず信用する経路を、bound evidence からの再計算に寄せる | `full_capture.py:167` 付近 |
-| P4-2 | open | Obsidian projection で target の表示 title 変更時に旧 channel index が残る問題を掃除する | `obsidian_projection.py:326` 付近 |
-| P4-3 | open | capture orchestrator: 承認を要求した fallback action と実際に承認された action の紐付けを厳密化する | `capture/orchestrator.py:103` 付近 |
-| P4-4 | open | capture orchestrator: blocker event 重複時に resume state を上書きしない | `capture/orchestrator.py:89` 付近 |
-| P4-5 | open | capture orchestrator: 完了 gate が blocked の時に orchestrator を close する | `capture/orchestrator.py:29` 付近 |
-| P4-6 | open | capture planning: `visible_dom_available=True` かつ非対応 browser route の組合せを reject する | `core.py:1603` 付近 |
+| P4-1 | done | `full-capture-gate` が caller 手書きの evidence flags を再計算せず信用する経路を、bound evidence からの再計算に寄せる | `test_bound_message_ids_recompute_and_agree_with_caller_flags_stay_full` / `test_bound_message_ids_contradicting_caller_flag_fails_closed` / `test_bound_attachment_ids_contradicting_caller_flag_fails_closed` / `test_without_bound_ids_caller_flags_are_used_directly_for_backward_compat` |
+| P4-2 | done | Obsidian projection で target の表示 title 変更時に旧 channel index が残る問題を掃除する (dcb_generated marker 付きのみ削除) | `test_export_removes_old_channel_index_when_target_title_changes` |
+| P4-3 | done | capture orchestrator: 承認を要求した fallback action と実際に承認された action の紐付けを厳密化する | `test_human_approval_granted_requires_matching_requested_action` / `test_human_approval_granted_resumes_when_action_matches` |
+| P4-4 | done | capture orchestrator: blocker event 重複時に resume state を上書きしない | `test_duplicate_blocker_event_is_rejected_instead_of_overwriting` |
+| P4-5 | done | capture orchestrator: 完了 gate が blocked の時に orchestrator を close する | `test_gate_blocked_closes_orchestrator_to_terminal_state` / `test_gate_blocked_requires_bound_blocked_result` |
+| P4-6 | done | capture planning: `visible_dom_available=True` かつ非対応 browser route の組合せを reject する | `test_visible_dom_available_with_unsupported_browser_route_is_rejected` |
 
 ## すぐ直す順序
 
