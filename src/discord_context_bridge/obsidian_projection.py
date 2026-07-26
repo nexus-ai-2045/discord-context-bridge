@@ -320,9 +320,20 @@ def export_obsidian_projection(
             if existing.stem not in month_files:
                 month_files.append(existing.stem)
         index_name = f"{label} 概要"
+        desired_index = channel_root / f"{index_name}.md"
+        for legacy_index in channel_root.glob("* 概要.md"):
+            if legacy_index == desired_index:
+                continue
+            if GENERATED_MARKER not in legacy_index.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                continue
+            # target の表示 title が変わり index_name が変化した場合、
+            # 旧 title の channel index (dcb_generated 由来のみ) を除去する。
+            legacy_index.unlink()
         statuses.append(
             _write_if_changed(
-                channel_root / f"{index_name}.md",
+                desired_index,
                 _render_channel_index(label, month_files, notes_name),
             )
         )

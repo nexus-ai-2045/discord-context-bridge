@@ -1567,6 +1567,11 @@ def plan_full_thread_capture(
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
     browser_policy = build_capture_route_policy(browser_route)
+    # visible_dom_available=True は「DOM 走査ができる route」であることが前提。
+    # supported でも DOM 非対応 (rest_backfill / saved_artifacts 等) の route では
+    # visible_dom を有効な主経路として扱わない (P4-6)。
+    browser_route_dom_capable = browser_policy["primary_read"] == "visible_message_dom"
+    visible_dom_usable = bool(visible_dom_available and browser_route_dom_capable)
     full_routes = {
         "rest_backfill": {
             "configured": rest_configured,
@@ -1594,19 +1599,23 @@ def plan_full_thread_capture(
             "role": "既存 export/cache が対象 URL に exact match する場合の主経路",
         },
         "visible_dom": {
-            "configured": visible_dom_available or bool(saved_matches),
+            "configured": visible_dom_usable or bool(saved_matches),
             "required_for_full_thread": True,
             "role": "現在範囲を即時保存後、対象message listを先頭・末尾までDOM走査し、再走査安定を確認する主経路。one-shot DOMだけでは全文証明になりません。",
             "policy": browser_policy,
         },
     }
-    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_available)
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_usable)
     state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
     blockers = [] if primary_available else [
         "rest_backfill_not_configured",
         "private_adapter_not_configured",
         "raw_export_or_cache_missing",
-    ]
+    ] + (
+        ["visible_dom_available_with_unsupported_browser_route"]
+        if visible_dom_available and not browser_route_dom_capable
+        else []
+    )
     next_actions = (
         [
             "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
