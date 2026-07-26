@@ -205,8 +205,20 @@ def collect_from_json_artifacts(store_root: Path) -> tuple[list[dict[str, Any]],
             skipped += 1
             continue
 
+        schema_value = payload.get("schema")
+        known_schema = isinstance(schema_value, str) and schema_value in _RECURSIVE_SEARCH_KNOWN_SCHEMAS
+
+        # source_url_hash は dcb.capture_manifest.v1 専用のフィールド。known-schema
+        # ガードより先に信用すると、`*.json` を無差別に走査する都合上、無関係な
+        # artifact (schema フィールド無し・未知 schema) が偶然同名フィールドを持つ
+        # だけで誤登録されてしまう (codex review #3)。manifest schema であることを
+        # 先に確認してから使う。
         source_url_hash = payload.get("source_url_hash")
-        if isinstance(source_url_hash, str) and source_url_hash.strip():
+        if (
+            schema_value == "dcb.capture_manifest.v1"
+            and isinstance(source_url_hash, str)
+            and source_url_hash.strip()
+        ):
             explicit_url = payload.get("source_url") or payload.get("url")
             label = payload.get("title_safe_label")
             label = label if isinstance(label, str) and label.strip() else None
@@ -232,8 +244,7 @@ def collect_from_json_artifacts(store_root: Path) -> tuple[list[dict[str, Any]],
                 )
             continue
 
-        schema_value = payload.get("schema")
-        if not isinstance(schema_value, str) or schema_value not in _RECURSIVE_SEARCH_KNOWN_SCHEMAS:
+        if not known_schema:
             # 既知 schema 値を持たない JSON からは再帰探索で url を拾わない
             # (M7)。無関係な artifact の url フィールドを誤登録する事故を防ぐ。
             skipped += 1

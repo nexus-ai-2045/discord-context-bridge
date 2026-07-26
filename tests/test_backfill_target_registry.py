@@ -122,6 +122,26 @@ def test_apply_is_idempotent_on_second_run(tmp_path):
     assert second_count == first_count
 
 
+def test_source_url_hash_without_known_manifest_schema_is_not_registered(tmp_path):
+    """P2: source_url_hash を known-schema ガードより先に信用すると、無関係な artifact
+    (schema フィールド無し、または未知 schema) からも target を誤登録してしまう
+    (codex review #3)。dcb.capture_manifest.v1 の known schema 検証を先に必須にする。"""
+    store_root = tmp_path / ".local" / "discord-context-bridge"
+    _build_store(store_root)
+    unrelated_hash = "e" * 64
+    _write_json(
+        store_root / "raw" / "unrelated-with-source-url-hash.json",
+        {"source_url_hash": unrelated_hash},
+    )
+    registry_path = store_root / "targets.ndjson"
+
+    report = backfill.build_report(store_root=store_root, registry_store=registry_path, apply=True)
+
+    assert report["ok"] is True
+    resolved = resolve_target(unrelated_hash[:16], registry_path)
+    assert resolved is None
+
+
 def test_manifest_source_url_hash_registers_source_url_hash_64_scheme(tmp_path):
     store_root = tmp_path / ".local" / "discord-context-bridge"
     _build_store(store_root)
