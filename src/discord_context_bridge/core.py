@@ -277,7 +277,10 @@ def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割し、text にそれらを含む
+    # JSON 行が plain_text fallback へ silent に分断される。"\n" だけで区切る。
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        line = line.rstrip("\r")
         if not line.strip():
             continue
         try:
@@ -1271,7 +1274,11 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
     if not path.exists():
         return []
     snapshots: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # `str.splitlines()` は U+2028/U+2029/U+0085 等の Unicode 行区切りも分割対象にし、
+    # text にそれらを含む ledger 行を途中で分断する (json.dumps ensure_ascii=False は
+    # これらをエスケープしない)。NDJSON は "\n" 区切りの契約なので "\n" だけで区切る。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             snapshots.append(dict(json.loads(line)))
     return snapshots
