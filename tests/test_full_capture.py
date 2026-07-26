@@ -269,6 +269,50 @@ def test_without_bound_ids_caller_flags_are_used_directly_for_backward_compat():
     assert result["evidence_recomputation_mismatched_keys"] == []
 
 
+def test_partial_bound_message_id_evidence_is_a_hard_blocker():
+    # id 列が 1〜2 本だけの場合、再計算を黙って無効化すると legacy flag が
+    # 信用され続ける抜け穴になるため hard blocker で止める。
+    evidence = complete_evidence(
+        raw_message_ids=["1", "2", "3"],
+        markdown_message_ids=["1", "2", "9"],
+        message_count=3,
+        raw_record_count=3,
+        markdown_message_count=3,
+        ledger_message_count=3,
+    )
+
+    result = evaluate_full_capture(evidence)
+
+    assert result["status"] == "blocked"
+    assert "partial_bound_message_id_evidence" in result["blockers"]
+
+
+def test_message_ids_without_attachment_ids_preserve_legacy_attachment_counts():
+    # message id 列だけを追加した legacy payload で、添付 count が空扱いに
+    # 上書きされて誤って mismatch にならないこと。
+    evidence = complete_evidence(
+        raw_message_ids=["1", "2", "3"],
+        markdown_message_ids=["1", "2", "3"],
+        ledger_message_ids=["1", "2", "3"],
+        message_count=3,
+        raw_record_count=3,
+        markdown_message_count=3,
+        ledger_message_count=3,
+    )
+
+    result = evaluate_full_capture(evidence)
+
+    assert result["status"] == "full"
+    assert result["evidence_recomputation_mismatched_keys"] == []
+    assert result["attachments_consistent"] is True
+
+
+def test_gate_result_carries_capture_binding():
+    result = evaluate_full_capture(complete_evidence(capture_id="capture-123"))
+
+    assert result["capture_id"] == "capture-123"
+
+
 def test_cli_full_capture_gate_fails_closed_for_partial(tmp_path, capsys):
     evidence_path = tmp_path / "partial.json"
     evidence_path.write_text(json.dumps(complete_evidence(latest_reached=False)), encoding="utf-8")
