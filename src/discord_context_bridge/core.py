@@ -796,7 +796,10 @@ def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     if not path.exists():
         return []
     events: list[DiscordEvent] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             events.append(DiscordEvent.from_dict(json.loads(line)))
     return events
@@ -2112,7 +2115,10 @@ def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             records.append(dict(json.loads(line)))
     return records

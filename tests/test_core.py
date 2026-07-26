@@ -261,6 +261,41 @@ def test_load_snapshot_like_records_preserves_unicode_line_separators_in_text(tm
     assert records[0].get("source_format") != "plain_text"
 
 
+def test_load_events_preserves_unicode_line_separators_in_text_snippet(tmp_path):
+    # append_event も ensure_ascii=False で書くため、splitlines() 読込だと
+    # text_snippet の U+2028 等で event 行が分断される。
+    store = tmp_path / "events.ndjson"
+    snippet = "before\u2028mid\u0085tail\u2029end"
+    event = DiscordEvent(
+        observed_at="2026-07-26T00:00:00+00:00",
+        source="visible_text",
+        guild_label="g",
+        channel_label="c",
+        author_label="a",
+        text_snippet=snippet,
+    )
+    append_event(event, store)
+
+    events = load_events(store)
+
+    assert len(events) == 1
+    assert events[0].text_snippet == snippet
+
+
+def test_load_jsonl_records_preserves_unicode_line_separators(tmp_path):
+    store = tmp_path / "records.ndjson"
+    text_with_separators = "before\u2028mid\u0085tail\u2029end"
+    store.write_text(
+        json.dumps({"text": text_with_separators}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    records = load_jsonl_records(store)
+
+    assert len(records) == 1
+    assert records[0]["text"] == text_with_separators
+
+
 def test_snapshot_visible_text_redacts_authorization_before_local_storage(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
 
