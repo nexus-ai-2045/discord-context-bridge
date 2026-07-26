@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -259,9 +260,21 @@ def build_report(
         }
 
     baseline = _load_baseline(resolved_baseline_path)
-    baseline_keys = {_violation_key(entry) for entry in baseline}
-    new_violations = [violation for violation in violations if _violation_key(violation) not in baseline_keys]
-    known_violations = [violation for violation in violations if _violation_key(violation) in baseline_keys]
+    # set membership だと同一 (path,kind,detail) の violation が baseline に 1 件でも
+    # あれば、以後何件同じ tuple の violation が新たに増えても永久に抑止されてしまう
+    # (codex review #5)。baseline 側の出現回数までは "known"、それを超えた分だけを
+    # "new" として検知する。
+    baseline_counts = Counter(_violation_key(entry) for entry in baseline)
+    seen_counts: Counter = Counter()
+    new_violations: list[dict[str, str]] = []
+    known_violations: list[dict[str, str]] = []
+    for violation in violations:
+        key = _violation_key(violation)
+        seen_counts[key] += 1
+        if seen_counts[key] <= baseline_counts.get(key, 0):
+            known_violations.append(violation)
+        else:
+            new_violations.append(violation)
 
     return {
         "schema": "dcb_lint_capture_store_layout_report.v1",

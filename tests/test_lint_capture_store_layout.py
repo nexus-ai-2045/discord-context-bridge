@@ -218,6 +218,42 @@ def test_path_output_self_report_matches_actual_output(tmp_path):
     assert written["path_output"] == "omitted"
 
 
+def test_new_occurrence_of_a_previously_baselined_violation_is_still_detected(tmp_path):
+    """P1: baseline を set 化していると同一 (path,kind,detail) の再発が永久に抑止される
+    (codex review #5)。例えば targets.ndjson の schema-less 行を 1 件 baseline した後、
+    新たに schema-less 行を追加で 1 件足しても検知できてはいけないはずが、
+    set membership 判定だと new_violations が空のままになる。出現回数ベースで検知する。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_ndjson(
+        store_root / "targets.ndjson",
+        [
+            {"schema": "dcb.target_registry_entry.v1", "target_key": "a" * 16},
+            {"schema_version": 1, "target_key": "b" * 16},
+        ],
+    )
+    baseline_path = tmp_path / "lint-baseline.json"
+    written = lint.build_report(store_root=store_root, baseline_path=baseline_path, write_baseline=True)
+    assert written["ok"] is True
+
+    # 既存の legacy schema-less 行に加えて、新たな schema-less 行を追加する
+    # (path/kind/detail の tuple は既存 baseline entry と同一)。
+    _write_ndjson(
+        store_root / "targets.ndjson",
+        [
+            {"schema": "dcb.target_registry_entry.v1", "target_key": "a" * 16},
+            {"schema_version": 1, "target_key": "b" * 16},
+            {"schema_version": 1, "target_key": "c" * 16},
+        ],
+    )
+
+    rerun = lint.build_report(store_root=store_root, baseline_path=baseline_path)
+
+    assert rerun["ok"] is False
+    assert len(rerun["new_violations"]) == 1
+    assert rerun["known_violation_count"] == 1
+
+
 def test_context_library_json_array_is_not_flagged_as_violation(tmp_path):
     """P1: save_context_library はトップレベル JSON 配列を書くが、lint が配列全体を
     オブジェクト前提で検査して violation 化していた (codex review #2)。context-library.json
