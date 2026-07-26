@@ -49,6 +49,7 @@ from .core import (
     stable_text_hash,
     utc_now,
 )
+from .site_adapter_runtime import MAX_BODY_TEXT_CHARS, MAX_MESSAGES
 from .target_registry import DEFAULT_TARGET_REGISTRY_STORE, register_target
 
 SUPPORTED_SCHEMAS = {
@@ -95,6 +96,19 @@ def _first_nonempty(rows: list[dict[str, Any]], key: str) -> str:
     return ""
 
 
+def _enforce_message_budget(messages: list[dict[str, Any]]) -> None:
+    """既存 `dcb.raw_capture.v1` schema / `site_adapter_runtime` budget と同じ上限
+    (メッセージ件数 2,000 / 本文 1,000,000 字) を ingest 側でも enforce する
+    (codex review #7)。schema 検証を経ない local artifact 由来の入力でも
+    unbounded な append を防ぐ。
+    """
+    _require(len(messages) <= MAX_MESSAGES, "message_limit_exceeded")
+    _require(
+        all(len(message["body_text"]) <= MAX_BODY_TEXT_CHARS for message in messages),
+        "message_body_limit_exceeded",
+    )
+
+
 def _require_consistent_identity(rows: list[dict[str, Any]], key: str) -> None:
     """`rows` 内で `key` が非空の値を持つ行が複数あり、かつ値が食い違う場合は reject する。
 
@@ -118,6 +132,7 @@ def _messages_from_flat_rows(
     """
     messages = [_normalize_message(row) for row in rows]
     _require(len(messages) > 0, "messages_empty")
+    _enforce_message_budget(messages)
     for key in ("target_key", "url", "title", "stream_id"):
         _require_consistent_identity(rows, key)
     target_key_hint = _first_nonempty(rows, "target_key")
@@ -140,6 +155,7 @@ def _messages_from_payload(
         _require(isinstance(raw_messages, list), "raw_capture_messages_required")
         messages = [_normalize_message(item) for item in raw_messages]
         _require(len(messages) > 0, "messages_empty")
+        _enforce_message_budget(messages)
         url = str(payload.get("source_url") or "").strip()
         title = str(payload.get("channel_or_thread_title") or "").strip()
         source_hint = str(payload.get("capture_method") or "source_command")
