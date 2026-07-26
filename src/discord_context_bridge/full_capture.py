@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+from .capture.reconcile import build_reconciliation_evidence
 
 
 _ROUTE_ALIASES = {
@@ -111,8 +113,72 @@ def _count(evidence: Mapping[str, Any], key: str) -> int:
     return parsed if parsed >= 0 else 0
 
 
+_BOUND_MESSAGE_ID_KEYS = (
+    "raw_message_ids",
+    "markdown_message_ids",
+    "ledger_message_ids",
+)
+_BOUND_ATTACHMENT_ID_KEYS = (
+    "discovered_attachment_ids",
+    "saved_attachment_ids",
+    "manifest_attachment_ids",
+)
+
+
+def _as_id_sequence(evidence: Mapping[str, Any], key: str) -> list[str] | None:
+    value = evidence.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    return [str(item) for item in value]
+
+
+def _recompute_from_bound_evidence(
+    evidence: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """caller 手書きの flag を信用せず、bound evidence (実データ) から再計算する。
+
+    raw/markdown/ledger の message id 列 (bound evidence) が evidence に含まれる場合は、
+    `build_reconciliation_evidence` で件数・集合一致・重複を再計算し、caller が別途
+    手書きした同名 flag と矛盾していないかを検査する。id 列が渡されていない場合は
+    再計算材料がないため、従来どおり caller の flag をそのまま使う (後方互換)。
+    """
+
+    message_id_lists = {
+        key: _as_id_sequence(evidence, key) for key in _BOUND_MESSAGE_ID_KEYS
+    }
+    if any(value is None for value in message_id_lists.values()):
+        return {}, []
+
+    attachment_id_lists = {
+        key: _as_id_sequence(evidence, key) or [] for key in _BOUND_ATTACHMENT_ID_KEYS
+    }
+    recomputed = build_reconciliation_evidence(
+        raw_message_ids=message_id_lists["raw_message_ids"],
+        markdown_message_ids=message_id_lists["markdown_message_ids"],
+        ledger_message_ids=message_id_lists["ledger_message_ids"],
+        discovered_attachment_ids=attachment_id_lists["discovered_attachment_ids"],
+        saved_attachment_ids=attachment_id_lists["saved_attachment_ids"],
+        manifest_attachment_ids=attachment_id_lists["manifest_attachment_ids"],
+        attachment_inventory_traversal_complete=bool(
+            evidence.get("attachment_inventory_complete")
+        ),
+    )
+    mismatched_keys = [
+        key
+        for key, value in recomputed.items()
+        if key in evidence and evidence.get(key) != value
+    ]
+    return recomputed, mismatched_keys
+
+
 def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
     """Fail closed unless boundaries, artifacts, attachments and rescan agree."""
+
+    recomputed, mismatched_keys = _recompute_from_bound_evidence(evidence)
+    if recomputed:
+        merged = dict(evidence)
+        merged.update(recomputed)
+        evidence = merged
 
     message_count = _count(evidence, "message_count")
     raw_count = _count(evidence, "raw_record_count")
@@ -177,8 +243,15 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("pending_retry")
     if evidence.get("external_actions") != "disabled":
         blockers.append("external_actions_not_disabled")
+    if mismatched_keys:
+        blockers.append("evidence_recomputation_mismatch")
 
-    hard_blockers = {"unsupported_capture_route", "evidence_schema_invalid", "untrusted_evidence_producer"}
+    hard_blockers = {
+        "unsupported_capture_route",
+        "evidence_schema_invalid",
+        "untrusted_evidence_producer",
+        "evidence_recomputation_mismatch",
+    }
     status = "full" if not blockers else "blocked" if message_count <= 0 or hard_blockers.intersection(blockers) else "partial"
     return {
         "language": "ja",
@@ -203,6 +276,8 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "counts_consistent": counts_consistent,
         "attachments_consistent": attachments_consistent,
         "unresolved_gap_count": _count(evidence, "unresolved_gap_count"),
+        "bound_evidence_recomputed": bool(recomputed),
+        "evidence_recomputation_mismatched_keys": mismatched_keys,
         "blockers": blockers,
         "next_action": "context_understanding" if status == "full" else "continue_full_capture",
         "raw_text_returned": False,

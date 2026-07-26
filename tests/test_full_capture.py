@@ -195,6 +195,80 @@ def test_cli_full_capture_gate_reads_evidence_and_returns_full(tmp_path, capsys)
     assert str(evidence_path) not in output
 
 
+def test_bound_message_ids_recompute_and_agree_with_caller_flags_stay_full():
+    # caller の count 系 flag も bound evidence (id 列 3 件 / 添付 1 件) と一致させる。
+    # 一致していれば再計算が走っても full のままであることを固定する。
+    evidence = complete_evidence(
+        raw_message_ids=["1", "2", "3"],
+        markdown_message_ids=["1", "2", "3"],
+        ledger_message_ids=["1", "2", "3"],
+        discovered_attachment_ids=["a"],
+        saved_attachment_ids=["a"],
+        manifest_attachment_ids=["a"],
+        message_count=3,
+        raw_record_count=3,
+        markdown_message_count=3,
+        ledger_message_count=3,
+    )
+
+    result = evaluate_full_capture(evidence)
+
+    assert result["status"] == "full"
+    assert result["bound_evidence_recomputed"] is True
+    assert result["evidence_recomputation_mismatched_keys"] == []
+
+
+def test_bound_message_ids_contradicting_caller_flag_fails_closed():
+    # caller が message_id_sets_equal=True と手書きしているが、実際の id 列は不一致。
+    evidence = complete_evidence(
+        raw_message_ids=["1", "2", "3"],
+        markdown_message_ids=["1", "2", "9"],
+        ledger_message_ids=["1", "2", "3"],
+        message_id_sets_equal=True,
+        ordered_message_digest_equal=True,
+    )
+
+    result = evaluate_full_capture(evidence)
+
+    assert result["status"] == "blocked"
+    assert result["full_capture_confirmed"] is False
+    assert "evidence_recomputation_mismatch" in result["blockers"]
+    assert "message_id_sets_equal" in result["evidence_recomputation_mismatched_keys"]
+
+
+def test_bound_attachment_ids_contradicting_caller_flag_fails_closed():
+    evidence = complete_evidence(
+        raw_message_ids=["1", "2"],
+        markdown_message_ids=["1", "2"],
+        ledger_message_ids=["1", "2"],
+        message_count=2,
+        raw_record_count=2,
+        markdown_message_count=2,
+        ledger_message_count=2,
+        discovered_attachment_ids=["a", "b"],
+        saved_attachment_ids=["a"],
+        manifest_attachment_ids=["a", "b"],
+        attachment_id_sets_equal=True,
+        attachment_discovered_count=2,
+        attachment_saved_count=2,
+        attachment_manifest_count=2,
+    )
+
+    result = evaluate_full_capture(evidence)
+
+    assert result["status"] == "blocked"
+    assert "evidence_recomputation_mismatch" in result["blockers"]
+    assert "attachment_id_sets_equal" in result["evidence_recomputation_mismatched_keys"]
+
+
+def test_without_bound_ids_caller_flags_are_used_directly_for_backward_compat():
+    result = evaluate_full_capture(complete_evidence())
+
+    assert result["status"] == "full"
+    assert result["bound_evidence_recomputed"] is False
+    assert result["evidence_recomputation_mismatched_keys"] == []
+
+
 def test_cli_full_capture_gate_fails_closed_for_partial(tmp_path, capsys):
     evidence_path = tmp_path / "partial.json"
     evidence_path.write_text(json.dumps(complete_evidence(latest_reached=False)), encoding="utf-8")
