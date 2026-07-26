@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- ADR-0162 Phase 1 の capture ingest / target registry / capture store layout lint / backfill を、codex review 2 巡目の指摘 9 件 (複数 target/url 混在 NDJSON バッチの reject、既存 writer の JSON 配列形式の受容、backfill の manifest schema 検証順序、capture 時刻の保持、baseline の出現回数ベース検知、NDJSON 行区切りの統一、capture budget の enforce、incremental target の stream_id 導出、target registry の URL 省略時無変更判定) を反映した修正版に更新しました。target_key/url/title を持たず stream_id のみを持つ incremental capture は、target_key の導出元が本文ハッシュから stream_id ハッシュ (`stream_id_hash_16`) へ変わります。
 - ADR-0162 Phase 1 の capture ingest / target registry / capture store layout lint / backfill を、実 capture artifact のフラットな shape、event envelope 整合、dedupe の編集検知、symlink・非UTF-8耐性、schema validate 付きの append を反映したレビュー指摘対応版に更新しました。
 - `send-operation-status` を追加し、既存の staging / dry-run / closeout JSON ログからDiscord送信テスト運転表を作れるようにしました。
 - README を短い入口に圧縮し、詳細手順を `docs/discord-send-operation-runbook.md` と `docs/full-reference.md` へ分離しました。
