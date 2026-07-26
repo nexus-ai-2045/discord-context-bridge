@@ -221,6 +221,42 @@ def test_ndjson_batch_rows_share_one_target(tmp_path):
     assert len({record["target_key"] for record in records}) == 1
 
 
+def test_ndjson_batch_rejects_mixed_target_key(tmp_path):
+    """P1: 複数 target_key が混在する NDJSON バッチを、先頭行の identity で全行
+    取り込んでしまっていた (codex review #1)。混在を検知して reject する。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    rows = [
+        {**VISIBLE_MESSAGE_RECORD, "message_id": "m-a", "target_key": "aaaa000000000001"},
+        {**VISIBLE_MESSAGE_RECORD, "message_id": "m-b", "target_key": "bbbb000000000002"},
+    ]
+
+    result = ingest_capture(rows, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "ndjson_batch_mixed_target"
+    assert not snapshot_store.exists()
+    assert not registry_store.exists()
+
+
+def test_ndjson_batch_rejects_mixed_url(tmp_path):
+    """P1: target_key が無くても url が行ごとに違う場合も混在として reject する。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    row_a = {k: v for k, v in VISIBLE_MESSAGE_RECORD.items() if k != "target_key"}
+    row_b = dict(row_a)
+    rows = [
+        dict(row_a, message_id="m-a", url="https://discord.com/channels/1/1/1"),
+        dict(row_b, message_id="m-b", url="https://discord.com/channels/2/2/2"),
+    ]
+
+    result = ingest_capture(rows, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "ndjson_batch_mixed_target"
+    assert not snapshot_store.exists()
+
+
 def test_ndjson_batch_requires_consistent_schema(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     registry_store = tmp_path / "targets.ndjson"
