@@ -121,6 +121,38 @@ def test_export_preserves_months_from_an_old_display_label(tmp_path):
     assert "[[旧ラベル 2026-06]]" in index
 
 
+def test_export_removes_old_channel_index_when_target_title_changes(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_snapshot(
+        snapshot_store, sequence=1, text="member-a: 本文", content_hash="v1"
+    )
+    record = json.loads(snapshot_store.read_text(encoding="utf-8"))
+    record["title"] = "旧タイトル"
+    snapshot_store.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+    channel_root = output_root / "Channels" / "target-safe-target-a"
+    old_index = next(channel_root.glob("* 概要.md"))
+    assert "旧タイトル" in old_index.name
+
+    # target の表示 title を変更して再 export する。
+    record["title"] = "新タイトル"
+    record["stream_sequence"] = 2
+    snapshot_store.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    remaining_indexes = list(channel_root.glob("* 概要.md"))
+    assert len(remaining_indexes) == 1
+    assert "新タイトル" in remaining_indexes[0].name
+    assert not old_index.exists()
+
+
 def test_export_preserves_human_created_legacy_base(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     output_root = tmp_path / "Discord Context"
