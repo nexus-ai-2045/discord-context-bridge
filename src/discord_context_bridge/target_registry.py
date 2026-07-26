@@ -43,7 +43,11 @@ def load_target_registry(path: Path = DEFAULT_TARGET_REGISTRY_STORE) -> list[dic
     if not path.exists():
         return []
     entries: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # `str.splitlines()` は U+2028/U+2029/U+0085 等の Unicode 行区切りも分割対象にし、
+    # label 等にそれらを含む ledger 行を途中で分断する (json.dumps ensure_ascii=False
+    # はこれらをエスケープしない)。NDJSON は "\n" 区切りの契約なので "\n" だけで区切る。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             entries.append(dict(json.loads(line)))
     return entries

@@ -208,3 +208,22 @@ def test_entry_without_url_matches_schema(tmp_path):
     register_target(target_key="title-key", key_scheme="title_fallback_16", path=path)
     entry = load_target_registry(path)[0]
     validate_artifact(entry, SCHEMA_NAME)
+
+
+def test_load_target_registry_preserves_unicode_line_separators_in_labels(tmp_path):
+    # json.dumps(ensure_ascii=False) は U+2028/U+2029/U+0085 をエスケープせず
+    # 生のまま書くため、読込側が splitlines() だと ledger 1 行が分断される。
+    path = tmp_path / "targets.ndjson"
+    label = "before\u2028mid\u0085tail\u2029end"
+    register_target(
+        target_key="abc123",
+        key_scheme="url_hash_16",
+        url="https://x",
+        channel_label=label,
+        path=path,
+    )
+
+    entries = load_target_registry(path)
+
+    assert len(entries) == 1
+    assert entries[0]["channel_label"] == label
