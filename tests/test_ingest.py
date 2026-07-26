@@ -523,6 +523,52 @@ def test_secrets_are_redacted_before_storage(tmp_path):
     assert "[discord token omitted]" in stored_text
 
 
+def test_captured_at_preserves_payload_timestamp_not_ingest_time(tmp_path):
+    """P1: payload の captured_at を ingest 時刻で上書きし capture 時刻を破壊していた
+    (codex review #4)。payload 側 captured_at を保持し、ingested_at とは区別する。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    original_captured_at = "2020-01-01T00:00:00+00:00"
+    payload = dict(VISIBLE_MESSAGE_RECORD, captured_at=original_captured_at)
+
+    result = ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is True
+    record = load_text_snapshots(snapshot_store)[0]
+    assert record["captured_at"] == original_captured_at
+    assert record["observed_at"] == original_captured_at
+    assert record["time"] == original_captured_at
+    assert record["ingested_at"] != original_captured_at
+    assert record["ingested_at"]
+
+
+def test_captured_at_falls_back_to_now_when_payload_omits_it(tmp_path):
+    """captured_at が payload に無い場合は ingest 時刻へフォールバックする (情報欠落なし)。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    payload = {k: v for k, v in VISIBLE_MESSAGE_RECORD.items() if k != "captured_at"}
+
+    result = ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is True
+    record = load_text_snapshots(snapshot_store)[0]
+    assert record["captured_at"]
+    assert record["time"] == record["captured_at"]
+    assert record["ingested_at"]
+
+
+def test_raw_capture_top_level_captured_at_is_preserved(tmp_path):
+    """dcb.raw_capture.v1 は top-level captured_at を持つ (メッセージ個別ではない)。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+
+    ingest_capture(RAW_CAPTURE, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+    record = load_text_snapshots(snapshot_store)[0]
+
+    assert record["captured_at"] == RAW_CAPTURE["captured_at"]
+    assert record["ingested_at"] != RAW_CAPTURE["captured_at"]
+
+
 def test_chain_continues_after_legacy_row_without_event_hash(tmp_path):
     """H2: event_hash 無し legacy 行の直後でも previous_event_hash が canonical_event_hash
     フォールバックでチェーン連続する (core.py:2031 と揃える)。"""

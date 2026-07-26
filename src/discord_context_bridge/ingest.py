@@ -107,7 +107,9 @@ def _require_consistent_identity(rows: list[dict[str, Any]], key: str) -> None:
     _require(len(distinct_values) <= 1, "ndjson_batch_mixed_target")
 
 
-def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
+def _messages_from_flat_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
     """`dcb.visible_message_record.v1` / `dcb.incremental_visible_message.v1` 用アダプタ。
 
     実 capture artifact はネスト `message` object ではなくフラットな 1 行 1
@@ -123,14 +125,15 @@ def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str,
     title = _first_nonempty(rows, "title")
     source_hint = _first_nonempty(rows, "source") or "visible_text"
     stream_id_hint = _first_nonempty(rows, "stream_id")
-    return messages, url, title, source_hint, target_key_hint, stream_id_hint
+    captured_at_hint = _first_nonempty(rows, "captured_at")
+    return messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint
 
 
 def _messages_from_payload(
     payload: dict[str, Any],
-) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
+) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
     """単一 payload dict から (messages, url, title, source_hint, target_key_hint,
-    stream_id_hint) を取り出す。"""
+    stream_id_hint, captured_at_hint) を取り出す。"""
     schema = payload.get("schema")
     if schema == "dcb.raw_capture.v1":
         raw_messages = payload.get("messages")
@@ -140,7 +143,8 @@ def _messages_from_payload(
         url = str(payload.get("source_url") or "").strip()
         title = str(payload.get("channel_or_thread_title") or "").strip()
         source_hint = str(payload.get("capture_method") or "source_command")
-        return messages, url, title, source_hint, "", ""
+        captured_at_hint = str(payload.get("captured_at") or "").strip()
+        return messages, url, title, source_hint, "", "", captured_at_hint
 
     if schema in FLAT_MESSAGE_SCHEMAS:
         return _messages_from_flat_rows([payload])
@@ -148,7 +152,7 @@ def _messages_from_payload(
     raise IngestValidationError("adapter_not_implemented")
 
 
-def _messages_from_batch(rows: list[Any]) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
+def _messages_from_batch(rows: list[Any]) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
     """NDJSON 複数行 (`list[dict]`) を 1 バッチとして扱うアダプタ。"""
     _require(bool(rows) and all(isinstance(row, dict) for row in rows), "payload_must_be_object")
     schemas = {row.get("schema") for row in rows}
@@ -258,13 +262,17 @@ def ingest_capture(
     if isinstance(payload, list):
         schema = _batch_schema_hint(payload)
         try:
-            messages, url, title, source_hint, target_key_hint, stream_id_hint = _messages_from_batch(payload)
+            messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint = (
+                _messages_from_batch(payload)
+            )
         except IngestValidationError as exc:
             return _error_result(schema=schema, apply=apply, reason=str(exc))
     elif isinstance(payload, dict):
         schema = payload.get("schema")
         try:
-            messages, url, title, source_hint, target_key_hint, stream_id_hint = _messages_from_payload(payload)
+            messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint = (
+                _messages_from_payload(payload)
+            )
         except IngestValidationError as exc:
             return _error_result(schema=schema, apply=apply, reason=str(exc))
     else:
@@ -297,7 +305,13 @@ def ingest_capture(
     )
     previous_content_hash = str(last_record.get("content_hash") or "") if last_record else None
 
-    captured_at = utc_now()
+    # payload 側の captured_at (capture 時刻) を ingest 時刻で上書きすると、
+    # 遅延 ingest 時に元の観測時刻が失われ freshness 判定・時系列 projection を
+    # 壊す (codex review #4)。capture_timestamp は capture 時刻 (payload 由来、
+    # 無ければ ingest 時刻へフォールバック) を、ingest_timestamp は常に「今」の
+    # ingest metadata を別々に持つ。
+    capture_timestamp = captured_at_hint or utc_now()
+    ingest_timestamp = utc_now()
     new_events: list[dict[str, Any]] = []
     duplicates = 0
 
@@ -323,7 +337,7 @@ def ingest_capture(
         event: dict[str, Any] = {
             "schema": "discord_context_bridge_text_snapshot_observation.v1",
             "event_id": stable_text_hash(
-                "|".join([captured_at, target_key, content_hash, source_hint, str(stream_sequence)])
+                "|".join([capture_timestamp, target_key, content_hash, source_hint, str(stream_sequence)])
             ),
             "event_type": "message_observation",
             "stream_id": target_key,
@@ -332,12 +346,12 @@ def ingest_capture(
             "specversion": "1.0",
             "type": "message_observation",
             "subject": target_key,
-            "time": captured_at,
+            "time": capture_timestamp,
             "datacontenttype": "text/plain; charset=utf-8",
             "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
-            "captured_at": captured_at,
-            "observed_at": captured_at,
-            "ingested_at": captured_at,
+            "captured_at": capture_timestamp,
+            "observed_at": capture_timestamp,
+            "ingested_at": ingest_timestamp,
             "source": source_hint,
             "url": url,
             "title": title,
