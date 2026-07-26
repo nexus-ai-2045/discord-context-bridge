@@ -153,6 +153,22 @@ def test_register_target_without_url_uses_title_fallback(tmp_path):
     assert resolved["channel_label"] == "general"
 
 
+def test_register_target_url_omission_is_not_treated_as_url_change(tmp_path):
+    """P2: 既存 target に URL 登録済みの時、URL 無し candidate を「URL 変更」と誤判定して
+    null-URL の補完行を無駄に追記しない (URL 省略は「更新なし」として扱う)。"""
+    path = tmp_path / "targets.ndjson"
+    register_target(target_key="abc123", key_scheme="url_hash_16", url="https://x", path=path)
+
+    result = register_target(target_key="abc123", key_scheme="url_hash_16", url=None, path=path)
+
+    assert result["registered"] is False
+    assert result["reason"] == "already_registered"
+    entries = load_target_registry(path)
+    assert len(entries) == 1
+    resolved = resolve_target("abc123", path)
+    assert resolved["url"] == "https://x"
+
+
 def test_safe_target_label_never_includes_url(tmp_path):
     path = tmp_path / "targets.ndjson"
     url = "https://discord.com/channels/999/888/777"
