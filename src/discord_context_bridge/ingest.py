@@ -24,9 +24,10 @@ dedupe は message_id 単位 (`duplicate_message_id`) と本文単位
 append-only ledger には必ず追記する (保存を止めない)。取込時に
 target_registry へ自動 upsert する。
 
-target 識別は target_key (明示フィールド) > url > title > 正規化済み本文
-の優先順で決める (`docs/operating-contract.md` の `target` 手順、
-`core.snapshot_visible_text` と同じ導出)。
+target 識別は target_key (明示フィールド) > url > title > stream_id >
+正規化済み本文 の優先順で決める (`docs/operating-contract.md` の `target`
+手順、`core.snapshot_visible_text` と同じ導出をベースに、stream_id のみを
+持つ実 capture artifact 向けの段を追加している)。
 
 stdout は metadata-only。呼び出し側 (`scripts/ingest_capture.py`) はこの
 モジュールが返す dict をそのまま出力してよい (raw text を含まない)。
@@ -106,7 +107,7 @@ def _require_consistent_identity(rows: list[dict[str, Any]], key: str) -> None:
     _require(len(distinct_values) <= 1, "ndjson_batch_mixed_target")
 
 
-def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str, str, str]:
+def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
     """`dcb.visible_message_record.v1` / `dcb.incremental_visible_message.v1` 用アダプタ。
 
     実 capture artifact はネスト `message` object ではなくフラットな 1 行 1
@@ -115,17 +116,21 @@ def _messages_from_flat_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str,
     """
     messages = [_normalize_message(row) for row in rows]
     _require(len(messages) > 0, "messages_empty")
-    for key in ("target_key", "url", "title"):
+    for key in ("target_key", "url", "title", "stream_id"):
         _require_consistent_identity(rows, key)
     target_key_hint = _first_nonempty(rows, "target_key")
     url = _first_nonempty(rows, "url")
     title = _first_nonempty(rows, "title")
     source_hint = _first_nonempty(rows, "source") or "visible_text"
-    return messages, url, title, source_hint, target_key_hint
+    stream_id_hint = _first_nonempty(rows, "stream_id")
+    return messages, url, title, source_hint, target_key_hint, stream_id_hint
 
 
-def _messages_from_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str, str, str, str]:
-    """単一 payload dict から (messages, url, title, source_hint, target_key_hint) を取り出す。"""
+def _messages_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
+    """単一 payload dict から (messages, url, title, source_hint, target_key_hint,
+    stream_id_hint) を取り出す。"""
     schema = payload.get("schema")
     if schema == "dcb.raw_capture.v1":
         raw_messages = payload.get("messages")
@@ -135,7 +140,7 @@ def _messages_from_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
         url = str(payload.get("source_url") or "").strip()
         title = str(payload.get("channel_or_thread_title") or "").strip()
         source_hint = str(payload.get("capture_method") or "source_command")
-        return messages, url, title, source_hint, ""
+        return messages, url, title, source_hint, "", ""
 
     if schema in FLAT_MESSAGE_SCHEMAS:
         return _messages_from_flat_rows([payload])
@@ -143,7 +148,7 @@ def _messages_from_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
     raise IngestValidationError("adapter_not_implemented")
 
 
-def _messages_from_batch(rows: list[Any]) -> tuple[list[dict[str, Any]], str, str, str, str]:
+def _messages_from_batch(rows: list[Any]) -> tuple[list[dict[str, Any]], str, str, str, str, str]:
     """NDJSON 複数行 (`list[dict]`) を 1 バッチとして扱うアダプタ。"""
     _require(bool(rows) and all(isinstance(row, dict) for row in rows), "payload_must_be_object")
     schemas = {row.get("schema") for row in rows}
@@ -167,9 +172,20 @@ def _fallback_identity_text(messages: list[dict[str, Any]]) -> str:
 
 
 def _target_identity(
-    target_key_hint: str, url: str, title: str, messages: list[dict[str, Any]]
+    target_key_hint: str,
+    url: str,
+    title: str,
+    stream_id_hint: str,
+    messages: list[dict[str, Any]],
 ) -> tuple[str, str]:
-    """(target_key, key_scheme) を返す。target_key > url > title > 本文由来 の順で決める。
+    """(target_key, key_scheme) を返す。
+
+    target_key > url > title > stream_id > 本文由来 の順で決める。実 capture
+    artifact (`dcb.incremental_visible_message.v1`) は target_key/url/title を
+    持たず `stream_id` のみのケースがある。そこで本文ハッシュへフォールバック
+    すると、同一ストリームでもバッチごとに本文が変わるたびに別 target へ分裂
+    してしまう (codex review #8)。stream_id がある時はそれを優先し、
+    `stream_id_hash_16` として登録する。
 
     本文由来 fallback は core.py:2026 (`normalize_message_text` → redact →
     先頭120文字 → hash) と同じ導出にし、`title_fallback_16` とは別の
@@ -181,6 +197,8 @@ def _target_identity(
         return stable_text_hash(url), "url_hash_16"
     if title:
         return stable_text_hash(title), "title_fallback_16"
+    if stream_id_hint:
+        return stable_text_hash(stream_id_hint), "stream_id_hash_16"
     fallback_content = redact_sensitive_storage_text(_fallback_identity_text(messages))
     return stable_text_hash(fallback_content.strip()[:120]), "content_fallback_16"
 
@@ -240,19 +258,19 @@ def ingest_capture(
     if isinstance(payload, list):
         schema = _batch_schema_hint(payload)
         try:
-            messages, url, title, source_hint, target_key_hint = _messages_from_batch(payload)
+            messages, url, title, source_hint, target_key_hint, stream_id_hint = _messages_from_batch(payload)
         except IngestValidationError as exc:
             return _error_result(schema=schema, apply=apply, reason=str(exc))
     elif isinstance(payload, dict):
         schema = payload.get("schema")
         try:
-            messages, url, title, source_hint, target_key_hint = _messages_from_payload(payload)
+            messages, url, title, source_hint, target_key_hint, stream_id_hint = _messages_from_payload(payload)
         except IngestValidationError as exc:
             return _error_result(schema=schema, apply=apply, reason=str(exc))
     else:
         return _error_result(schema=None, apply=apply, reason="payload_must_be_object")
 
-    target_key, key_scheme = _target_identity(target_key_hint, url, title, messages)
+    target_key, key_scheme = _target_identity(target_key_hint, url, title, stream_id_hint, messages)
 
     existing_records = [
         record for record in load_text_snapshots(snapshot_store) if record.get("target_key") == target_key
