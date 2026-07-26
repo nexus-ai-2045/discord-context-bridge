@@ -1567,10 +1567,11 @@ def plan_full_thread_capture(
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
     browser_policy = build_capture_route_policy(browser_route)
-    # visible_dom_available=True は「非対応 browser_route ではない」ことが前提。
-    # 非対応 route との組合せは受理せず、visible_dom を有効な主経路として扱わない (P4-6)。
-    browser_route_supported = browser_policy["primary_read"] != "unsupported"
-    visible_dom_usable = bool(visible_dom_available and browser_route_supported)
+    # visible_dom_available=True は「DOM 走査ができる route」であることが前提。
+    # supported でも DOM 非対応 (rest_backfill / saved_artifacts 等) の route では
+    # visible_dom を有効な主経路として扱わない (P4-6)。
+    browser_route_dom_capable = browser_policy["primary_read"] == "visible_message_dom"
+    visible_dom_usable = bool(visible_dom_available and browser_route_dom_capable)
     full_routes = {
         "rest_backfill": {
             "configured": rest_configured,
@@ -1612,7 +1613,7 @@ def plan_full_thread_capture(
         "raw_export_or_cache_missing",
     ] + (
         ["visible_dom_available_with_unsupported_browser_route"]
-        if visible_dom_available and not browser_route_supported
+        if visible_dom_available and not browser_route_dom_capable
         else []
     )
     next_actions = (

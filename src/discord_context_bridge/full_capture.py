@@ -137,32 +137,51 @@ def _recompute_from_bound_evidence(
 ) -> tuple[dict[str, Any], list[str]]:
     """caller 手書きの flag を信用せず、bound evidence (実データ) から再計算する。
 
-    raw/markdown/ledger の message id 列 (bound evidence) が evidence に含まれる場合は、
+    raw/markdown/ledger の message id 列 (bound evidence) が 3 本すべて揃う場合は、
     `build_reconciliation_evidence` で件数・集合一致・重複を再計算し、caller が別途
-    手書きした同名 flag と矛盾していないかを検査する。id 列が渡されていない場合は
-    再計算材料がないため、従来どおり caller の flag をそのまま使う (後方互換)。
+    手書きした同名 flag と矛盾していないかを検査する。
+
+    id 列が 1 本も無い場合だけ後方互換として caller の flag をそのまま使う。
+    1〜2 本だけの部分的 bound evidence は、再計算を黙って無効化すると
+    「矛盾した id 列を渡しても legacy flag が信用される」抜け穴になるため、
+    `partial_bound_message_id_evidence` を hard blocker として返す。
+
+    添付側は 3 本すべて揃った時だけ再計算する。message id だけを追加した legacy
+    payload の添付 count を空扱いで 0 に上書きし、誤って mismatch にしないため。
     """
 
     message_id_lists = {
         key: _as_id_sequence(evidence, key) for key in _BOUND_MESSAGE_ID_KEYS
     }
-    if any(value is None for value in message_id_lists.values()):
+    present = [key for key, value in message_id_lists.items() if value is not None]
+    if not present:
         return {}, []
+    if len(present) < len(_BOUND_MESSAGE_ID_KEYS):
+        return {}, ["partial_bound_message_id_evidence"]
 
     attachment_id_lists = {
-        key: _as_id_sequence(evidence, key) or [] for key in _BOUND_ATTACHMENT_ID_KEYS
+        key: _as_id_sequence(evidence, key) for key in _BOUND_ATTACHMENT_ID_KEYS
     }
+    attachments_bound = all(value is not None for value in attachment_id_lists.values())
     recomputed = build_reconciliation_evidence(
         raw_message_ids=message_id_lists["raw_message_ids"],
         markdown_message_ids=message_id_lists["markdown_message_ids"],
         ledger_message_ids=message_id_lists["ledger_message_ids"],
-        discovered_attachment_ids=attachment_id_lists["discovered_attachment_ids"],
-        saved_attachment_ids=attachment_id_lists["saved_attachment_ids"],
-        manifest_attachment_ids=attachment_id_lists["manifest_attachment_ids"],
+        discovered_attachment_ids=attachment_id_lists["discovered_attachment_ids"] or [],
+        saved_attachment_ids=attachment_id_lists["saved_attachment_ids"] or [],
+        manifest_attachment_ids=attachment_id_lists["manifest_attachment_ids"] or [],
         attachment_inventory_traversal_complete=bool(
             evidence.get("attachment_inventory_complete")
         ),
     )
+    if not attachments_bound:
+        # 添付 id 列が揃っていない場合、添付ドメインの再計算結果は捨てて
+        # caller の legacy 添付 evidence を保持する。
+        recomputed = {
+            key: value
+            for key, value in recomputed.items()
+            if "attachment" not in key
+        }
     mismatched_keys = [
         key
         for key, value in recomputed.items()
@@ -243,7 +262,9 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("pending_retry")
     if evidence.get("external_actions") != "disabled":
         blockers.append("external_actions_not_disabled")
-    if mismatched_keys:
+    if mismatched_keys == ["partial_bound_message_id_evidence"]:
+        blockers.append("partial_bound_message_id_evidence")
+    elif mismatched_keys:
         blockers.append("evidence_recomputation_mismatch")
 
     hard_blockers = {
@@ -251,6 +272,7 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_schema_invalid",
         "untrusted_evidence_producer",
         "evidence_recomputation_mismatch",
+        "partial_bound_message_id_evidence",
     }
     status = "full" if not blockers else "blocked" if message_count <= 0 or hard_blockers.intersection(blockers) else "partial"
     return {
@@ -258,6 +280,9 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "schema": "discord_full_capture_completion_gate.v1",
         "status": status,
         "full_capture_confirmed": status == "full",
+        # gate 結果自体に capture 紐付けを持たせる。orchestrator が別 run の
+        # gate 結果で run を close するのを防ぐため (PR #32 review P2)。
+        "capture_id": str(evidence.get("capture_id") or ""),
         "route": str(evidence.get("route") or "unknown"),
         "boundaries": {
             "oldest_reached": bool(evidence.get("oldest_reached")),

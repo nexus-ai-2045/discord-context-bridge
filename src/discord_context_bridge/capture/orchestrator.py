@@ -111,12 +111,17 @@ def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> 
         )
         if state != expected or not updated.get("resume_state"):
             raise ValueError(f"invalid transition: {state} + {event_name}")
-        if event_name == "human_approval_granted" and (
-            event_data.get("capture_id") != updated["capture_id"]
-            or not event_data.get("approved_action")
-            or event_data.get("approved_action") != updated.get("pending_approval_action")
-        ):
-            raise ValueError("human approval is not scoped to this capture/action")
+        if event_name == "human_approval_granted":
+            pending_action = updated.get("pending_approval_action")
+            if event_data.get("capture_id") != updated["capture_id"]:
+                raise ValueError("human approval is not scoped to this capture/action")
+            # requested_action を伴わない旧来の pause 経路 (文字列 event) では
+            # pending_approval_action が None になる。この場合は action 一致を
+            # 要求せず resume 可能に保つ (P4-3 の後方互換)。
+            if pending_action is not None and (
+                event_data.get("approved_action") != pending_action
+            ):
+                raise ValueError("human approval is not scoped to this capture/action")
         updated["state"] = updated["resume_state"]
         updated["resume_state"] = None
         updated["blocker"] = None
@@ -149,6 +154,9 @@ def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> 
                 gate.get("status") == "full"
                 and gate.get("full_capture_confirmed") is True
                 and event_data.get("capture_id") == updated["capture_id"]
+                # gate payload 自体の capture 紐付けも要求する。未設定 (旧 gate 結果)
+                # は許容し、値がある場合は run と一致していることを要求する。
+                and gate.get("capture_id", updated["capture_id"]) == updated["capture_id"]
                 and gate.get("outbound_actions") == "disabled"
             ):
                 raise ValueError("gate_full requires a bound strict full-capture result")
@@ -159,10 +167,13 @@ def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> 
         elif state == "gate_evaluating" and event_name == "gate_blocked":
             # evaluate_full_capture が blocked を返した場合は orchestrator を
             # 終端状態 (blocked_closed) に close する (P4-5)。
+            # gate payload 自体に capture 紐付けを要求し、別 run の gate 結果で
+            # この run を close できないようにする (PR #32 review P2)。
             gate = event_data.get("gate")
             if not isinstance(gate, Mapping) or not (
                 gate.get("status") == "blocked"
                 and event_data.get("capture_id") == updated["capture_id"]
+                and gate.get("capture_id") == updated["capture_id"]
             ):
                 raise ValueError("gate_blocked requires a bound blocked full-capture result")
             next_state = "blocked_closed"
