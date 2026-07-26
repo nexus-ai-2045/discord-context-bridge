@@ -446,6 +446,70 @@ def test_malformed_raw_capture_returns_validation_error_without_writing(tmp_path
     assert not snapshot_store.exists()
 
 
+def test_ingest_rejects_raw_capture_message_count_over_budget(tmp_path):
+    """P2: dcb.raw_capture.v1 の schema 上限 (messages maxItems=2000) を ingest でも
+    enforce する (codex review #7)。site_adapter_runtime.MAX_MESSAGES を参照する。"""
+    from discord_context_bridge.site_adapter_runtime import MAX_MESSAGES
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    payload = {
+        "schema": "dcb.raw_capture.v1",
+        "source_url": "https://discord.com/channels/1/1/1",
+        "messages": [
+            {"ordinal": i, "author_label": "A", "visible_timestamp": "t", "body_text": "x"}
+            for i in range(MAX_MESSAGES + 1)
+        ],
+    }
+
+    result = ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "message_limit_exceeded"
+    assert not snapshot_store.exists()
+
+
+def test_ingest_rejects_raw_capture_body_text_over_budget(tmp_path):
+    """P2: 本文 1,000,000 字上限を ingest でも enforce する。"""
+    from discord_context_bridge.site_adapter_runtime import MAX_BODY_TEXT_CHARS
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    payload = {
+        "schema": "dcb.raw_capture.v1",
+        "source_url": "https://discord.com/channels/1/1/1",
+        "messages": [
+            {
+                "ordinal": 0,
+                "author_label": "A",
+                "visible_timestamp": "t",
+                "body_text": "x" * (MAX_BODY_TEXT_CHARS + 1),
+            }
+        ],
+    }
+
+    result = ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "message_body_limit_exceeded"
+    assert not snapshot_store.exists()
+
+
+def test_ingest_rejects_flat_row_body_text_over_budget(tmp_path):
+    """P2: flat message schema 側 (実 capture artifact) でも同じ本文上限を enforce する。"""
+    from discord_context_bridge.site_adapter_runtime import MAX_BODY_TEXT_CHARS
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "targets.ndjson"
+    payload = dict(VISIBLE_MESSAGE_RECORD, body_text="x" * (MAX_BODY_TEXT_CHARS + 1))
+
+    result = ingest_capture(payload, snapshot_store=snapshot_store, registry_store=registry_store, apply=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "message_body_limit_exceeded"
+    assert not snapshot_store.exists()
+
+
 def test_empty_messages_is_a_validation_error(tmp_path):
     """M1: 空 messages + url/title 無しで sha256("")[:16] のゴミ target を登録しない。"""
     snapshot_store = tmp_path / "text-snapshots.ndjson"
