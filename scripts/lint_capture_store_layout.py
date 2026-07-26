@@ -62,7 +62,9 @@ ALLOWED_NESTED_ATTACHMENT_DIR = "by-sha256"
 NO_SCHEMA_CHECK_DIRS = {"archive"}
 # events.ndjson は ADR-0162 Phase 2/3 で単一 ledger へ移行予定の旧形式。
 # schema キー未整備の行が残り得るため、現時点では schema 検査対象外。
-NO_SCHEMA_CHECK_TOP_LEVEL_FILES = {"events.ndjson"}
+# context-library.json は既存 writer (core.py upsert_context_document /
+# save_context_library) の entry 設計上そもそも schema キーを持たない。
+NO_SCHEMA_CHECK_TOP_LEVEL_FILES = {"events.ndjson", "context-library.json"}
 
 KNOWN_SCHEMA_VALUES = {
     "discord_context_bridge_text_snapshot_observation.v1",
@@ -70,6 +72,11 @@ KNOWN_SCHEMA_VALUES = {
     "dcb.raw_capture.v1",
     "dcb.capture_manifest.v1",
     "dcb.lint_capture_store_layout_baseline.v1",
+    # save_review_registry の entry (core.py upsert_review_state)。
+    "discord_review_state.v1",
+    # 許可されている REST-backfill NDJSON (inbox/raw/) の既存 writer 出力
+    # (core.py の REST backfill message ledger)。
+    "discord_rest_backfill_message.v1",
 }
 
 
@@ -196,7 +203,15 @@ def collect_violations(store_root: Path) -> list[dict[str, str]]:
             if payload is None:
                 violations.append({"path": relative_posix, "kind": "missing_schema_key", "detail": "unreadable_json"})
                 continue
-            violations.extend(_schema_violations_for_record(payload, path=relative_posix))
+            if isinstance(payload, list):
+                # save_context_library / save_review_registry はトップレベル JSON
+                # **配列**を書く (核 writer の既存出力形式)。配列全体を単一 record
+                # として検査すると常に record_not_an_object 扱いになるため、
+                # 配列は要素ごとに検査する。
+                for record in payload:
+                    violations.extend(_schema_violations_for_record(record, path=relative_posix))
+            else:
+                violations.extend(_schema_violations_for_record(payload, path=relative_posix))
     return violations
 
 

@@ -23,6 +23,11 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_json_array(path: Path, payload: list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def _build_clean_store(root: Path) -> None:
     _write_ndjson(
         root / "text-snapshots.ndjson",
@@ -211,6 +216,68 @@ def test_path_output_self_report_matches_actual_output(tmp_path):
     written = lint.build_report(store_root=store_root, baseline_path=tmp_path / "baseline.json", write_baseline=True)
     assert "violations" not in written
     assert written["path_output"] == "omitted"
+
+
+def test_context_library_json_array_is_not_flagged_as_violation(tmp_path):
+    """P1: save_context_library はトップレベル JSON 配列を書くが、lint が配列全体を
+    オブジェクト前提で検査して violation 化していた (codex review #2)。context-library.json
+    の entry は schema キーを持たない設計 (core.py upsert_context_document) なので、
+    既存 writer の実際の形式 (schema キー無しの配列) を受け入れる。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_json_array(
+        store_root / "context-library.json",
+        [
+            {
+                "id": "abc",
+                "kind": "channel",
+                "key": "general",
+                "labels": [],
+                "source": "manual",
+                "text": "context text",
+                "summary": "context text",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+    )
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
+
+
+def test_review_registry_json_array_is_not_flagged_as_violation(tmp_path):
+    """P1: save_review_registry も同様にトップレベル JSON 配列を書く。entry は
+    "schema": "discord_review_state.v1" を持つ (core.py upsert_review_state) ので、
+    その値を KNOWN_SCHEMA_VALUES に登録し配列を要素ごとに検査する。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_json_array(
+        store_root / "review-registry.json",
+        [{"schema": "discord_review_state.v1", "id": "abc", "thread_key": "t-1"}],
+    )
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
+
+
+def test_rest_backfill_message_schema_value_is_known(tmp_path):
+    """P1: 許可されている REST-backfill NDJSON は discord_rest_backfill_message.v1 を
+    使うが、KNOWN_SCHEMA_VALUES に無く unknown_schema_value 化していた。"""
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    _write_ndjson(
+        store_root / "inbox" / "raw" / "rest-backfill.ndjson",
+        [{"schema": "discord_rest_backfill_message.v1", "message_id": "m-1"}],
+    )
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
 
 
 def test_ndjson_with_unicode_line_separator_in_value_is_not_split(tmp_path):
