@@ -227,6 +227,40 @@ def test_snapshot_visible_text_redacts_sensitive_values_before_local_storage(tmp
     assert "[discord webhook omitted]" in stored[0]["text"]
 
 
+def test_load_text_snapshots_preserves_unicode_line_separators_in_text(tmp_path):
+    # json.dumps(ensure_ascii=False) は U+2028/U+2029/U+0085 をエスケープせず
+    # 生のまま書くため、読込側が splitlines() だと ledger 1 行が分断される。
+    from discord_context_bridge.core import append_text_snapshot
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    text_with_separators = "line1\u2028line2\u0085line3\u2029line4"
+    append_text_snapshot({"target_key": "t1", "text": text_with_separators}, snapshot_store)
+    append_text_snapshot({"target_key": "t2", "text": "plain"}, snapshot_store)
+
+    stored = load_text_snapshots(snapshot_store)
+
+    assert len(stored) == 2
+    assert stored[0]["text"] == text_with_separators
+    assert stored[1]["target_key"] == "t2"
+
+
+def test_load_snapshot_like_records_preserves_unicode_line_separators_in_text(tmp_path):
+    # splitlines() だと U+2028 入り JSON 行が分断され、断片が plain_text fallback
+    # として silent に別レコード化する (件数も内容も壊れる)。
+    from discord_context_bridge.core import load_snapshot_like_records
+
+    store = tmp_path / "text-snapshots.ndjson"
+    text_with_separator = "before\u2028after"
+    record = {"target_key": "t1", "text": text_with_separator}
+    store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+    records = load_snapshot_like_records(store)
+
+    assert len(records) == 1
+    assert records[0]["text"] == text_with_separator
+    assert records[0].get("source_format") != "plain_text"
+
+
 def test_snapshot_visible_text_redacts_authorization_before_local_storage(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
 
