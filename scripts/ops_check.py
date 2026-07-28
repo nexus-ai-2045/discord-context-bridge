@@ -33,6 +33,9 @@ class CheckResult:
 
 
 DEFAULT_COMMAND_TIMEOUT: float | None = None
+# 全pytestは他の運用チェックと同時に走るため、単独実行時間の約2倍では
+# WindowsのI/O競合時に不足する。2026-07-28のrelease profileで123秒を実測した。
+FULL_TEST_TIMEOUT = 240.0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -267,7 +270,12 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         runtime_skill_sync_command.append("--allow-missing")
     runtime_skill_sync_command.append("--json")
     all_checks = {
-        "テスト": lambda: run_command("テスト", [sys.executable, "-m", "pytest", "tests", "-q"], env=env, timeout=120.0),
+        "テスト": lambda: run_command(
+            "テスト",
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            env=env,
+            timeout=FULL_TEST_TIMEOUT,
+        ),
         "返信文脈契約": lambda: run_command(
             "返信文脈契約",
             [sys.executable, "-m", "pytest", "tests/test_reply_context_contract.py", "-q"],
@@ -386,6 +394,8 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
         args.gh = True
     if args.gh:
         gh_command = [sys.executable, "scripts/gh_guard.py"]
+        if args.profile == "release":
+            gh_command.append("--switch")
         if args.gh_account_only:
             gh_command.append("--account-only")
         checks["GitHub account確認"] = lambda: run_command("GitHub account確認", gh_command, env=env)
@@ -406,7 +416,20 @@ def main() -> int:
     checks = build_checks(args)
     started = time.perf_counter()
     failures: list[CheckResult] = []
-    print("運用チェックを並列で開始します。")
+
+    # 全pytestと個別pytest smokeを同時に起動すると、Windowsではプロセス終了待ちと
+    # I/Oが競合し、テスト本文が成功してもtimeout扱いになることがある。
+    # 全テストを単独で先に通し、残りだけを並列実行する。
+    full_test_check = checks.pop("テスト", None)
+    if full_test_check is not None:
+        print("全テストを単独で開始します。")
+        full_test_result = full_test_check()
+        summarize_result(full_test_result)
+        if not full_test_result.ok:
+            print(f"\n結果: 全テストが失敗しました。合計 {time.perf_counter() - started:.2f}s")
+            return 1
+
+    print("残りの運用チェックを並列で開始します。")
     with ThreadPoolExecutor(max_workers=len(checks)) as executor:
         futures = {executor.submit(check): name for name, check in checks.items()}
         for future in as_completed(futures):

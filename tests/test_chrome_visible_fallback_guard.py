@@ -10,7 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import chrome_visible_fallback_guard
 
 
-TARGET = "https://discord.com/channels/1523174533052235907/1523174533513875568"
+SYNTHETIC_GUILD_ID = "111111111111111111"
+SYNTHETIC_TARGET_CHANNEL_ID = "222222222222222222"
+SYNTHETIC_SIBLING_CHANNEL_ID = "333333333333333333"
+SYNTHETIC_OTHER_GUILD_ID = "444444444444444444"
+SYNTHETIC_OTHER_CHANNEL_ID = "555555555555555555"
+TARGET = (
+    "https://discord.com/channels/"
+    f"{SYNTHETIC_GUILD_ID}/{SYNTHETIC_TARGET_CHANNEL_ID}"
+)
 
 
 def test_guard_claims_existing_exact_target_without_new_tab() -> None:
@@ -40,7 +48,10 @@ def test_guard_reuses_other_discord_tab_instead_of_stopping() -> None:
         open_tabs=[
             {
                 "title": "Discord | other channel",
-                "url": "https://discord.com/channels/111111111111111111/222222222222222222",
+                "url": (
+                    "https://discord.com/channels/"
+                    f"{SYNTHETIC_OTHER_GUILD_ID}/{SYNTHETIC_OTHER_CHANNEL_ID}"
+                ),
                 "tabGroup": "Codex",
             },
             {"title": "Example", "url": "https://example.com"},
@@ -62,12 +73,18 @@ def test_guard_prefers_same_guild_tab_for_navigation() -> None:
         open_tabs=[
             {
                 "title": "Discord | other guild",
-                "url": "https://discord.com/channels/111111111111111111/222222222222222222",
+                "url": (
+                    "https://discord.com/channels/"
+                    f"{SYNTHETIC_OTHER_GUILD_ID}/{SYNTHETIC_OTHER_CHANNEL_ID}"
+                ),
                 "tabGroup": "Codex",
             },
             {
                 "title": "Discord | sibling channel",
-                "url": "https://discord.com/channels/1523174533052235907/999999999999999999",
+                "url": (
+                    "https://discord.com/channels/"
+                    f"{SYNTHETIC_GUILD_ID}/{SYNTHETIC_SIBLING_CHANNEL_ID}"
+                ),
                 "tabGroup": "Other",
             },
         ],
@@ -125,7 +142,7 @@ def test_guard_omits_raw_urls_and_ids_from_cli_json(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0
-    assert "1523174533052235907" not in completed.stdout
-    assert "1523174533513875568" not in completed.stdout
+    assert SYNTHETIC_GUILD_ID not in completed.stdout
+    assert SYNTHETIC_TARGET_CHANNEL_ID not in completed.stdout
     assert TARGET not in completed.stdout
     assert "raw_url_output" in completed.stdout

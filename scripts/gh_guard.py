@@ -14,7 +14,7 @@ EXPECTED_OWNER = "nexus-ai-2045"
 EXPECTED_REPOSITORY = "discord-context-bridge"
 EXPECTED_GIT_AUTHORS = (
     ("nexus-ai-2045", "273569186+nexus-ai-2045@users.noreply.github.com"),
-    ("nexus_ai", "nexus.ai.2045@gmail.com"),
+    ("nexus_ai", "273569186+nexus-ai-2045@users.noreply.github.com"),
 )
 FORBIDDEN_IDENTITIES_ENV = "DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES"
 
