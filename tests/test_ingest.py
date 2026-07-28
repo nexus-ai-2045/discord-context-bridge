@@ -1,3 +1,5 @@
+import pytest
+
 from discord_context_bridge.ingest import ingest_capture
 from discord_context_bridge.core import (
     append_snapshot_like_record,
@@ -526,6 +528,23 @@ def test_empty_messages_is_a_validation_error(tmp_path):
     assert result["reason"] == "messages_empty"
     assert not snapshot_store.exists()
     assert not registry_store.exists()
+
+
+def test_registry_failure_does_not_leave_orphan_snapshot(tmp_path):
+    """target 台帳の更新失敗後に snapshot だけが残る部分更新を防ぐ。"""
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    registry_store = tmp_path / "registry-is-a-directory"
+    registry_store.mkdir()
+
+    with pytest.raises(OSError):
+        ingest_capture(
+            VISIBLE_MESSAGE_RECORD,
+            snapshot_store=snapshot_store,
+            registry_store=registry_store,
+            apply=True,
+        )
+
+    assert not snapshot_store.exists()
 
 
 def test_url_and_title_are_stripped_before_storage(tmp_path):
