@@ -402,8 +402,10 @@ def ingest_capture(
         new_events.append(event)
 
     if apply:
-        for event in new_events:
-            append_text_snapshot(event, snapshot_store)
+        # target 台帳を先に確定する。台帳側の schema / path / permission エラーが
+        # snapshot 追記後に発生すると、registry に解決不能な observation だけが
+        # ledger に残る部分更新になる。target entry が先に残るだけなら後続 ingest
+        # で安全に再利用できるため、registry を precondition として扱う。
         register_target(
             target_key=target_key,
             key_scheme=key_scheme,
@@ -413,6 +415,8 @@ def ingest_capture(
             source_ref=source_ref or None,
             path=registry_store,
         )
+        for event in new_events:
+            append_text_snapshot(event, snapshot_store)
 
     return {
         "schema": "dcb.ingest_result.v1",
