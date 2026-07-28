@@ -194,6 +194,38 @@ def run_context_operating_mode_smoke(env: dict[str, str]) -> CheckResult:
     )
 
 
+def run_capture_store_layout_lint(env: dict[str, str], *, root: Path = ROOT) -> CheckResult:
+    """H6: capture store layout lint (ADR-0162 Phase 1 W4) を ops_check に組み込む。
+
+    設計判断: 初回は `<store-root>/lint-baseline.json` が無いため、既存の
+    レガシー artifact 由来の violation まで一括で fail 対象になってしまう。
+    baseline が存在する時だけ実際に lint を実行して enforce し、baseline が
+    無い場合は「未生成」を情報として返して ok=True にする (`--write-baseline`
+    で明示的に baseline を作るまでは fail させない)。
+    """
+    store_root = root / ".local" / "discord-context-bridge"
+    baseline_path = store_root / "lint-baseline.json"
+    command = [
+        sys.executable,
+        "scripts/lint_capture_store_layout.py",
+        "--store-root",
+        str(store_root),
+        "--baseline",
+        str(baseline_path),
+        "--json",
+    ]
+    if not baseline_path.exists():
+        return CheckResult(
+            "capture store layout lint",
+            True,
+            0.0,
+            command,
+            "lint-baseline.json が未生成のため skip しました。"
+            " `python scripts/lint_capture_store_layout.py --write-baseline` で baseline を作成してください。",
+        )
+    return run_command("capture store layout lint", command, env=env)
+
+
 def smoke_store_paths() -> tuple[Path, Path]:
     run_id = f"{os.getpid()}-{time.time_ns()}"
     smoke_dir = Path(tempfile.gettempdir()) / "discord-context-bridge-smoke"
@@ -330,6 +362,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             ingest_route_policy_command,
             env=env,
         ),
+        "capture store layout lint": lambda: run_capture_store_layout_lint(env),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.profile == "fast":
