@@ -227,6 +227,75 @@ def test_snapshot_visible_text_redacts_sensitive_values_before_local_storage(tmp
     assert "[discord webhook omitted]" in stored[0]["text"]
 
 
+def test_load_text_snapshots_preserves_unicode_line_separators_in_text(tmp_path):
+    # json.dumps(ensure_ascii=False) は U+2028/U+2029/U+0085 をエスケープせず
+    # 生のまま書くため、読込側が splitlines() だと ledger 1 行が分断される。
+    from discord_context_bridge.core import append_text_snapshot
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    text_with_separators = "line1\u2028line2\u0085line3\u2029line4"
+    append_text_snapshot({"target_key": "t1", "text": text_with_separators}, snapshot_store)
+    append_text_snapshot({"target_key": "t2", "text": "plain"}, snapshot_store)
+
+    stored = load_text_snapshots(snapshot_store)
+
+    assert len(stored) == 2
+    assert stored[0]["text"] == text_with_separators
+    assert stored[1]["target_key"] == "t2"
+
+
+def test_load_snapshot_like_records_preserves_unicode_line_separators_in_text(tmp_path):
+    # splitlines() だと U+2028 入り JSON 行が分断され、断片が plain_text fallback
+    # として silent に別レコード化する (件数も内容も壊れる)。
+    from discord_context_bridge.core import load_snapshot_like_records
+
+    store = tmp_path / "text-snapshots.ndjson"
+    text_with_separator = "before\u2028after"
+    record = {"target_key": "t1", "text": text_with_separator}
+    store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+    records = load_snapshot_like_records(store)
+
+    assert len(records) == 1
+    assert records[0]["text"] == text_with_separator
+    assert records[0].get("source_format") != "plain_text"
+
+
+def test_load_events_preserves_unicode_line_separators_in_text_snippet(tmp_path):
+    # append_event も ensure_ascii=False で書くため、splitlines() 読込だと
+    # text_snippet の U+2028 等で event 行が分断される。
+    store = tmp_path / "events.ndjson"
+    snippet = "before\u2028mid\u0085tail\u2029end"
+    event = DiscordEvent(
+        observed_at="2026-07-26T00:00:00+00:00",
+        source="visible_text",
+        guild_label="g",
+        channel_label="c",
+        author_label="a",
+        text_snippet=snippet,
+    )
+    append_event(event, store)
+
+    events = load_events(store)
+
+    assert len(events) == 1
+    assert events[0].text_snippet == snippet
+
+
+def test_load_jsonl_records_preserves_unicode_line_separators(tmp_path):
+    store = tmp_path / "records.ndjson"
+    text_with_separators = "before\u2028mid\u0085tail\u2029end"
+    store.write_text(
+        json.dumps({"text": text_with_separators}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    records = load_jsonl_records(store)
+
+    assert len(records) == 1
+    assert records[0]["text"] == text_with_separators
+
+
 def test_snapshot_visible_text_redacts_authorization_before_local_storage(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
 
@@ -2158,6 +2227,36 @@ def test_thread_capture_plan_selects_chrome_extension_scroll_policy(tmp_path):
     assert policy["route"] == "chrome_extension"
     assert policy["scroll_order"][0] == "scoped_element_dom_scroll"
     assert policy["completion_gate"] == "strict_full_capture_v1"
+
+
+def test_visible_dom_available_with_unsupported_browser_route_is_rejected(tmp_path):
+    plan = plan_full_thread_capture(
+        url="https://discord.com/channels/7/8/9",
+        snapshot_store=tmp_path / "missing.ndjson",
+        visible_dom_available=True,
+        browser_route="unsupported_route_xyz",
+    )
+
+    assert plan["ok"] is False
+    assert plan["state"] == "blocked_missing_full_thread_route"
+    assert plan["route_allocation"]["visible_dom"]["configured"] is False
+    assert "visible_dom_available_with_unsupported_browser_route" in plan["blockers"]
+
+
+def test_visible_dom_available_with_non_dom_route_is_rejected(tmp_path):
+    # supported だが DOM 走査できない route (rest_backfill / saved_artifacts) を
+    # visible_dom の主経路として受理しないこと。
+    for route in ("rest_backfill", "saved_artifacts"):
+        plan = plan_full_thread_capture(
+            url="https://discord.com/channels/7/8/9",
+            snapshot_store=tmp_path / "missing.ndjson",
+            visible_dom_available=True,
+            browser_route=route,
+        )
+
+        assert plan["state"] == "blocked_missing_full_thread_route", route
+        assert plan["route_allocation"]["visible_dom"]["configured"] is False, route
+        assert "visible_dom_available_with_unsupported_browser_route" in plan["blockers"], route
 
 
 def test_cli_thread_capture_plan_detects_rest_env_without_claiming_full_capture(tmp_path, capsys, monkeypatch):

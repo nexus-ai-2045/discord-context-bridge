@@ -277,7 +277,10 @@ def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割し、text にそれらを含む
+    # JSON 行が plain_text fallback へ silent に分断される。"\n" だけで区切る。
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        line = line.rstrip("\r")
         if not line.strip():
             continue
         try:
@@ -793,7 +796,10 @@ def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
     if not path.exists():
         return []
     events: list[DiscordEvent] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             events.append(DiscordEvent.from_dict(json.loads(line)))
     return events
@@ -1271,7 +1277,11 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
     if not path.exists():
         return []
     snapshots: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # `str.splitlines()` は U+2028/U+2029/U+0085 等の Unicode 行区切りも分割対象にし、
+    # text にそれらを含む ledger 行を途中で分断する (json.dumps ensure_ascii=False は
+    # これらをエスケープしない)。NDJSON は "\n" 区切りの契約なので "\n" だけで区切る。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             snapshots.append(dict(json.loads(line)))
     return snapshots
@@ -1567,6 +1577,11 @@ def plan_full_thread_capture(
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
     browser_policy = build_capture_route_policy(browser_route)
+    # visible_dom_available=True は「DOM 走査ができる route」であることが前提。
+    # supported でも DOM 非対応 (rest_backfill / saved_artifacts 等) の route では
+    # visible_dom を有効な主経路として扱わない (P4-6)。
+    browser_route_dom_capable = browser_policy["primary_read"] == "visible_message_dom"
+    visible_dom_usable = bool(visible_dom_available and browser_route_dom_capable)
     full_routes = {
         "rest_backfill": {
             "configured": rest_configured,
@@ -1594,19 +1609,23 @@ def plan_full_thread_capture(
             "role": "既存 export/cache が対象 URL に exact match する場合の主経路",
         },
         "visible_dom": {
-            "configured": visible_dom_available or bool(saved_matches),
+            "configured": visible_dom_usable or bool(saved_matches),
             "required_for_full_thread": True,
             "role": "現在範囲を即時保存後、対象message listを先頭・末尾までDOM走査し、再走査安定を確認する主経路。one-shot DOMだけでは全文証明になりません。",
             "policy": browser_policy,
         },
     }
-    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_available)
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_usable)
     state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
     blockers = [] if primary_available else [
         "rest_backfill_not_configured",
         "private_adapter_not_configured",
         "raw_export_or_cache_missing",
-    ]
+    ] + (
+        ["visible_dom_available_with_unsupported_browser_route"]
+        if visible_dom_available and not browser_route_dom_capable
+        else []
+    )
     next_actions = (
         [
             "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
@@ -2105,7 +2124,10 @@ def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
         if line.strip():
             records.append(dict(json.loads(line)))
     return records

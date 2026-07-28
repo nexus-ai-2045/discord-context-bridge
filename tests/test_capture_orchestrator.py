@@ -103,6 +103,137 @@ def test_auth_and_computer_use_pause_instead_of_auto_fallback() -> None:
         assert run["automatic_fallback_attempted"] is False
 
 
+def test_human_approval_granted_requires_matching_requested_action() -> None:
+    run = new_capture_run("discord:thread", "in_app_browser", "m9")
+    run = advance_capture_run(
+        run,
+        {"type": "human_approval_required", "requested_action": "scoped_wheel_scroll"},
+    )
+    assert run["pending_approval_action"] == "scoped_wheel_scroll"
+
+    with pytest.raises(ValueError, match="not scoped"):
+        advance_capture_run(
+            run,
+            {
+                "type": "human_approval_granted",
+                "capture_id": run["capture_id"],
+                "approved_action": "focused_page_keys",
+            },
+        )
+
+
+def test_human_approval_granted_resumes_when_action_matches() -> None:
+    run = new_capture_run("discord:thread", "in_app_browser", "m9")
+    run = advance_capture_run(
+        run,
+        {"type": "human_approval_required", "requested_action": "scoped_wheel_scroll"},
+    )
+    run = advance_capture_run(
+        run,
+        {
+            "type": "human_approval_granted",
+            "capture_id": run["capture_id"],
+            "approved_action": "scoped_wheel_scroll",
+        },
+    )
+    assert run["state"] == "received"
+    assert run["blocker"] is None
+    assert run["pending_approval_action"] is None
+
+
+def test_actionless_approval_request_stays_resumable() -> None:
+    # requested_action を伴わない旧来の文字列 event 経路でも resume できること。
+    run = new_capture_run("discord:thread", "in_app_browser", "m9")
+    run = advance_capture_run(run, "human_approval_required")
+    assert run["state"] == "paused_human_approval"
+    assert run["pending_approval_action"] is None
+
+    run = advance_capture_run(
+        run,
+        {"type": "human_approval_granted", "capture_id": run["capture_id"]},
+    )
+    assert run["state"] == "received"
+    assert run["blocker"] is None
+
+
+def test_duplicate_blocker_event_is_rejected_instead_of_overwriting() -> None:
+    run = new_capture_run("discord:thread", "in_app_browser", "m9")
+    run = advance_capture_run(
+        run,
+        {"type": "human_approval_required", "requested_action": "scoped_wheel_scroll"},
+    )
+
+    with pytest.raises(ValueError, match="unresolved blocker"):
+        advance_capture_run(
+            run,
+            {"type": "human_approval_required", "requested_action": "focused_page_keys"},
+        )
+
+    with pytest.raises(ValueError, match="unresolved blocker"):
+        advance_capture_run(run, "auth_required")
+
+
+def test_gate_blocked_closes_orchestrator_to_terminal_state() -> None:
+    run = new_capture_run("discord:thread", "chrome_extension", "m9")
+    for event in (
+        "visible_snapshot_saved", "route_ready", "oldest_reached", "latest_reached",
+        "attachment_inventory_complete", "attachments_saved", "reconciled", "stable_rescan_complete",
+    ):
+        run = advance_capture_run(run, event)
+
+    run = advance_capture_run(run, {
+        "type": "gate_blocked",
+        "capture_id": run["capture_id"],
+        "gate": {
+            "status": "blocked",
+            "full_capture_confirmed": False,
+            "capture_id": run["capture_id"],
+        },
+    })
+
+    assert run["state"] == "blocked_closed"
+    assert run["lanes"]["background_full"]["status"] == "blocked"
+    with pytest.raises(ValueError, match="cannot advance terminal state"):
+        advance_capture_run(run, "retry_due")
+
+
+def test_gate_blocked_requires_bound_blocked_result() -> None:
+    run = new_capture_run("discord:thread", "chrome_extension", "m9")
+    for event in (
+        "visible_snapshot_saved", "route_ready", "oldest_reached", "latest_reached",
+        "attachment_inventory_complete", "attachments_saved", "reconciled", "stable_rescan_complete",
+    ):
+        run = advance_capture_run(run, event)
+
+    with pytest.raises(ValueError, match="bound blocked"):
+        advance_capture_run(run, {
+            "type": "gate_blocked",
+            "capture_id": "someone-elses-capture",
+            "gate": {"status": "blocked", "full_capture_confirmed": False},
+        })
+
+
+def test_gate_blocked_rejects_another_runs_gate_payload() -> None:
+    # event 側の capture_id は正しいが、gate payload が別 run のものである場合。
+    run = new_capture_run("discord:thread", "chrome_extension", "m9")
+    for event in (
+        "visible_snapshot_saved", "route_ready", "oldest_reached", "latest_reached",
+        "attachment_inventory_complete", "attachments_saved", "reconciled", "stable_rescan_complete",
+    ):
+        run = advance_capture_run(run, event)
+
+    with pytest.raises(ValueError, match="bound blocked"):
+        advance_capture_run(run, {
+            "type": "gate_blocked",
+            "capture_id": run["capture_id"],
+            "gate": {
+                "status": "blocked",
+                "full_capture_confirmed": False,
+                "capture_id": "another-run-capture",
+            },
+        })
+
+
 def test_reconciliation_uses_sets_order_digests_and_attachment_inventory() -> None:
     evidence = build_reconciliation_evidence(
         raw_message_ids=["1", "2", "3"],
