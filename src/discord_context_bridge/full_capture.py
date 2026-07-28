@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+from .capture.reconcile import build_reconciliation_evidence
 
 
 _ROUTE_ALIASES = {
@@ -111,8 +113,91 @@ def _count(evidence: Mapping[str, Any], key: str) -> int:
     return parsed if parsed >= 0 else 0
 
 
+_BOUND_MESSAGE_ID_KEYS = (
+    "raw_message_ids",
+    "markdown_message_ids",
+    "ledger_message_ids",
+)
+_BOUND_ATTACHMENT_ID_KEYS = (
+    "discovered_attachment_ids",
+    "saved_attachment_ids",
+    "manifest_attachment_ids",
+)
+
+
+def _as_id_sequence(evidence: Mapping[str, Any], key: str) -> list[str] | None:
+    value = evidence.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    return [str(item) for item in value]
+
+
+def _recompute_from_bound_evidence(
+    evidence: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """caller 手書きの flag を信用せず、bound evidence (実データ) から再計算する。
+
+    raw/markdown/ledger の message id 列 (bound evidence) が 3 本すべて揃う場合は、
+    `build_reconciliation_evidence` で件数・集合一致・重複を再計算し、caller が別途
+    手書きした同名 flag と矛盾していないかを検査する。
+
+    id 列が 1 本も無い場合だけ後方互換として caller の flag をそのまま使う。
+    1〜2 本だけの部分的 bound evidence は、再計算を黙って無効化すると
+    「矛盾した id 列を渡しても legacy flag が信用される」抜け穴になるため、
+    `partial_bound_message_id_evidence` を hard blocker として返す。
+
+    添付側は 3 本すべて揃った時だけ再計算する。message id だけを追加した legacy
+    payload の添付 count を空扱いで 0 に上書きし、誤って mismatch にしないため。
+    """
+
+    message_id_lists = {
+        key: _as_id_sequence(evidence, key) for key in _BOUND_MESSAGE_ID_KEYS
+    }
+    present = [key for key, value in message_id_lists.items() if value is not None]
+    if not present:
+        return {}, []
+    if len(present) < len(_BOUND_MESSAGE_ID_KEYS):
+        return {}, ["partial_bound_message_id_evidence"]
+
+    attachment_id_lists = {
+        key: _as_id_sequence(evidence, key) for key in _BOUND_ATTACHMENT_ID_KEYS
+    }
+    attachments_bound = all(value is not None for value in attachment_id_lists.values())
+    recomputed = build_reconciliation_evidence(
+        raw_message_ids=message_id_lists["raw_message_ids"],
+        markdown_message_ids=message_id_lists["markdown_message_ids"],
+        ledger_message_ids=message_id_lists["ledger_message_ids"],
+        discovered_attachment_ids=attachment_id_lists["discovered_attachment_ids"] or [],
+        saved_attachment_ids=attachment_id_lists["saved_attachment_ids"] or [],
+        manifest_attachment_ids=attachment_id_lists["manifest_attachment_ids"] or [],
+        attachment_inventory_traversal_complete=bool(
+            evidence.get("attachment_inventory_complete")
+        ),
+    )
+    if not attachments_bound:
+        # 添付 id 列が揃っていない場合、添付ドメインの再計算結果は捨てて
+        # caller の legacy 添付 evidence を保持する。
+        recomputed = {
+            key: value
+            for key, value in recomputed.items()
+            if "attachment" not in key
+        }
+    mismatched_keys = [
+        key
+        for key, value in recomputed.items()
+        if key in evidence and evidence.get(key) != value
+    ]
+    return recomputed, mismatched_keys
+
+
 def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
     """Fail closed unless boundaries, artifacts, attachments and rescan agree."""
+
+    recomputed, mismatched_keys = _recompute_from_bound_evidence(evidence)
+    if recomputed:
+        merged = dict(evidence)
+        merged.update(recomputed)
+        evidence = merged
 
     message_count = _count(evidence, "message_count")
     raw_count = _count(evidence, "raw_record_count")
@@ -177,14 +262,27 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("pending_retry")
     if evidence.get("external_actions") != "disabled":
         blockers.append("external_actions_not_disabled")
+    if mismatched_keys == ["partial_bound_message_id_evidence"]:
+        blockers.append("partial_bound_message_id_evidence")
+    elif mismatched_keys:
+        blockers.append("evidence_recomputation_mismatch")
 
-    hard_blockers = {"unsupported_capture_route", "evidence_schema_invalid", "untrusted_evidence_producer"}
+    hard_blockers = {
+        "unsupported_capture_route",
+        "evidence_schema_invalid",
+        "untrusted_evidence_producer",
+        "evidence_recomputation_mismatch",
+        "partial_bound_message_id_evidence",
+    }
     status = "full" if not blockers else "blocked" if message_count <= 0 or hard_blockers.intersection(blockers) else "partial"
     return {
         "language": "ja",
         "schema": "discord_full_capture_completion_gate.v1",
         "status": status,
         "full_capture_confirmed": status == "full",
+        # gate 結果自体に capture 紐付けを持たせる。orchestrator が別 run の
+        # gate 結果で run を close するのを防ぐため (PR #32 review P2)。
+        "capture_id": str(evidence.get("capture_id") or ""),
         "route": str(evidence.get("route") or "unknown"),
         "boundaries": {
             "oldest_reached": bool(evidence.get("oldest_reached")),
@@ -203,6 +301,8 @@ def evaluate_full_capture(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "counts_consistent": counts_consistent,
         "attachments_consistent": attachments_consistent,
         "unresolved_gap_count": _count(evidence, "unresolved_gap_count"),
+        "bound_evidence_recomputed": bool(recomputed),
+        "evidence_recomputation_mismatched_keys": mismatched_keys,
         "blockers": blockers,
         "next_action": "context_understanding" if status == "full" else "continue_full_capture",
         "raw_text_returned": False,
