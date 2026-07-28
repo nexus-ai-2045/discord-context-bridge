@@ -27,6 +27,9 @@ from .local_config import (
 from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
 from .full_capture import build_capture_route_policy, evaluate_full_capture
+from .capture.loop import build_capture_status_projection
+from .capture.service import advance_persisted_capture, start_capture_loop
+from .capture.store import CaptureCheckpointStore, CaptureStoreError
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -437,6 +440,45 @@ def build_parser() -> argparse.ArgumentParser:
     full_gate.add_argument("--route", default="", help="evidence内routeを上書きする安全な経路ラベル")
     full_gate.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
     full_gate.set_defaults(handler=_cmd_full_capture_gate)
+
+    capture_loop = sub.add_parser(
+        "capture-loop",
+        help="metadata-only の全文取得 LOOP を開始・前進・確認する",
+    )
+    capture_loop.add_argument("action", choices=["start", "advance", "status"])
+    capture_loop.add_argument(
+        "--store-root",
+        type=Path,
+        default=Path(".local/discord-context-bridge/capture-runs"),
+    )
+    capture_loop.add_argument("--capture-id", default="")
+    capture_loop.add_argument("--target-key", default="", help="出力には表示しません")
+    capture_loop.add_argument(
+        "--route",
+        choices=[
+            "in_app_browser",
+            "chrome_extension",
+            "rest_backfill",
+            "saved_artifacts",
+            "discord_desktop_accessibility",
+        ],
+        default="in_app_browser",
+    )
+    capture_loop.add_argument("--upper-watermark", default="")
+    capture_loop.add_argument(
+        "--scope",
+        choices=["dm", "server_threads", "thread_only"],
+        default="thread_only",
+    )
+    capture_loop.add_argument("--refresh-check", action="store_true")
+    capture_loop.add_argument("--observed-full", action="store_true")
+    capture_loop.add_argument("--scan-pass-budget", type=int, default=2)
+    capture_loop.add_argument("--retry-budget", type=int, default=3)
+    capture_loop.add_argument("--event", default="")
+    capture_loop.add_argument("--event-id", default="")
+    capture_loop.add_argument("--expected-sequence", type=int, default=0)
+    capture_loop.add_argument("--json", action="store_true")
+    capture_loop.set_defaults(handler=_cmd_capture_loop)
 
     reply_context = sub.add_parser("reply-context-plan", help="返信前の起点・対象・直前10件を本文なしで判定する")
     _add_reply_context_args(reply_context)
@@ -1354,6 +1396,62 @@ def _cmd_full_capture_gate(args: argparse.Namespace) -> int:
     payload["route_policy"] = build_capture_route_policy(str(payload.get("route") or "unknown"))
     print(_json(payload))
     return 0 if payload["full_capture_confirmed"] else 2
+
+
+def _cmd_capture_loop(args: argparse.Namespace) -> int:
+    store = CaptureCheckpointStore(args.store_root)
+    try:
+        if args.action == "start":
+            if not args.target_key or not args.upper_watermark:
+                raise CaptureStoreError("startには--target-keyと--upper-watermarkが必要です")
+            result = start_capture_loop(
+                store,
+                args.target_key,
+                args.route,
+                args.upper_watermark,
+                scan_pass_budget=args.scan_pass_budget,
+                retry_budget=args.retry_budget,
+                tag_context={
+                    "scope": args.scope,
+                    "refresh_check": args.refresh_check,
+                    "observed_full": args.observed_full,
+                },
+            )
+        elif args.action == "advance":
+            if not args.capture_id or not args.event or not args.event_id:
+                raise CaptureStoreError(
+                    "advanceには--capture-id、--event、--event-idが必要です"
+                )
+            result = advance_persisted_capture(
+                store,
+                args.capture_id,
+                args.event_id,
+                args.event,
+                expected_sequence=args.expected_sequence,
+            )
+        else:
+            if not args.capture_id:
+                raise CaptureStoreError("statusには--capture-idが必要です")
+            run = store.load_checkpoint(args.capture_id)
+            if run is None:
+                raise CaptureStoreError("capture checkpointが見つかりません")
+            result = build_capture_status_projection(run)
+        print(_json(result))
+        return 0
+    except (CaptureStoreError, ValueError):
+        print(
+            _json(
+                {
+                    "schema": "dcb-capture-loop-error.v1",
+                    "ok": False,
+                    "state": "blocked_closed",
+                    "reason": "capture_loop_operation_failed",
+                    "raw_text_returned": False,
+                    "outbound_actions": "disabled",
+                }
+            )
+        )
+        return 2
 
 
 def _cmd_reply_context_plan(args: argparse.Namespace) -> int:
