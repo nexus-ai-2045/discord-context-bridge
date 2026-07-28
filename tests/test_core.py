@@ -155,7 +155,9 @@ def test_import_visible_text_dry_run_previews_without_writing(tmp_path):
 
 
 def test_plan_discord_url_read_keeps_browser_visible_boundary():
-    plan = plan_discord_url_read("https://discord.com/channels/1464854485779218535/1515372533442937013")
+    plan = plan_discord_url_read(
+        "https://discord.com/channels/111111111111111111/222222222222222222"
+    )
 
     assert plan["ok_to_open"] is True
     assert plan["read_method"] == "browser_visible_text"
@@ -5112,7 +5114,7 @@ def test_gh_guard_accepts_current_nexus_ai_author(monkeypatch):
         "get_git_config",
         lambda key: {
             "user.name": "nexus_ai",
-            "user.email": "nexus.ai.2045@gmail.com",
+            "user.email": "273569186+nexus-ai-2045@users.noreply.github.com",
         }.get(key, ""),
     )
 
