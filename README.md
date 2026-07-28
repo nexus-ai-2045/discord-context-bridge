@@ -98,6 +98,16 @@ python -m discord_context_bridge.cli `
 
 全コマンドと判断状態は[詳細リファレンス](docs/full-reference.md)を参照してください。
 
+### Discord Desktop 通知 metadata probe
+
+通知probeは本文取得ではなく、通知の有無だけを見る補助経路です。
+
+- schema: `discord_notification_delta.v1`
+- Trigger condition: 人間がDiscord通知を1件発生させる
+- Fallback order: Notification Center → Unified Log → Cache.db
+- blocked reason: `no_notification_observed` / `insufficient_metadata`
+- safety: `text_output="omitted"`、`raw_payload_read=false`、`outbound_actions="disabled"`
+
 ## MCP
 
 stdio:
@@ -182,7 +192,7 @@ python scripts/gh_guard.py --json --history-ref HEAD
 
 ## 開発方針
 
-利用者向け文書とPR本文は日本語を既定にします。runtime skillは
+基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。runtime skillは
 `capability/manifest.yaml`と`docs/operating-contract.md`から生成し、
 生成済み`SKILL.md`を直接編集しません。
 
