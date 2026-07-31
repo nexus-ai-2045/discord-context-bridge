@@ -28,7 +28,12 @@ from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .capture.loop import build_capture_status_projection
-from .capture.service import advance_persisted_capture, start_capture_loop
+from .capture.service import (
+    advance_persisted_capture,
+    merge_persisted_capture_window,
+    read_capture_loop_status,
+    start_capture_loop,
+)
 from .capture.store import CaptureCheckpointStore, CaptureStoreError
 
 from .core import (
@@ -445,7 +450,10 @@ def build_parser() -> argparse.ArgumentParser:
         "capture-loop",
         help="metadata-only の全文取得 LOOP を開始・前進・確認する",
     )
-    capture_loop.add_argument("action", choices=["start", "advance", "status"])
+    capture_loop.add_argument(
+        "action",
+        choices=["start", "advance", "observe", "status"],
+    )
     capture_loop.add_argument(
         "--store-root",
         type=Path,
@@ -477,6 +485,12 @@ def build_parser() -> argparse.ArgumentParser:
     capture_loop.add_argument("--event", default="")
     capture_loop.add_argument("--event-id", default="")
     capture_loop.add_argument("--expected-sequence", type=int, default=0)
+    capture_loop.add_argument(
+        "--window-file",
+        type=Path,
+        help="private DOM/cache window JSON。本文はstdoutへ返しません",
+    )
+    capture_loop.add_argument("--expected-window-count", type=int, default=0)
     capture_loop.add_argument("--json", action="store_true")
     capture_loop.set_defaults(handler=_cmd_capture_loop)
 
@@ -1429,16 +1443,29 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 args.event,
                 expected_sequence=args.expected_sequence,
             )
+        elif args.action == "observe":
+            if not args.capture_id or args.window_file is None:
+                raise CaptureStoreError(
+                    "observeには--capture-idと--window-fileが必要です"
+                )
+            if args.window_file.stat().st_size > MAX_INPUT_BYTES:
+                raise CaptureStoreError("window file is too large")
+            observation = json.loads(args.window_file.read_text(encoding="utf-8"))
+            if not isinstance(observation, dict):
+                raise CaptureStoreError("window observation is invalid")
+            result = merge_persisted_capture_window(
+                store,
+                args.capture_id,
+                observation,
+                expected_window_count=args.expected_window_count,
+            )
         else:
             if not args.capture_id:
                 raise CaptureStoreError("statusには--capture-idが必要です")
-            run = store.load_checkpoint(args.capture_id)
-            if run is None:
-                raise CaptureStoreError("capture checkpointが見つかりません")
-            result = build_capture_status_projection(run)
+            result = read_capture_loop_status(store, args.capture_id)
         print(_json(result))
         return 0
-    except (CaptureStoreError, ValueError):
+    except (CaptureStoreError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
         print(
             _json(
                 {

@@ -34,9 +34,11 @@
     "message_list_candidates": [
       "[data-list-id=\"chat-messages\"]",
       "[aria-label*=\"Messages\"]",
+      "[role=\"list\"][aria-label$=\"のメッセージ\"]",
       "[role=\"log\"]"
     ],
     "message_item_candidates": [
+      "li[id^=\"chat-messages-\"]",
       "[id^=\"chat-messages-\"]",
       "[class*=\"messageListItem\"]",
       "[role=\"article\"]"
@@ -65,6 +67,27 @@
       "[class*=\"repliedMessage\"]",
       "[class*=\"replying\"]"
     ]
+  },
+  "virtual_scroll": {
+    "canonical_identity": "discord_message_id",
+    "message_id_source": "chat-messages-<channel_id>-<message_id>",
+    "content_hash_role": "version_detection_only",
+    "scroll_container_resolution": "nearest_ancestor_with_scrollable_overflow_y",
+    "scrollable_overflow_y": [
+      "auto",
+      "scroll",
+      "overlay"
+    ],
+    "window_overlap_required": true,
+    "cache_merge_identity": "discord_message_id",
+    "missing_message_id": "block_full_coverage",
+    "stable_rescan": {
+      "required_passes": 2,
+      "same_ordered_message_digest": true,
+      "same_first_last_message_id": true,
+      "final_pass_new_message_ids": 0
+    },
+    "public_output": "metadata_only"
   },
   "required_extraction_fields": [
     "source_url",

@@ -124,6 +124,12 @@ class CaptureCheckpointStore:
     def ledger_path(self, capture_id: str) -> Path:
         return self.root / "events" / f"{_safe_capture_id(capture_id)}.ndjson"
 
+    def coverage_path(self, capture_id: str) -> Path:
+        return self.root / "coverage" / f"{_safe_capture_id(capture_id)}.json"
+
+    def message_ledger_path(self, capture_id: str) -> Path:
+        return self.root / "message-ledgers" / f"{_safe_capture_id(capture_id)}.json"
+
     @contextmanager
     def transition_lock(self, capture_id: str):
         """Use a crash-released, non-blocking OS lock for one capture."""
@@ -211,6 +217,97 @@ class CaptureCheckpointStore:
         if next_sequence < current_sequence:
             raise SequenceConflictError("checkpoint sequence cannot move backwards")
         _atomic_json(self.checkpoint_path(capture_id), payload)
+        return payload
+
+    def load_coverage(self, capture_id: str) -> dict[str, Any] | None:
+        path = self.coverage_path(capture_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CheckpointCorruptError("coverage checkpoint is unreadable") from error
+        if not isinstance(payload, dict):
+            raise CheckpointCorruptError("coverage checkpoint root is invalid")
+        if payload.get("schema") != "dcb-virtual-scroll-coverage.v1":
+            raise CheckpointCorruptError("coverage checkpoint schema is invalid")
+        if payload.get("capture_id") != capture_id:
+            raise CheckpointCorruptError("coverage checkpoint binding is invalid")
+        windows = payload.get("windows")
+        messages = payload.get("messages")
+        if not isinstance(windows, list) or not isinstance(messages, dict):
+            raise CheckpointCorruptError("coverage checkpoint structure is invalid")
+        if payload.get("raw_text_returned") is not False:
+            raise CheckpointCorruptError("coverage checkpoint exposes raw text")
+        if payload.get("outbound_actions") != "disabled":
+            raise CheckpointCorruptError("coverage checkpoint enables outbound actions")
+        return payload
+
+    def save_coverage(
+        self,
+        coverage: Mapping[str, Any],
+        *,
+        expected_window_count: int,
+    ) -> dict[str, Any]:
+        capture_id = _safe_capture_id(coverage.get("capture_id"))
+        current = self.load_coverage(capture_id)
+        current_count = len(current.get("windows", [])) if current else 0
+        if current_count != expected_window_count:
+            raise SequenceConflictError(
+                "coverage window count conflict: "
+                f"expected {expected_window_count}, found {current_count}"
+            )
+        payload = dict(coverage)
+        next_count = len(payload.get("windows", []))
+        if next_count < current_count:
+            raise SequenceConflictError("coverage window count cannot move backwards")
+        _atomic_json(self.coverage_path(capture_id), payload)
+        return payload
+
+    def load_message_ledger(self, capture_id: str) -> dict[str, Any] | None:
+        path = self.message_ledger_path(capture_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CheckpointCorruptError("message ledger is unreadable") from error
+        if not isinstance(payload, dict):
+            raise CheckpointCorruptError("message ledger root is invalid")
+        if payload.get("schema") != "dcb-private-message-event-ledger.v1":
+            raise CheckpointCorruptError("message ledger schema is invalid")
+        if payload.get("capture_id") != capture_id:
+            raise CheckpointCorruptError("message ledger capture binding is invalid")
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise CheckpointCorruptError("message ledger events are invalid")
+        if [event.get("sequence") for event in events if isinstance(event, dict)] != list(
+            range(1, len(events) + 1)
+        ):
+            raise CheckpointCorruptError("message ledger sequence is not contiguous")
+        if payload.get("outbound_actions") != "disabled":
+            raise CheckpointCorruptError("message ledger enables outbound actions")
+        return payload
+
+    def save_message_ledger(
+        self,
+        ledger: Mapping[str, Any],
+        *,
+        expected_sequence: int,
+    ) -> dict[str, Any]:
+        capture_id = _safe_capture_id(ledger.get("capture_id"))
+        current = self.load_message_ledger(capture_id)
+        current_sequence = len(current.get("events", [])) if current else 0
+        if current_sequence != expected_sequence:
+            raise SequenceConflictError(
+                "message ledger sequence conflict: "
+                f"expected {expected_sequence}, found {current_sequence}"
+            )
+        payload = dict(ledger)
+        next_sequence = len(payload.get("events", []))
+        if next_sequence < current_sequence:
+            raise SequenceConflictError("message ledger cannot move backwards")
+        _atomic_json(self.message_ledger_path(capture_id), payload)
         return payload
 
     def load_events(self, capture_id: str) -> list[dict[str, Any]]:

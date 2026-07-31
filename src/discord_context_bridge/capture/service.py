@@ -12,6 +12,12 @@ from .loop import (
     new_capture_loop,
 )
 from .store import CaptureCheckpointStore, SequenceConflictError
+from .virtual_scroll import merge_capture_window, new_virtual_scroll_coverage
+from .message_ledger import (
+    append_message_event,
+    build_capture_projections,
+    new_message_ledger,
+)
 
 
 def _event_digest(event: str | Mapping[str, Any]) -> str:
@@ -38,6 +44,204 @@ def start_capture_loop(
             return build_capture_status_projection(existing)
         store.save_checkpoint(run, expected_sequence=0)
         return build_capture_status_projection(run)
+
+
+def _coverage_projection(coverage: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "window_count": len(coverage.get("windows") or []),
+        "unique_message_count": int(coverage.get("unique_message_count") or 0),
+        "duplicate_observation_count": int(
+            coverage.get("duplicate_observation_count") or 0
+        ),
+        "edited_message_count": int(coverage.get("edited_message_count") or 0),
+        "invalid_observation_count": int(
+            coverage.get("invalid_observation_count") or 0
+        ),
+        "gap_count": int(coverage.get("gap_count") or 0),
+        "coverage_connected": bool(coverage.get("coverage_connected")),
+        "oldest_reached": bool(coverage.get("oldest_reached")),
+        "latest_reached": bool(coverage.get("latest_reached")),
+        "stable_scan_passes": int(coverage.get("stable_scan_passes") or 0),
+        "final_pass_new_message_count": coverage.get(
+            "final_pass_new_message_count"
+        ),
+        "capture_stable_after_rescan": bool(
+            coverage.get("capture_stable_after_rescan")
+        ),
+        "sources": list(coverage.get("sources") or []),
+        "blockers": list(coverage.get("blockers") or []),
+        "cache_first_applied": bool(coverage.get("cache_first_applied")),
+        "initial_cache_message_count": int(
+            coverage.get("initial_cache_message_count") or 0
+        ),
+        "intake_order": list(coverage.get("intake_order") or []),
+    }
+
+
+def read_capture_loop_status(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+) -> dict[str, Any]:
+    run = store.load_checkpoint(capture_id)
+    if run is None:
+        raise SequenceConflictError("capture checkpoint does not exist")
+    result = build_capture_status_projection(run)
+    coverage = store.load_coverage(capture_id)
+    result["coverage"] = _coverage_projection(
+        coverage or new_virtual_scroll_coverage(capture_id)
+    )
+    return result
+
+
+def merge_persisted_capture_window(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    observation: Mapping[str, Any],
+    *,
+    expected_window_count: int,
+) -> dict[str, Any]:
+    """Merge one DOM/cache window under the capture transition lock."""
+
+    with store.transition_lock(capture_id):
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise SequenceConflictError("capture checkpoint does not exist")
+        current = store.load_coverage(capture_id)
+        coverage = current or new_virtual_scroll_coverage(capture_id)
+        current_count = len(coverage["windows"])
+        if current_count != expected_window_count:
+            raise SequenceConflictError(
+                "coverage window count conflict: "
+                f"expected {expected_window_count}, found {current_count}"
+            )
+        updated = merge_capture_window(coverage, observation)
+        store.save_coverage(
+            updated,
+            expected_window_count=expected_window_count,
+        )
+        result = build_capture_status_projection(run)
+        result["coverage"] = _coverage_projection(updated)
+        return result
+
+
+def merge_capture_windows_cache_first(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    observations: list[Mapping[str, Any]],
+    *,
+    expected_window_count: int,
+) -> dict[str, Any]:
+    """Persist a batch with local cache observations before live browser windows."""
+
+    cache_sources = {
+        "background_cache",
+        "discord_desktop_cache",
+        "saved_cache",
+        "saved_snapshot",
+    }
+    ordered = sorted(
+        enumerate(observations),
+        key=lambda item: (
+            0 if str(item[1].get("source") or "") in cache_sources else 1,
+            item[0],
+        ),
+    )
+    with store.transition_lock(capture_id):
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise SequenceConflictError("capture checkpoint does not exist")
+        current = store.load_coverage(capture_id)
+        coverage = current or new_virtual_scroll_coverage(capture_id)
+        current_count = len(coverage["windows"])
+        if current_count != expected_window_count:
+            raise SequenceConflictError(
+                "coverage window count conflict: "
+                f"expected {expected_window_count}, found {current_count}"
+            )
+
+        intake_order: list[str] = []
+        cache_message_count = 0
+        for _, observation in ordered:
+            source = str(observation.get("source") or "")
+            coverage = merge_capture_window(coverage, observation)
+            intake_order.append(source)
+            if source in cache_sources:
+                cache_message_count = coverage["unique_message_count"]
+
+        coverage["cache_first_applied"] = True
+        coverage["initial_cache_message_count"] = cache_message_count
+        coverage["intake_order"] = intake_order
+        store.save_coverage(
+            coverage,
+            expected_window_count=expected_window_count,
+        )
+        result = build_capture_status_projection(run)
+        result["coverage"] = _coverage_projection(coverage)
+        return result
+
+
+def append_persisted_message_event(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    event: Mapping[str, Any],
+    *,
+    expected_sequence: int,
+) -> dict[str, Any]:
+    """Append canonical message data under the capture transition lock."""
+
+    with store.transition_lock(capture_id):
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise SequenceConflictError("capture checkpoint does not exist")
+        ledger = store.load_message_ledger(capture_id) or new_message_ledger(
+            capture_id,
+            target_key=str(run["target_digest"]),
+            upper_watermark=str(run["upper_watermark_digest"]),
+        )
+        if len(ledger["events"]) != expected_sequence:
+            raise SequenceConflictError(
+                "message ledger sequence conflict: "
+                f"expected {expected_sequence}, found {len(ledger['events'])}"
+            )
+        updated = append_message_event(ledger, event)
+        store.save_message_ledger(updated, expected_sequence=expected_sequence)
+        return {
+            "capture_id": capture_id,
+            "message_event_sequence": len(updated["events"]),
+            "raw_text_returned": False,
+            "outbound_actions": "disabled",
+        }
+
+
+def rebuild_persisted_capture_projections(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    *,
+    oldest_reached: bool,
+    latest_reached: bool,
+    stable_scan_digests: list[str],
+    saved_attachment_ids: list[str],
+    upper_watermark_reached: bool,
+    unresolved_gap_count: int,
+    pending_retry_count: int,
+    attachment_inventory_complete: bool,
+) -> dict[str, Any]:
+    """Rebuild all views in memory; projection state is never persisted."""
+
+    ledger = store.load_message_ledger(capture_id)
+    if ledger is None:
+        raise SequenceConflictError("message ledger does not exist")
+    return build_capture_projections(
+        ledger,
+        oldest_reached=oldest_reached,
+        latest_reached=latest_reached,
+        stable_scan_digests=stable_scan_digests,
+        saved_attachment_ids=saved_attachment_ids,
+        upper_watermark_reached=upper_watermark_reached,
+        unresolved_gap_count=unresolved_gap_count,
+        pending_retry_count=pending_retry_count,
+        attachment_inventory_complete=attachment_inventory_complete,
+    )
 
 
 def advance_persisted_capture(
