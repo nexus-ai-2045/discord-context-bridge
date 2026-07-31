@@ -13,6 +13,8 @@
 - `no_ocr_for_dcb_text_intake`: OCR / screenshot / vision を Discord 本文取得ルートにしない。
 - `no_clipboard_without_explicit_clipboard_request`: clipboard はユーザーが「clipboard から」と明示した場合だけ読む。
 - `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、`SendKeys`、`AppActivate`、クリック、スクロール、スクショ取得、Chromeを勝手に開く・遷移する操作は、ユーザーの明示許可なしに実行しない。DCB の Chrome visible fallback は、正規 adapter / DOM取得口 / clipboard / local file が使える場合だけ進め、Windows UI 自動操作へ迂回しない。
+- `no_browser_before_dcb_preflight`: Discord URL、Discord画面、チャンネル用途、投稿先、投稿本文、返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache-first、coverage、route判定を通す。`ready_for_bridge` または同等の準備完了と、visible fallbackが次の正規経路であることを確認するまでBrowser操作へ進まない。ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
+- `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
 - Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
 - Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。

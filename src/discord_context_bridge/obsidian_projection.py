@@ -105,7 +105,7 @@ def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -
     target = _target_label(record)
     text = str(record.get("text") or "").strip()
     events = parse_visible_text(text, source=source, observed_at=captured_at or None)
-    status = str(record.get("capture_status") or "partial")
+    status = str(record.get("capture_status") or "unknown")
     lines = [
         "---",
         f"title: {_yaml_string(f'{label} 会話ログ')}",
@@ -204,7 +204,15 @@ def _render_home(entries: list[tuple[str, str]], record_count: int) -> str:
         "## チャンネル\n\n"
         f"{links}\n\n"
         "## 一覧\n\n"
-        "![[Views/Discord取得一覧.base]]\n"
+        "![[Views/Discord取得一覧.base]]\n\n"
+        "## 再生成\n\n"
+        "DCB の取得来歴台帳から、この Markdown 知識面を再生成します。\n"
+        "人間メモは上書きしません。\n\n"
+        "```powershell\n"
+        "python -m discord_context_bridge.cli export-obsidian "
+        "--snapshot-store <DCB_SNAPSHOT_STORE> "
+        "--output-root <OBSIDIAN_OUTPUT_ROOT> --json\n"
+        "```\n"
     )
 
 
