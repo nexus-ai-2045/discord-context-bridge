@@ -4,6 +4,22 @@
 
 Discord Context Bridge（DCB）の既存 Orchestrator、全文取得 gate、observed-full 検証を、再開可能な checkpoint と追記専用 event ledger で接続する。本文や Discord URL は status に返さず、外部送信は行わない。
 
+## Message data SSOT
+
+本文取得データの唯一の正本は
+`dcb-private-message-event-ledger.v1` の追記型event ledgerとする。
+checkpointとvirtual-scroll coverageは運用状態・取得範囲の証拠であり、
+本文正本ではない。
+
+正規化済みthread state、raw projection、Markdown projection、
+attachment manifest、full-capture evidenceは、message event ledgerから
+同じdeterministic reducerで再生成する。projection自体はcapture storeへ
+永続化せず、必要時に再構築する。
+
+`full` は本文データの種類ではない。target binding、upper watermark、
+先頭・末尾到達、安定再走査、message ID集合・順序、attachment集合が
+一致した時点のderived statusである。
+
 ## Plan
 
 - 対象範囲は `dm`、`server_threads`、`thread_only` のいずれかで宣言する。
@@ -34,6 +50,55 @@ discord-context-bridge capture-loop advance `
   --json
 ```
 
+### Chromium仮想リストとbackground cacheの統合
+
+取り込み順はcache-firstとする。保存済みcacheを同期的に先読みして最初の
+文脈を即時構成し、その後のChrome/Chromium可視走査は補完処理として進める。
+両経路はDiscord message IDを正本キーに統合し、到着順が逆でも永続化時には
+cacheからlive DOMの順で評価する。
+
+Discordのmessage listは仮想化されるため、現在DOMの`article`件数を総数として扱わない。
+Chrome側は毎回fresh DOMからmessage ID、content hash、表示順だけをprivate JSONへ保存し、
+`observe`でLOOPへ渡す。本文、実URL、参加者名はstatusへ返さない。
+
+```powershell
+discord-context-bridge capture-loop observe `
+  --capture-id "<opaque capture id>" `
+  --window-file "<private window observation.json>" `
+  --expected-window-count 0 `
+  --json
+```
+
+window observationの最小形:
+
+```json
+{
+  "window_id": "pass-1-window-001",
+  "source": "chrome_visible_dom",
+  "direction": "toward_oldest",
+  "scan_pass": 1,
+  "oldest_reached": false,
+  "latest_reached": false,
+  "messages": [
+    {"message_id": "<private id>", "content_hash": "<private hash>"}
+  ]
+}
+```
+
+background cache collectorはChrome操作と別processで動かしてよい。exact targetに結合できた
+cacheだけを`source=background_cache`として同じ`observe`入口へ渡す。message IDが同じなら
+DOM/cacheの重複で件数を増やさず、content hashが変わった時だけ編集versionを追加する。
+message IDがないrecordを本文hashだけでcanonical dedupeしない。
+
+仮想リストの完了条件:
+
+- window間にmessage ID overlapがあり、coverage graphが連結している。
+- 最古端と最新watermarkを両方観測している。
+- 2回以上のcomplete scanでfirst/last IDと件数が一致する。
+- final passの新規message IDが0件。
+- stable message ID欠落、window overlap gap、未処理cacheが0件。
+- このcoverage成立後も、添付inventoryとraw/Markdown/ledger照合は別gateとして必須。
+
 ## Check
 
 ```powershell
@@ -43,6 +108,7 @@ discord-context-bridge capture-loop status `
 ```
 
 - checkpoint は atomic replace、event ledger は append-only。
+- virtual scroll coverageもatomic checkpointで保存し、window countの楽観lockで並行writerを防ぐ。
 - sequence 不一致、破損、予算超過は fail-closed。
 - `gate_partial` は指定 pass 数を超えて無限再走査しない。
 - observed-full receipt は `api_full.verified=false` の境界を越えない。
