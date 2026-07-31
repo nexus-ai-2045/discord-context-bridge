@@ -630,6 +630,18 @@ def test_codex_discord_ingress_ready_state_is_safe():
     assert "private thread title" not in rendered
 
 
+def test_codex_discord_ingress_has_browser_independent_preflight():
+    payload = codex_discord_ingress_smoke.build_ingress_payload(
+        chrome_opened=False,
+        current_url="https://discord.com/channels/@me",
+        preflight_only=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["stage"] == "ready_for_browser_preflight"
+    assert payload["steps"][-1]["bridge_ready"] is False
+
+
 def test_codex_discord_ingress_waits_for_human_navigation_without_copying_text():
     payload = codex_discord_ingress_smoke.build_ingress_payload(
         chrome_opened=True,
