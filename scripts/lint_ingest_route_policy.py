@@ -27,6 +27,14 @@ REQUIRED_PHRASES = (
     "Chromeを勝手に開く",
     "ユーザーの明示許可なしに実行しない",
     "no_unapproved_visible_ui_automation",
+    "no_browser_before_dcb_preflight",
+    "内部ブラウザやChromeより先にDCB ingress",
+    "ready_for_bridge",
+    "ambient UIのDiscord URLだけを根拠にDCBを迂回しない",
+    "no_visible_read_without_snapshot_closeout",
+    "可視DOMを読んだ場合",
+    "snapshot.saved=true",
+    "保存確認より先に要約",
     "no_ocr_for_dcb_text_intake",
     "no_clipboard_without_explicit_clipboard_request",
     "raw本文は private artifact / local store に保存する",
@@ -75,13 +83,13 @@ def lint_ingest_route_policy(
         "overall": overall,
         "checks": checks,
         "read_only": True,
-        "policy": "Playwright and unapproved visible UI automation are not default ingest routes for Discord context bridge.",
+        "policy": "DCB preflight is required before Discord browser routes; Playwright and unapproved visible UI automation are not default ingest routes.",
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Discord 文脈取得で Playwright を既定経路にしない運用を read-only で確認する"
+        description="Discordブラウザ経路のDCB preflight必須化とPlaywright既定経路禁止をread-onlyで確認する"
     )
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--generated-skills-dir", type=Path, default=DEFAULT_GENERATED_SKILLS)

@@ -25,6 +25,7 @@ from .local_config import (
     resolve_shared_snapshot_root,
 )
 from .obsidian_projection import export_obsidian_projection
+from .knowledge_projection import export_knowledge_projection
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 
 from .core import (
@@ -247,6 +248,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_obsidian.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     export_obsidian.set_defaults(handler=_cmd_export_obsidian)
+
+    export_knowledge = sub.add_parser(
+        "export-knowledge-wiki",
+        help="保存済み snapshot から人物・話題・Knowledge TOP projectionを作る",
+    )
+    export_knowledge.add_argument(
+        "--snapshot-store",
+        type=Path,
+        default=DEFAULT_TEXT_SNAPSHOT_STORE,
+        help="保存済み可視テキスト snapshot のローカルファイル",
+    )
+    export_knowledge.add_argument(
+        "--output-root",
+        type=Path,
+        required=True,
+        help="Obsidian Vault内のprivate Knowledge Wiki出力ディレクトリ",
+    )
+    export_knowledge.add_argument(
+        "--json", action="store_true", help="機械処理用に JSON で出力する"
+    )
+    export_knowledge.add_argument(
+        "--dry-run", action="store_true", help="ファイルを書かず生成予定だけ確認する"
+    )
+    export_knowledge.set_defaults(handler=_cmd_export_knowledge_wiki)
 
     fast_path = sub.add_parser(
         "url-intake-fast-path",
@@ -961,6 +986,37 @@ def _cmd_export_obsidian(args: argparse.Namespace) -> int:
             f"未変更: {result['unchanged_file_count']} / {result['elapsed_ms']} ms"
         )
     return 0
+
+
+def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
+    try:
+        result = export_knowledge_projection(
+            snapshot_store=args.snapshot_store,
+            output_root=args.output_root,
+            dry_run=args.dry_run,
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        result = {
+            "schema": "discord_context_bridge_knowledge_projection.v1",
+            "ok": False,
+            "reason": "projection_read_failed",
+            "message": "投影元または出力先を安全に処理できませんでした。",
+            "outbound_actions": "disabled",
+            "private_local_only": True,
+            "paths_returned": False,
+            "dry_run": args.dry_run,
+        }
+    if args.json:
+        print(_json(result))
+    else:
+        print(result["message"])
+        print(
+            f"人物: {result['projected_person_count']} / "
+            f"話題: {result['projected_topic_count']} / "
+            f"イベント: {result['projected_event_count']} / "
+            f"{result['elapsed_ms']} ms"
+        )
+    return 0 if result["ok"] else 2
 
 
 def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:

@@ -47,8 +47,12 @@ def test_export_uses_latest_snapshot_and_creates_obsidian_views(tmp_path):
     assert result["sqlite_used"] is False
     assert "新しい本文" in rendered
     assert "古い本文" not in rendered
+    assert 'capture_status: "unknown"' in rendered
     assert "^msg-" in rendered
-    assert (output_root / "Discord会話マップ.md").exists()
+    home = (output_root / "Discord会話マップ.md").read_text(encoding="utf-8")
+    assert "## 再生成" in home
+    assert "--snapshot-store <DCB_SNAPSHOT_STORE>" in home
+    assert "--output-root <OBSIDIAN_OUTPUT_ROOT>" in home
     assert (output_root / "Views" / "Discord取得一覧.base").exists()
     assert next(channel_root.glob("* 概要.md")).exists()
 

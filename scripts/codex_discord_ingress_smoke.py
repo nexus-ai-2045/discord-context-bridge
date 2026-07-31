@@ -56,6 +56,7 @@ def build_ingress_payload(
     current_title: str = "",
     human_state: str = "navigating",
     confirm_decision: str = "pending",
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
     location = classify_discord_location(current_url, current_title)
     allowed_human_states = {"navigating", "ready"}
@@ -63,13 +64,14 @@ def build_ingress_payload(
     state_valid = human_state in allowed_human_states and confirm_decision in allowed_decisions
     ready_for_bridge = (
         state_valid
+        and not preflight_only
         and chrome_opened
         and location["is_discord"]
         and human_state == "ready"
         and confirm_decision == "approved"
     )
     blocked_stage = None
-    if not ready_for_bridge:
+    if not ready_for_bridge and not preflight_only:
         if not state_valid:
             blocked_stage = "invalid_ingress_state"
         elif not chrome_opened:
@@ -101,14 +103,24 @@ def build_ingress_payload(
     return {
         "schema": "codex_discord_ingress_smoke.v1",
         "language": "ja",
-        "ok": ready_for_bridge,
-        "stage": "ready_for_bridge" if ready_for_bridge else "blocked",
+        "ok": ready_for_bridge or (preflight_only and state_valid and location["is_discord"]),
+        "stage": (
+            "ready_for_browser_preflight"
+            if preflight_only and state_valid and location["is_discord"]
+            else "ready_for_bridge"
+            if ready_for_bridge
+            else "blocked"
+        ),
         "blocked_stage": blocked_stage,
-        "next_action": next_action_for_state(
-            chrome_opened=chrome_opened,
-            location=location,
-            human_state=human_state,
-            confirm_decision=confirm_decision,
+        "next_action": (
+            "DCB metadata preflight完了後、承認済みの可視ブラウザ経路へ進みます。"
+            if preflight_only and state_valid and location["is_discord"]
+            else next_action_for_state(
+                chrome_opened=chrome_opened,
+                location=location,
+                human_state=human_state,
+                confirm_decision=confirm_decision,
+            )
         ),
         "steps": steps,
         "safety_boundary": {
@@ -131,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-title", default="Discord", help="現在タブtitle。出力には表示しない")
     parser.add_argument("--human-state", choices=["navigating", "ready"], default="navigating")
     parser.add_argument("--confirm-decision", choices=["pending", "approved", "rejected"], default="pending")
+    parser.add_argument("--preflight-only", action="store_true", help="ブラウザ操作前のURL metadata ingressだけを確認する")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -158,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         current_title=args.current_title,
         human_state=args.human_state,
         confirm_decision=args.confirm_decision,
+        preflight_only=args.preflight_only,
     )
     if args.json:
         print(_json(payload))
