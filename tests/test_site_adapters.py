@@ -50,3 +50,21 @@ def test_site_adapter_storage_schemas_are_present_and_private_by_default():
     assert raw_schema["properties"]["safety"]["properties"]["external_share_allowed"]["const"] is False
     assert manifest_schema["properties"]["review_required"]["const"] is True
     assert manifest_schema["properties"]["outbound_actions"]["const"] == "disabled"
+
+
+def test_discord_adapter_models_chromium_virtual_scroll_contract():
+    adapter = load_json("site_adapters/discord.v1.json")
+    selectors = adapter["selectors"]
+    virtual_scroll = adapter["virtual_scroll"]
+
+    assert "[role=\"list\"][aria-label$=\"のメッセージ\"]" in selectors[
+        "message_list_candidates"
+    ]
+    assert "li[id^=\"chat-messages-\"]" in selectors["message_item_candidates"]
+    assert virtual_scroll["canonical_identity"] == "discord_message_id"
+    assert virtual_scroll["scroll_container_resolution"] == (
+        "nearest_ancestor_with_scrollable_overflow_y"
+    )
+    assert virtual_scroll["cache_merge_identity"] == "discord_message_id"
+    assert virtual_scroll["stable_rescan"]["required_passes"] == 2
+    assert virtual_scroll["stable_rescan"]["final_pass_new_message_ids"] == 0
