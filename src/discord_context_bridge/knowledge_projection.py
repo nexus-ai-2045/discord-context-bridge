@@ -6,7 +6,9 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -53,6 +55,42 @@ def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return [entry[1] for entry in latest.values()]
 
 
+def _projection_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    structured: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+    legacy: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if record.get("event_type") != "message_observation":
+            legacy.append(record)
+            continue
+        target = str(record.get("target_key") or record.get("stream_id") or "unknown")
+        message_identity = str(
+            record.get("message_id")
+            or "|".join(
+                [
+                    str(record.get("ordinal") or index),
+                    str(record.get("author_label") or ""),
+                    str(record.get("visible_timestamp") or ""),
+                ]
+            )
+        )
+        sequence = int(record.get("stream_sequence") or index + 1)
+        key = (target, message_identity)
+        previous = structured.get(key)
+        if previous is None or sequence >= previous[0]:
+            structured[key] = (sequence, record)
+    ordered_structured = [
+        item[1]
+        for item in sorted(
+            structured.values(),
+            key=lambda item: (
+                str(item[1].get("target_key") or item[1].get("stream_id") or ""),
+                item[0],
+            ),
+        )
+    ]
+    return [*_latest_by_target(legacy), *ordered_structured]
+
+
 def _extract_topics(text: str) -> list[str]:
     candidates = [
         *(match.group(1).strip() for match in _WIKILINK_PATTERN.finditer(text)),
@@ -60,6 +98,7 @@ def _extract_topics(text: str) -> list[str]:
     ]
     topics: dict[str, str] = {}
     for candidate in candidates:
+        candidate = candidate.rstrip("./-")
         if not candidate:
             continue
         topics.setdefault(candidate.casefold(), candidate)
@@ -78,7 +117,32 @@ def _is_person_candidate(label: str) -> bool:
         return False
     if candidate.startswith(("#", "[[", "-", "*", ">")):
         return False
-    return bool(re.search(r"[A-Za-z一-龥ぁ-んァ-ン]", candidate))
+    return any(
+        unicodedata.category(char).startswith("L")
+        or unicodedata.category(char) == "So"
+        for char in candidate
+    )
+
+
+def _wikilink_alias(value: str) -> str:
+    return value.replace("|", "¦").replace("]", "］")
+
+
+def _time_key(value: str) -> tuple[int, datetime, str]:
+    if not value:
+        return (0, datetime.min.replace(tzinfo=timezone.utc), "")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (1, parsed.astimezone(timezone.utc), value)
+    except ValueError:
+        return (0, datetime.min.replace(tzinfo=timezone.utc), value)
+
+
+def _latest_observed_at(events: Iterable[dict[str, str]]) -> str:
+    values = [event["observed_at"] for event in events if event["observed_at"]]
+    return max(values, key=_time_key) if values else "unknown"
 
 
 def _parse_knowledge_events(
@@ -200,7 +264,9 @@ def _project_file(
     return _write_if_changed(path, content)
 
 
-def _remove_stale_generated(directory: Path, active_names: set[str]) -> int:
+def _remove_stale_generated(
+    directory: Path, active_names: set[str], *, dry_run: bool = False
+) -> int:
     removed = 0
     if not directory.exists():
         return removed
@@ -210,14 +276,15 @@ def _remove_stale_generated(directory: Path, active_names: set[str]) -> int:
         content = path.read_text(encoding="utf-8", errors="replace")
         if GENERATED_MARKER not in content:
             continue
-        path.unlink()
+        if not dry_run:
+            path.unlink()
         removed += 1
     return removed
 
 
 def _render_event(event: dict[str, str]) -> list[str]:
     topics = event["topics"].split("\0") if event["topics"] else []
-    topic_links = ", ".join(f"[[../Topics/{topic_id}.generated|{label}]]" for topic_id, label in (
+    topic_links = ", ".join(f"[[../Topics/{topic_id}.generated|{_wikilink_alias(label)}]]" for topic_id, label in (
         topic.split("\t", 1) for topic in topics
     ))
     return [
@@ -240,10 +307,7 @@ def _render_person(
     *, person_id: str, label: str, events: list[dict[str, str]]
 ) -> str:
     notes_name = f"{person_id}.notes"
-    recorded_at = max(
-        (event["observed_at"] for event in events if event["observed_at"]),
-        default="unknown",
-    )
+    recorded_at = _latest_observed_at(events)
     lines = [
         "---",
         f"title: {_yaml_string(label)}",
@@ -268,7 +332,7 @@ def _render_person(
         "## タイムライン",
         "",
     ]
-    for event in sorted(events, key=lambda item: item["observed_at"], reverse=True):
+    for event in sorted(events, key=lambda item: _time_key(item["observed_at"]), reverse=True):
         lines.extend(_render_event(event))
     return "\n".join(lines).rstrip() + "\n"
 
@@ -280,12 +344,9 @@ def _render_topic(
     events: list[dict[str, str]],
     people: dict[str, str],
 ) -> str:
-    recorded_at = max(
-        (event["observed_at"] for event in events if event["observed_at"]),
-        default="unknown",
-    )
+    recorded_at = _latest_observed_at(events)
     person_links = "\n".join(
-        f"- [[../People/{person_id}.generated|{people[person_id]}]]"
+        f"- [[../People/{person_id}.generated|{_wikilink_alias(people[person_id])}]]"
         for person_id in sorted({event["person_id"] for event in events})
     )
     lines = [
@@ -316,7 +377,7 @@ def _render_topic(
         "## イベント",
         "",
     ]
-    for event in sorted(events, key=lambda item: item["observed_at"], reverse=True):
+    for event in sorted(events, key=lambda item: _time_key(item["observed_at"]), reverse=True):
         lines.extend(
             [
                 f"### {event['observed_at'] or 'unknown'} — {people[event['person_id']]}",
@@ -344,11 +405,11 @@ def _render_generated_top(
     recorded_at: str,
 ) -> str:
     person_links = "\n".join(
-        f"- [[People/{person_id}.generated|{label}]]"
+        f"- [[People/{person_id}.generated|{_wikilink_alias(label)}]]"
         for person_id, label in sorted(people.items(), key=lambda item: item[1].casefold())
     )
     topic_links = "\n".join(
-        f"- [[Topics/{topic_id}.generated|{label}]]"
+        f"- [[Topics/{topic_id}.generated|{_wikilink_alias(label)}]]"
         for topic_id, label in sorted(topics.items(), key=lambda item: item[1].casefold())
     )
     return (
@@ -388,7 +449,7 @@ def _render_review_queue(
         "schema_version: knowledge-wiki/v1\n"
         f"recorded_at: {_yaml_string(recorded_at or 'unknown')}\n"
         "recorded_by: dcb-knowledge-projector\n"
-        f"review_item_count: {unclassified_count}\n"
+        f"review_item_count: {unclassified_count + person_count}\n"
         "private_local_only: true\n"
         "---\n\n"
         "# Review Queue 自動一覧\n\n"
@@ -453,8 +514,19 @@ def export_knowledge_projection(
     *, snapshot_store: Path, output_root: Path, dry_run: bool = False
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    if not snapshot_store.is_file():
+        return {
+            "schema": PROJECTION_SCHEMA,
+            "ok": False,
+            "reason": "snapshot_store_missing",
+            "message": "snapshot台帳を確認できないため投影を中止しました。",
+            "outbound_actions": "disabled",
+            "private_local_only": True,
+            "paths_returned": False,
+            "dry_run": dry_run,
+        }
     records = load_text_snapshots(snapshot_store)
-    latest_records = _latest_by_target(records)
+    latest_records = _projection_records(records)
     people: dict[str, str] = {}
     topics: dict[str, str] = {}
     person_events: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -473,11 +545,27 @@ def export_knowledge_projection(
         )
         source = str(record.get("source") or "unknown")
         content_hash = str(record.get("content_hash") or "")
-        parsed_events = _parse_knowledge_events(
-            str(record.get("text") or ""),
-            source=source,
-            observed_at=observed_at,
-        )
+        if record.get("event_type") == "message_observation":
+            parsed_events = [
+                DiscordEvent.from_dict(
+                    {
+                        "observed_at": observed_at,
+                        "source": source,
+                        "guild_label": "private-local",
+                        "channel_label": "knowledge-projection",
+                        "author_label": str(record.get("author_label") or "unknown"),
+                        "text_snippet": str(record.get("text") or ""),
+                        "confidence": "structured",
+                        "private_surface": True,
+                    }
+                )
+            ]
+        else:
+            parsed_events = _parse_knowledge_events(
+                str(record.get("text") or ""),
+                source=source,
+                observed_at=observed_at,
+            )
         for index, parsed in enumerate(parsed_events, start=1):
             person_label = parsed.author_label.strip() or "unknown"
             person_id = _stable_id(
@@ -571,16 +659,16 @@ def export_knowledge_projection(
             )
         )
 
-    removed_file_count = 0
-    if not dry_run:
-        removed_file_count = _remove_stale_generated(
-            output_root / "People",
-            {f"{person_id}.generated.md" for person_id in people},
-        )
-        removed_file_count += _remove_stale_generated(
-            output_root / "Topics",
-            {f"{topic_id}.generated.md" for topic_id in topics},
-        )
+    removed_file_count = _remove_stale_generated(
+        output_root / "People",
+        {f"{person_id}.generated.md" for person_id in people},
+        dry_run=dry_run,
+    )
+    removed_file_count += _remove_stale_generated(
+        output_root / "Topics",
+        {f"{topic_id}.generated.md" for topic_id in topics},
+        dry_run=dry_run,
+    )
 
     statuses.append(
         _project_file(
@@ -590,14 +678,10 @@ def export_knowledge_projection(
                 topics=topics,
                 event_count=sum(len(events) for events in person_events.values()),
                 unclassified_count=unclassified_count,
-                recorded_at=max(
-                    (
-                        event["observed_at"]
-                        for events in person_events.values()
-                        for event in events
-                        if event["observed_at"]
-                    ),
-                    default="unknown",
+                recorded_at=_latest_observed_at(
+                    event
+                    for events in person_events.values()
+                    for event in events
                 ),
             ),
             dry_run=dry_run,
@@ -621,14 +705,10 @@ def export_knowledge_projection(
             preserve_existing=True,
         )
     )
-    recorded_at = max(
-        (
-            event["observed_at"]
-            for events in person_events.values()
-            for event in events
-            if event["observed_at"]
-        ),
-        default="unknown",
+    recorded_at = _latest_observed_at(
+        event
+        for events in person_events.values()
+        for event in events
     )
     statuses.append(
         _project_file(
@@ -682,11 +762,14 @@ def export_knowledge_projection(
         "projected_person_count": len(people),
         "projected_topic_count": len(topics),
         "unclassified_event_count": unclassified_count,
-        "review_item_count": unclassified_count,
+        "review_item_count": unclassified_count + len(people),
         "written_file_count": statuses.count("written"),
         "planned_file_count": statuses.count("planned"),
         "unchanged_file_count": statuses.count("unchanged"),
         "removed_stale_generated_file_count": removed_file_count,
+        "planned_stale_generated_file_count": (
+            removed_file_count if dry_run else 0
+        ),
         "human_notes_preserved": True,
         "outbound_actions": "disabled",
         "private_local_only": True,

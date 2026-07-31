@@ -989,11 +989,23 @@ def _cmd_export_obsidian(args: argparse.Namespace) -> int:
 
 
 def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
-    result = export_knowledge_projection(
-        snapshot_store=args.snapshot_store,
-        output_root=args.output_root,
-        dry_run=args.dry_run,
-    )
+    try:
+        result = export_knowledge_projection(
+            snapshot_store=args.snapshot_store,
+            output_root=args.output_root,
+            dry_run=args.dry_run,
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        result = {
+            "schema": "discord_context_bridge_knowledge_projection.v1",
+            "ok": False,
+            "reason": "projection_read_failed",
+            "message": "投影元または出力先を安全に処理できませんでした。",
+            "outbound_actions": "disabled",
+            "private_local_only": True,
+            "paths_returned": False,
+            "dry_run": args.dry_run,
+        }
     if args.json:
         print(_json(result))
     else:
@@ -1004,7 +1016,7 @@ def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
             f"イベント: {result['projected_event_count']} / "
             f"{result['elapsed_ms']} ms"
         )
-    return 0
+    return 0 if result["ok"] else 2
 
 
 def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:

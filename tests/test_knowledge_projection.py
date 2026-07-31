@@ -244,7 +244,7 @@ def test_projection_creates_review_queue_and_templater_starters(tmp_path):
         output_root / "Templates" / "Review Decision.md"
     ).read_text(encoding="utf-8")
 
-    assert result["review_item_count"] == 1
+    assert result["review_item_count"] == 2
     assert "話題未分類イベント" in review
     assert "人物同一性" in review
     assert "![[Review Queue.generated]]" in review_home
@@ -376,3 +376,143 @@ def test_export_knowledge_wiki_dry_run_does_not_create_output(tmp_path, capsys):
     assert not output_root.exists()
     assert '"dry_run": true' in output
     assert '"planned_file_count": 11' in output
+
+
+def test_projection_consumes_all_structured_message_observations(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    for sequence, author, text in (
+        (1, "Alice", "first #topic"),
+        (2, "Bob", "second #topic"),
+    ):
+        record = {
+            "event_type": "message_observation",
+            "target_key": "target",
+            "stream_id": "target",
+            "stream_sequence": sequence,
+            "message_id": str(sequence),
+            "author_label": author,
+            "text": text,
+            "captured_at": f"2026-07-31T0{sequence}:00:00+00:00",
+            "source": "structured",
+            "content_hash": str(sequence),
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    assert result["projected_event_count"] == 2
+    assert result["projected_person_count"] == 2
+
+
+def test_projection_missing_ledger_fails_without_removing_pages(tmp_path):
+    output_root = tmp_path / "Knowledge Wiki"
+    existing = output_root / "People" / "person-old.generated.md"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        "---\ndcb_knowledge_generated: true\n---\n", encoding="utf-8"
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=tmp_path / "missing.ndjson",
+        output_root=output_root,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "snapshot_store_missing"
+    assert existing.exists()
+
+
+def test_projection_normalizes_links_topics_times_and_unicode_people(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="김철수: first #release.",
+        content_hash="one",
+        target_key="one",
+    )
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="a]]oops|x: second #release",
+        content_hash="two",
+        target_key="two",
+    )
+    records = [
+        json.loads(line)
+        for line in snapshot_store.read_text(encoding="utf-8").splitlines()
+    ]
+    records[0]["captured_at"] = "2026-07-31T10:00:00+09:00"
+    records[1]["captured_at"] = "2026-07-31T02:00:00+00:00"
+    snapshot_store.write_text(
+        "\n".join(json.dumps(item, ensure_ascii=False) for item in records) + "\n",
+        encoding="utf-8",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+    top = (output_root / "Knowledge TOP.generated.md").read_text(encoding="utf-8")
+    topic = next((output_root / "Topics").glob("*.generated.md")).read_text(
+        encoding="utf-8"
+    )
+
+    assert result["projected_person_count"] == 2
+    assert result["projected_topic_count"] == 1
+    assert "a]]oops|x]]" not in top
+    assert 'recorded_at: "2026-07-31T02:00:00+00:00"' in topic
+
+
+def test_projection_review_count_and_dry_run_stale_removals(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="member-a: first #topic",
+        content_hash="one",
+    )
+    export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+    _append_snapshot(
+        snapshot_store,
+        sequence=2,
+        text="member-b: second #topic",
+        content_hash="two",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+        dry_run=True,
+    )
+
+    assert result["review_item_count"] == 1
+    assert result["planned_stale_generated_file_count"] == 1
+
+
+def test_export_knowledge_wiki_sanitizes_projection_errors(tmp_path, capsys):
+    snapshot_store = tmp_path / "broken.ndjson"
+    snapshot_store.write_text("{broken", encoding="utf-8")
+
+    code = main(
+        [
+            "export-knowledge-wiki",
+            "--snapshot-store",
+            str(snapshot_store),
+            "--output-root",
+            str(tmp_path / "private"),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert code == 2
+    assert '"reason": "projection_read_failed"' in output
+    assert str(snapshot_store) not in output
