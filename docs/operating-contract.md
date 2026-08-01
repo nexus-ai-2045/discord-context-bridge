@@ -110,6 +110,7 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
+- `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
 - 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
 - ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
 - full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。
