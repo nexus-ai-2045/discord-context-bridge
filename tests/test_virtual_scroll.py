@@ -330,6 +330,15 @@ def test_cache_first_batch_ingests_cache_before_browser_regardless_of_arrival_or
         "chrome_visible_dom",
     ]
     assert result["coverage"]["unique_message_count"] == 3
+    assert result["message_event_sequence"] == 4
+    ledger = store.load_message_ledger(started["capture_id"])
+    assert ledger is not None
+    assert [event["source"] for event in ledger["events"]] == [
+        "background_cache",
+        "background_cache",
+        "chrome_visible_dom",
+        "chrome_visible_dom",
+    ]
 
 
 def test_persisted_window_merge_rejects_stale_expected_count(tmp_path) -> None:
@@ -414,4 +423,10 @@ def test_capture_loop_cli_observe_returns_metadata_only(tmp_path, capsys) -> Non
     assert "private-content-hash" not in output
     assert '"window_count": 1' in output
     assert '"unique_message_count": 1' in output
+    assert '"message_event_sequence": 1' in output
     assert '"raw_text_returned": false' in output
+    ledger = CaptureCheckpointStore(store_root).load_message_ledger(
+        started["capture_id"]
+    )
+    assert ledger is not None
+    assert len(ledger["events"]) == 1

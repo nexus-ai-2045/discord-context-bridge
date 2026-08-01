@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from discord_context_bridge.capture.message_ledger import (
     append_message_event,
     build_capture_projections,
@@ -7,6 +9,7 @@ from discord_context_bridge.capture.message_ledger import (
 )
 from discord_context_bridge.capture.service import (
     append_persisted_message_event,
+    merge_persisted_capture_window,
     rebuild_persisted_capture_projections,
     start_capture_loop,
 )
@@ -240,3 +243,235 @@ def test_full_candidate_fails_closed_on_coverage_or_attachment_uncertainty() -> 
     assert projections["evidence"]["unresolved_gap_count"] == 1
     assert projections["evidence"]["pending_retry_count"] == 1
     assert projections["evidence"]["attachment_inventory_complete"] is False
+
+
+def test_window_observation_is_automatically_appended_to_message_ledger(
+    tmp_path,
+) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    started = start_capture_loop(
+        store,
+        "private-target",
+        "chrome_extension",
+        "message-2",
+    )
+
+    result = merge_persisted_capture_window(
+        store,
+        started["capture_id"],
+        {
+            "window_id": "window-1",
+            "source": "chrome_visible_dom",
+            "direction": "toward_latest",
+            "messages": [
+                {"message_id": "message-1", "content_hash": "hash-1"},
+                {"message_id": "message-2", "content_hash": "hash-2"},
+            ],
+        },
+        expected_window_count=0,
+    )
+
+    ledger = store.load_message_ledger(started["capture_id"])
+    assert ledger is not None
+    assert [event["message_id"] for event in ledger["events"]] == [
+        "message-1",
+        "message-2",
+    ]
+    assert result["message_event_sequence"] == 2
+    assert result["raw_text_returned"] is False
+
+
+def test_ledger_projection_uses_overlapping_window_order_not_first_seen(
+    tmp_path,
+) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    started = start_capture_loop(
+        store,
+        "private-target",
+        "chrome_extension",
+        "message-3",
+    )
+    capture_id = started["capture_id"]
+
+    merge_persisted_capture_window(
+        store,
+        capture_id,
+        {
+            "window_id": "later-window",
+            "source": "saved_cache",
+            "direction": "toward_latest",
+            "messages": [
+                {"message_id": "message-2", "content_hash": "hash-2"},
+                {"message_id": "message-3", "content_hash": "hash-3"},
+            ],
+        },
+        expected_window_count=0,
+    )
+    merge_persisted_capture_window(
+        store,
+        capture_id,
+        {
+            "window_id": "earlier-window",
+            "source": "chrome_visible_dom",
+            "direction": "toward_latest",
+            "messages": [
+                {"message_id": "message-1", "content_hash": "hash-1"},
+                {"message_id": "message-2", "content_hash": "hash-2"},
+            ],
+        },
+        expected_window_count=1,
+    )
+
+    rebuilt = rebuild_persisted_capture_projections(
+        store,
+        capture_id,
+        oldest_reached=True,
+        latest_reached=True,
+        stable_scan_digests=["same", "same"],
+        saved_attachment_ids=[],
+        upper_watermark_reached=True,
+        unresolved_gap_count=0,
+        pending_retry_count=0,
+        attachment_inventory_complete=True,
+    )
+
+    assert rebuilt["raw"]["message_ids"] == [
+        "message-1",
+        "message-2",
+        "message-3",
+    ]
+
+
+def test_window_observation_rejects_non_list_attachment_ids(tmp_path) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    started = start_capture_loop(
+        store,
+        "private-target",
+        "chrome_extension",
+        "message-1",
+    )
+
+    with pytest.raises(ValueError, match="attachment_ids"):
+        merge_persisted_capture_window(
+            store,
+            started["capture_id"],
+            {
+                "window_id": "window-1",
+                "source": "chrome_visible_dom",
+                "direction": "toward_latest",
+                "messages": [
+                    {
+                        "message_id": "message-1",
+                        "content_hash": "hash-1",
+                        "attachment_ids": "abc",
+                    }
+                ],
+            },
+            expected_window_count=0,
+        )
+    assert store.load_message_ledger(started["capture_id"]) is None
+    assert store.load_coverage(started["capture_id"]) is None
+
+
+def test_conflicting_window_order_fails_closed() -> None:
+    ledger = new_message_ledger(
+        "capture-1",
+        target_key="private-target",
+        upper_watermark="message-2",
+    )
+    for event in (
+        {
+            **_observed("event-1", 1, "message-1", "hash-1"),
+            "window_id": "window-a",
+            "window_index": 0,
+        },
+        {
+            **_observed("event-2", 2, "message-2", "hash-2"),
+            "window_id": "window-a",
+            "window_index": 1,
+        },
+        {
+            **_observed("event-3", 3, "message-2", "hash-2"),
+            "window_id": "window-b",
+            "window_index": 0,
+        },
+        {
+            **_observed("event-4", 4, "message-1", "hash-1"),
+            "window_id": "window-b",
+            "window_index": 1,
+        },
+    ):
+        ledger = append_message_event(ledger, event)
+
+    projections = build_capture_projections(
+        ledger,
+        oldest_reached=True,
+        latest_reached=True,
+        stable_scan_digests=["same", "same"],
+        saved_attachment_ids=[],
+        upper_watermark_reached=True,
+        unresolved_gap_count=0,
+        pending_retry_count=0,
+        attachment_inventory_complete=True,
+    )
+
+    assert projections["evidence"]["message_order_conflict"] is True
+    assert projections["evidence"]["ordered_message_digest_equal"] is False
+    assert projections["evidence"]["full_candidate"] is False
+
+
+def test_persisted_projection_uses_measured_gap_even_if_caller_reports_zero(
+    tmp_path,
+) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    started = start_capture_loop(
+        store,
+        "private-target",
+        "chrome_extension",
+        "message-4",
+    )
+    capture_id = started["capture_id"]
+    for expected_count, observation in enumerate(
+        (
+            {
+                "window_id": "window-a",
+                "source": "chrome_visible_dom",
+                "direction": "toward_latest",
+                "messages": [
+                    {"message_id": "message-1", "content_hash": "hash-1"},
+                    {"message_id": "message-2", "content_hash": "hash-2"},
+                ],
+            },
+            {
+                "window_id": "window-b",
+                "source": "chrome_visible_dom",
+                "direction": "toward_latest",
+                "messages": [
+                    {"message_id": "message-3", "content_hash": "hash-3"},
+                    {"message_id": "message-4", "content_hash": "hash-4"},
+                ],
+            },
+        )
+    ):
+        merge_persisted_capture_window(
+            store,
+            capture_id,
+            observation,
+            expected_window_count=expected_count,
+        )
+
+    rebuilt = rebuild_persisted_capture_projections(
+        store,
+        capture_id,
+        oldest_reached=True,
+        latest_reached=True,
+        stable_scan_digests=["same", "same"],
+        saved_attachment_ids=[],
+        upper_watermark_reached=True,
+        unresolved_gap_count=0,
+        pending_retry_count=0,
+        attachment_inventory_complete=True,
+    )
+
+    assert rebuilt["evidence"]["unresolved_gap_count"] == 1
+    assert rebuilt["evidence"]["full_candidate"] is False
