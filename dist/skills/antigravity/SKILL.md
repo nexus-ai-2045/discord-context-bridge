@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 546954ee9ba7fc8280e49baa890266c68bfa91b1
+ssot_commit: d3b2eb99a2fd79fa071950e86765eee71d39e789
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: b6b98aafefd7a09d77d553dc475089a18065a954c3b6b5578411d5f985f37dc3
-contract_checksum: b63dee6d9ac3f1a2618dbb849874db15f71368a7242e0689e9e5bdeae1636040
-generated_at: 2026-07-31T09:22:39+00:00
+manifest_checksum: 8b239ebaf9916937b9b3adb08b2330da9b5db39738cdb76c5fbab4fc858761fe
+contract_checksum: 064703f46fc50a3403fe2b5fbd7772031672c348b2592e0be435b6a4fb36acb1
+generated_at: 2026-08-01T07:05:29+00:00
 runtime_target: antigravity
 ---
 
@@ -128,6 +128,7 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
+- `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
 - 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
 - ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
 - full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。
@@ -252,6 +253,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `guide-reply`: 可視テキストと下書きから返信前ガイドを作る
 - `review-draft`: 下書きの文脈適合・トーン・不足前提を確認する
 - `auto-send-preflight`: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
+- `closeout-discord-send`: 人間送信後のmetadata-only記録を閉じ、posted-recordから抽象化した学びをabsorbed-dialogue-routerへ渡すlearning_handoffを返す
 
 ## Verification
 
