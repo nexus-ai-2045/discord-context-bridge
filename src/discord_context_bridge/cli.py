@@ -380,6 +380,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="by_hash",
         help="重複判定方針",
     )
+    coverage.add_argument("--requested-start", default="", help="要求期間の開始。timezone付きISO 8601")
+    coverage.add_argument("--requested-end", default="", help="要求期間の終了。timezone付きISO 8601")
+    coverage.add_argument("--user-confirmed", action="store_true", help="取得範囲をユーザーが確認済み")
+    coverage.add_argument(
+        "--require-summary-ready", action="store_true",
+        help="要約可能ゲートを必須化し、未達なら終了コード2にする",
+    )
+    coverage.add_argument(
+        "--full-capture-receipt", type=Path,
+        help="正規 discord_full_capture_completion_gate.v1 JSON artifact",
+    )
     coverage.set_defaults(handler=_cmd_coverage_report)
 
     full_thread = sub.add_parser(
@@ -1254,8 +1265,14 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
         ai_log_path=args.ai_log,
         source_kind=args.source_kind,
         dedupe_policy=args.dedupe_policy,
+        requested_start=args.requested_start,
+        requested_end=args.requested_end,
+        user_confirmed=args.user_confirmed,
+        full_capture_receipt_path=args.full_capture_receipt,
     )
     print(_json(payload))
+    if args.require_summary_ready:
+        return 0 if payload["acquisition_completion_gate"]["summary_ready"] else 2
     return 0 if payload["coverage"]["exact_coverage"] else 2
 
 
