@@ -1318,6 +1318,17 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     assert closeout["text_returned"] is False
     assert closeout["send_capability"] == "disabled"
     assert closeout["outbound_actions"] == "disabled"
+    assert closeout["learning_handoff"] == {
+        "schema": "discord_post_send_learning_handoff.v1",
+        "required": True,
+        "status": "pending",
+        "route": "absorbed-dialogue-router",
+        "required_inputs": ["posted_record", "abstracted_reply_lesson"],
+        "forbidden_inputs": ["raw_discord_text", "participant_identifiers", "discord_url"],
+        "completion_evidence": "absorbed_dialogue_pointer_or_explicit_hold",
+        "next_action": "posted-recordから再利用可能な返信上の学びだけを抽象化し、absorbed-dialogue-routerへ渡してください。",
+        "outbound_actions": "disabled",
+    }
     assert "423456789012345678" not in serialized
     assert "discord.com/channels" not in serialized
 
@@ -1349,6 +1360,9 @@ def test_build_discord_post_send_closeout_packet_closes_not_sent_without_send_ob
     assert closeout["unread_check_status"] == "not_applicable"
     assert closeout["human_sent_observed"] is False
     assert closeout["raw_discord_text_output"] == "omitted"
+    assert closeout["learning_handoff"]["required"] is False
+    assert closeout["learning_handoff"]["status"] == "not_applicable"
+    assert closeout["learning_handoff"]["route"] == "none"
 
 
 def test_build_discord_post_send_closeout_packet_blocks_not_sent_with_send_observation():
