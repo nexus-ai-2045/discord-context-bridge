@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from hashlib import sha256
+from heapq import heappop, heappush
 import json
 from typing import Any, Mapping, Sequence
 
@@ -76,15 +77,34 @@ def append_message_event(
         raise ValueError("unsupported message event type")
     if source not in _SOURCES:
         raise ValueError("unsupported message event source")
+    attachment_ids = payload.get("attachment_ids", [])
+    if (
+        not isinstance(attachment_ids, list)
+        or any(not str(item).strip() for item in attachment_ids)
+        or len(attachment_ids) != len(set(map(str, attachment_ids)))
+    ):
+        raise ValueError("attachment_ids must be unique non-empty values")
     semantic = {
         "event_id": event_id,
         "sequence": sequence,
         "type": event_type,
         "message_id": message_id,
         "content_hash": content_hash,
-        "attachment_ids": [str(item) for item in payload.get("attachment_ids", [])],
+        "attachment_ids": [str(item) for item in attachment_ids],
         "source": source,
     }
+    if payload.get("window_id") is not None:
+        window_id = str(payload.get("window_id") or "").strip()
+        window_index = payload.get("window_index")
+        if (
+            not window_id
+            or not isinstance(window_index, int)
+            or isinstance(window_index, bool)
+            or window_index < 0
+        ):
+            raise ValueError("window_id and non-negative window_index must agree")
+        semantic["window_id"] = window_id
+        semantic["window_index"] = window_index
     if payload.get("content_ref"):
         semantic["content_ref"] = str(payload["content_ref"])
     for existing in events:
@@ -96,13 +116,6 @@ def append_message_event(
     if sequence != len(events) + 1:
         raise ValueError("message event sequence must be contiguous")
 
-    attachment_ids = payload.get("attachment_ids", [])
-    if (
-        not isinstance(attachment_ids, list)
-        or any(not str(item).strip() for item in attachment_ids)
-        or len(attachment_ids) != len(set(map(str, attachment_ids)))
-    ):
-        raise ValueError("attachment_ids must be unique non-empty values")
     updated = deepcopy(dict(ledger))
     previous_hash = str(events[-1].get("event_hash") or "") if events else ""
     canonical = {
@@ -114,14 +127,55 @@ def append_message_event(
     return updated
 
 
+def _ordered_message_ids(
+    events: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], bool]:
+    first_seen: dict[str, int] = {}
+    edges: dict[str, set[str]] = {}
+    indegree: dict[str, int] = {}
+    windows: dict[str, list[tuple[int, str]]] = {}
+    for event in events:
+        message_id = str(event["message_id"])
+        if message_id not in first_seen:
+            first_seen[message_id] = len(first_seen)
+        edges.setdefault(message_id, set())
+        indegree.setdefault(message_id, 0)
+        window_id = event.get("window_id")
+        window_index = event.get("window_index")
+        if isinstance(window_id, str) and isinstance(window_index, int):
+            windows.setdefault(window_id, []).append((window_index, message_id))
+
+    for rows in windows.values():
+        ordered = [message_id for _, message_id in sorted(rows)]
+        for left, right in zip(ordered, ordered[1:]):
+            if left == right or right in edges[left]:
+                continue
+            edges[left].add(right)
+            indegree[right] += 1
+
+    ready: list[tuple[int, str]] = []
+    for message_id, degree in indegree.items():
+        if degree == 0:
+            heappush(ready, (first_seen[message_id], message_id))
+    result: list[str] = []
+    while ready:
+        _, message_id = heappop(ready)
+        result.append(message_id)
+        for target in sorted(edges[message_id], key=first_seen.__getitem__):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                heappush(ready, (first_seen[target], target))
+    if len(result) != len(first_seen):
+        return sorted(first_seen, key=first_seen.__getitem__), True
+    return result, False
+
+
 def _reduce_messages(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     messages: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
     attachment_ids: set[str] = set()
     for event in events:
         message_id = str(event["message_id"])
         if message_id not in messages:
-            order.append(message_id)
             messages[message_id] = {
                 "message_id": message_id,
                 "version_hashes": [],
@@ -142,9 +196,11 @@ def _reduce_messages(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             attachment_ids.add(attachment_id)
             if attachment_id not in message["attachment_ids"]:
                 message["attachment_ids"].append(attachment_id)
+    ordered_message_ids, message_order_conflict = _ordered_message_ids(events)
     return {
         "messages": messages,
-        "ordered_message_ids": order,
+        "ordered_message_ids": ordered_message_ids,
+        "message_order_conflict": message_order_conflict,
         "attachment_ids": sorted(attachment_ids),
     }
 
@@ -214,6 +270,9 @@ def build_capture_projections(
     message_sets_equal = (
         raw["message_ids"] == markdown["message_ids"] == ordered_ids
     )
+    ordered_message_digest_equal = bool(
+        message_sets_equal and not reduced["message_order_conflict"]
+    )
     attachments_equal = attachments == saved
     evidence = {
         "schema": "dcb-derived-full-capture-evidence.v1",
@@ -226,7 +285,8 @@ def build_capture_projections(
         "stable_scan_count": len(scan_digests),
         "capture_stable_after_rescan": stable_rescan,
         "message_id_sets_equal": message_sets_equal,
-        "ordered_message_digest_equal": message_sets_equal,
+        "message_order_conflict": reduced["message_order_conflict"],
+        "ordered_message_digest_equal": ordered_message_digest_equal,
         "attachment_id_sets_equal": attachments_equal,
         "attachment_inventory_complete": attachment_inventory_complete,
         "unresolved_gap_count": max(int(unresolved_gap_count), 0),
@@ -243,7 +303,7 @@ def build_capture_projections(
             and latest_reached
             and upper_watermark_reached
             and stable_rescan
-            and message_sets_equal
+            and ordered_message_digest_equal
             and attachments_equal
             and attachment_inventory_complete
             and int(unresolved_gap_count) == 0

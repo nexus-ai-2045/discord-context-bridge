@@ -28,6 +28,53 @@ def _event_digest(event: str | Mapping[str, Any]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _append_window_events(
+    ledger: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Append metadata-only message observations in their window-local order."""
+
+    updated = dict(ledger)
+    window_id = str(observation.get("window_id") or "").strip()
+    source = str(observation.get("source") or "").strip()
+    messages = observation.get("messages")
+    if not isinstance(messages, list):
+        return updated
+    for window_index, item in enumerate(messages):
+        if not isinstance(item, Mapping):
+            continue
+        message_id = str(item.get("message_id") or "").strip()
+        content_hash = str(item.get("content_hash") or "").strip()
+        if not message_id or not content_hash:
+            continue
+        identity = {
+            "window_id": window_id,
+            "window_index": window_index,
+            "message_id": message_id,
+            "content_hash": content_hash,
+            "source": source,
+        }
+        event = {
+            "event_id": _event_digest(identity),
+            "sequence": len(updated["events"]) + 1,
+            "type": "message_observed",
+            **identity,
+            "attachment_ids": item.get("attachment_ids", []),
+        }
+        if item.get("content_ref"):
+            event["content_ref"] = str(item["content_ref"])
+        existing = next(
+            (
+                candidate
+                for candidate in updated["events"]
+                if candidate.get("event_id") == event["event_id"]
+            ),
+            None,
+        )
+        updated = append_message_event(updated, existing or event)
+    return updated
+
+
 def start_capture_loop(
     store: CaptureCheckpointStore,
     target_key: str,
@@ -115,12 +162,24 @@ def merge_persisted_capture_window(
                 f"expected {expected_window_count}, found {current_count}"
             )
         updated = merge_capture_window(coverage, observation)
+        ledger = store.load_message_ledger(capture_id) or new_message_ledger(
+            capture_id,
+            target_key=str(run["target_digest"]),
+            upper_watermark=str(run["upper_watermark_digest"]),
+        )
+        current_sequence = len(ledger["events"])
+        updated_ledger = _append_window_events(ledger, observation)
+        store.save_message_ledger(
+            updated_ledger,
+            expected_sequence=current_sequence,
+        )
         store.save_coverage(
             updated,
             expected_window_count=expected_window_count,
         )
         result = build_capture_status_projection(run)
         result["coverage"] = _coverage_projection(updated)
+        result["message_event_sequence"] = len(updated_ledger["events"])
         return result
 
 
@@ -161,9 +220,16 @@ def merge_capture_windows_cache_first(
 
         intake_order: list[str] = []
         cache_message_count = 0
+        ledger = store.load_message_ledger(capture_id) or new_message_ledger(
+            capture_id,
+            target_key=str(run["target_digest"]),
+            upper_watermark=str(run["upper_watermark_digest"]),
+        )
+        current_sequence = len(ledger["events"])
         for _, observation in ordered:
             source = str(observation.get("source") or "")
             coverage = merge_capture_window(coverage, observation)
+            ledger = _append_window_events(ledger, observation)
             intake_order.append(source)
             if source in cache_sources:
                 cache_message_count = coverage["unique_message_count"]
@@ -171,12 +237,14 @@ def merge_capture_windows_cache_first(
         coverage["cache_first_applied"] = True
         coverage["initial_cache_message_count"] = cache_message_count
         coverage["intake_order"] = intake_order
+        store.save_message_ledger(ledger, expected_sequence=current_sequence)
         store.save_coverage(
             coverage,
             expected_window_count=expected_window_count,
         )
         result = build_capture_status_projection(run)
         result["coverage"] = _coverage_projection(coverage)
+        result["message_event_sequence"] = len(ledger["events"])
         return result
 
 
@@ -231,6 +299,8 @@ def rebuild_persisted_capture_projections(
     ledger = store.load_message_ledger(capture_id)
     if ledger is None:
         raise SequenceConflictError("message ledger does not exist")
+    coverage = store.load_coverage(capture_id)
+    measured_gap_count = int(coverage.get("gap_count") or 0) if coverage else 0
     return build_capture_projections(
         ledger,
         oldest_reached=oldest_reached,
@@ -238,7 +308,7 @@ def rebuild_persisted_capture_projections(
         stable_scan_digests=stable_scan_digests,
         saved_attachment_ids=saved_attachment_ids,
         upper_watermark_reached=upper_watermark_reached,
-        unresolved_gap_count=unresolved_gap_count,
+        unresolved_gap_count=max(int(unresolved_gap_count), measured_gap_count),
         pending_retry_count=pending_retry_count,
         attachment_inventory_complete=attachment_inventory_complete,
     )
