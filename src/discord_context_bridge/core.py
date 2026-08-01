@@ -501,7 +501,7 @@ def build_coverage_report(
             "ai_log_match_count": len(ai_matches),
             "exact_coverage": exact_coverage,
             "target_match": exact_coverage,
-            "full_capture_confirmed": False,
+            "full_capture_confirmed": completion_gate["coverage_state"] == "full",
             "full_capture_gate": "strict_full_capture_v1",
         },
         "acquisition_completion_gate": completion_gate,
