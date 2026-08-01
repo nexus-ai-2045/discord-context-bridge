@@ -438,7 +438,13 @@ def build_coverage_report(
     source_kind: str = "saved_log",
     dedupe_policy: str = "by_hash",
     generated_at: str | None = None,
+    requested_start: str = "",
+    requested_end: str = "",
+    user_confirmed: bool = False,
+    full_capture_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
+    from .acquisition_gate import build_acquisition_completion_gate, load_full_capture_receipt
+
     generated = generated_at or utc_now()
     key = target_key or (target_key_for_url(url) if url else "")
     raw_matches = (
@@ -464,6 +470,17 @@ def build_coverage_report(
         "blocked_reason": "url_missing",
         "same_guild_fuzzy_match_allowed": False,
     }
+    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
+    completion_gate = build_acquisition_completion_gate(
+        selected_records,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        freshness_status=str(freshness.get("status") or "unknown"),
+        source_kind=source_kind,
+        user_confirmed=user_confirmed,
+        full_capture_receipt=full_capture_receipt,
+        receipt_load_error=receipt_load_error,
+    )
     return {
         "language": DEFAULT_LANGUAGE,
         "schema": "discord_context_coverage_report.v1",
@@ -488,9 +505,10 @@ def build_coverage_report(
             "ai_log_match_count": len(ai_matches),
             "exact_coverage": exact_coverage,
             "target_match": exact_coverage,
-            "full_capture_confirmed": False,
+            "full_capture_confirmed": completion_gate["coverage_state"] == "full",
             "full_capture_gate": "strict_full_capture_v1",
         },
+        "acquisition_completion_gate": completion_gate,
         "fallback_policy": {
             "allowed": "dom_export_or_manual_paste_only",
             "ocr_allowed": False,
