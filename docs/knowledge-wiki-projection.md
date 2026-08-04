@@ -15,6 +15,8 @@ Discord Context Bridge（DCB）の追記型snapshot台帳から、Obsidianで読
 python -m discord_context_bridge.cli export-knowledge-wiki `
   --snapshot-store <DCB_SNAPSHOT_STORE> `
   --output-root <PRIVATE_KNOWLEDGE_WIKI_ROOT> `
+  --person-registry <PRIVATE_PERSON_REGISTRY_JSON> `
+  --topic-registry <PRIVATE_TOPIC_REGISTRY_JSON> `
   --dry-run `
   --json
 ```
@@ -47,3 +49,11 @@ Knowledge Wiki/
 第一スライスでは、発言者ラベルを人物候補として扱う。話題は本文中の明示的な`#hashtag`と`[[Wiki link]]`だけを採用し、AIによる推測分類は行わない。
 
 人物同一性の統合、話題名の統合・改名、推論の事実昇格は人間レビュー境界とする。
+
+## 人間レビュー台帳
+
+人物名寄せと話題付与は、private localのJSON台帳を明示指定した場合だけ適用する。台帳を省略した場合は従来どおり人物をtarget単位で分離し、明示タグのないイベントを未分類に残す。
+
+人物台帳は`dcb.person_registry.v1`、話題台帳は`dcb.topic_assignment_registry.v1`を使用する。対応するJSON Schemaは`schemas/`にある。どちらも`private_local_only: true`、各判断に`reviewed_at`と`reviewed_by`が必要である。人物台帳の`aliases`にはReview Queueに表示された候補`person_id`を並べ、統合後の`person_id`と表示名を人間が決める。
+
+`Review Queue.generated.md`には、人物候補IDと話題未分類イベントの`observation_id`が出る。人間はこのIDを判断材料にして台帳を更新し、再度`--dry-run`で件数変化を確認する。人物名やDiscord本文を含み得るため、台帳と投影結果は公開リポジトリへcommitしない。

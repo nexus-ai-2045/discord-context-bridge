@@ -27,6 +27,8 @@ GENERATED_MARKER = "dcb_knowledge_generated: true"
 
 _WIKILINK_PATTERN = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 _HASHTAG_PATTERN = re.compile(r"(?<![\w/])#([\w][\w./-]*)", re.UNICODE)
+_REVIEW_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
+_OBSERVATION_ID_PATTERN = re.compile(r"^observation-[a-f0-9]{12}$")
 
 
 def _yaml_string(value: Any) -> str:
@@ -36,6 +38,93 @@ def _yaml_string(value: Any) -> str:
 def _stable_id(prefix: str, *parts: str) -> str:
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
     return f"{prefix}-{digest}"
+
+
+def _load_person_registry(
+    path: Path | None,
+) -> tuple[dict[str, tuple[str, str]], int]:
+    if path is None:
+        return {}, 0
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        payload.get("schema") != "dcb.person_registry.v1"
+        or payload.get("private_local_only") is not True
+        or not isinstance(payload.get("people"), list)
+    ):
+        raise ValueError("invalid person registry")
+    aliases: dict[str, tuple[str, str]] = {}
+    person_labels: dict[str, str] = {}
+    for person in payload["people"]:
+        person_id = str(person.get("person_id") or "").strip()
+        display_label = str(person.get("display_label") or "").strip()
+        reviewed_by = str(person.get("reviewed_by") or "").strip()
+        reviewed_at = str(person.get("reviewed_at") or "").strip()
+        if (
+            not _REVIEW_ID_PATTERN.fullmatch(person_id)
+            or not display_label
+            or not reviewed_by
+            or not reviewed_at
+        ):
+            raise ValueError("unreviewed person registry entry")
+        previous_label = person_labels.setdefault(person_id, display_label)
+        if previous_label != display_label:
+            raise ValueError("conflicting person label")
+        for alias in person.get("aliases") or []:
+            candidate_id = str(alias or "").strip()
+            if not _REVIEW_ID_PATTERN.fullmatch(candidate_id):
+                raise ValueError("invalid person alias")
+            existing = aliases.get(candidate_id)
+            value = (person_id, display_label)
+            if existing is not None and existing != value:
+                raise ValueError("conflicting person alias")
+            aliases[candidate_id] = value
+    return aliases, len(aliases)
+
+
+def _load_topic_registry(
+    path: Path | None,
+) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]], int]:
+    if path is None:
+        return {}, {}, 0
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        payload.get("schema") != "dcb.topic_assignment_registry.v1"
+        or payload.get("private_local_only") is not True
+        or not isinstance(payload.get("topics"), list)
+        or not isinstance(payload.get("assignments"), list)
+    ):
+        raise ValueError("invalid topic registry")
+    topics: dict[str, tuple[str, str]] = {}
+    for topic in payload["topics"]:
+        topic_id = str(topic.get("topic_id") or "").strip()
+        label = str(topic.get("label") or "").strip()
+        if not _REVIEW_ID_PATTERN.fullmatch(topic_id) or not label:
+            raise ValueError("invalid topic definition")
+        topics[topic_id] = (topic_id, label)
+    assignments: dict[str, list[str]] = {}
+    for assignment in payload["assignments"]:
+        observation_id = str(assignment.get("observation_id") or "").strip()
+        topic_ids = assignment.get("topic_ids")
+        reviewed_by = str(assignment.get("reviewed_by") or "").strip()
+        reviewed_at = str(assignment.get("reviewed_at") or "").strip()
+        if (
+            not _OBSERVATION_ID_PATTERN.fullmatch(observation_id)
+            or not isinstance(topic_ids, list)
+            or not topic_ids
+            or not reviewed_by
+            or not reviewed_at
+        ):
+            raise ValueError("unreviewed topic assignment")
+        normalized = [str(topic_id).strip() for topic_id in topic_ids]
+        if any(not topic_id or topic_id not in topics for topic_id in normalized):
+            raise ValueError("unknown assigned topic")
+        if (
+            observation_id in assignments
+            and assignments[observation_id] != normalized
+        ):
+            raise ValueError("conflicting topic assignment")
+        assignments[observation_id] = normalized
+    return topics, assignments, len(assignments)
 
 
 def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -438,8 +527,24 @@ def _render_generated_top(
 
 
 def _render_review_queue(
-    *, unclassified_count: int, person_count: int, recorded_at: str
+    *,
+    unclassified_events: list[dict[str, str]],
+    people: dict[str, str],
+    recorded_at: str,
 ) -> str:
+    unclassified_count = len(unclassified_events)
+    person_count = len(people)
+    person_items = "\n".join(
+        f"- `{person_id}` — {_wikilink_alias(label)}"
+        for person_id, label in sorted(
+            people.items(), key=lambda item: item[1].casefold()
+        )
+    )
+    event_items = "\n".join(
+        f"- `{event['observation_id']}` — actor `{event['person_id']}` / "
+        f"observed_at `{event['observed_at'] or 'unknown'}`"
+        for event in unclassified_events
+    )
     return (
         "---\n"
         'title: "Review Queue 自動一覧"\n'
@@ -457,8 +562,10 @@ def _render_review_queue(
         "> 人物統合、話題改名、fact昇格は自動確定しません。\n\n"
         "## 人物同一性\n\n"
         f"- 未確認の人物候補: {person_count}\n\n"
-        "## 話題ガバナンス\n\n"
-        f"- 話題未分類イベント: {unclassified_count}\n\n"
+        f"{person_items or '- ありません'}\n\n"
+        "## 話題未分類イベント\n\n"
+        f"- 件数: {unclassified_count}\n\n"
+        f"{event_items or '- ありません'}\n\n"
         "## 事実・推論・不明\n\n"
         "- 判断を残す場合は `Templates/Review Decision.md` を使用します。\n"
     )
@@ -511,7 +618,12 @@ def _templater_files() -> dict[str, str]:
 
 
 def export_knowledge_projection(
-    *, snapshot_store: Path, output_root: Path, dry_run: bool = False
+    *,
+    snapshot_store: Path,
+    output_root: Path,
+    dry_run: bool = False,
+    person_registry: Path | None = None,
+    topic_registry: Path | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     if not snapshot_store.is_file():
@@ -526,6 +638,12 @@ def export_knowledge_projection(
             "dry_run": dry_run,
         }
     records = load_text_snapshots(snapshot_store)
+    person_aliases, reviewed_person_alias_count = _load_person_registry(
+        person_registry
+    )
+    reviewed_topics, topic_assignments, reviewed_topic_assignment_count = (
+        _load_topic_registry(topic_registry)
+    )
     latest_records = _projection_records(records)
     people: dict[str, str] = {}
     topics: dict[str, str] = {}
@@ -533,6 +651,7 @@ def export_knowledge_projection(
     topic_events: dict[str, list[dict[str, str]]] = defaultdict(list)
     statuses: list[str] = []
     unclassified_count = 0
+    unclassified_events: list[dict[str, str]] = []
 
     for record in latest_records:
         target = str(record.get("target_key") or record.get("stream_id") or "unknown")
@@ -568,8 +687,13 @@ def export_knowledge_projection(
             )
         for index, parsed in enumerate(parsed_events, start=1):
             person_label = parsed.author_label.strip() or "unknown"
-            person_id = _stable_id(
-                "person", stream_ref, person_label.casefold()
+            default_person = (
+                _stable_id("person", stream_ref, person_label.casefold()),
+                person_label,
+            )
+            candidate_person_id = default_person[0]
+            person_id, person_label = person_aliases.get(
+                candidate_person_id, default_person
             )
             people.setdefault(person_id, person_label)
             topic_labels = _extract_topics(parsed.text_snippet)
@@ -578,12 +702,19 @@ def export_knowledge_projection(
                 topic_id = _stable_id("topic", topic_label.casefold())
                 topics.setdefault(topic_id, topic_label)
                 topic_pairs.append((topic_id, topic_label))
-            if not topic_pairs:
-                unclassified_count += 1
+            observation_id = _stable_id(
+                "observation", target, content_hash, str(index)
+            )
+            for topic_id in topic_assignments.get(observation_id, []):
+                _, topic_label = reviewed_topics[topic_id]
+                topics.setdefault(topic_id, topic_label)
+                if (topic_id, topic_label) not in topic_pairs:
+                    topic_pairs.append((topic_id, topic_label))
             event = {
                 "event_id": _stable_id(
                     "event", target, content_hash, str(index), person_id
                 ),
+                "observation_id": observation_id,
                 "observed_at": observed_at,
                 "source": source,
                 "person_id": person_id,
@@ -594,6 +725,9 @@ def export_knowledge_projection(
                     for topic_id, topic_label in topic_pairs
                 ),
             }
+            if not topic_pairs:
+                unclassified_count += 1
+                unclassified_events.append(event)
             person_events[person_id].append(event)
             for topic_id, _ in topic_pairs:
                 topic_events[topic_id].append(event)
@@ -714,8 +848,8 @@ def export_knowledge_projection(
         _project_file(
             output_root / "Review Queue.generated.md",
             _render_review_queue(
-                unclassified_count=unclassified_count,
-                person_count=len(people),
+                unclassified_events=unclassified_events,
+                people=people,
                 recorded_at=recorded_at,
             ),
             dry_run=dry_run,
@@ -763,6 +897,8 @@ def export_knowledge_projection(
         "projected_topic_count": len(topics),
         "unclassified_event_count": unclassified_count,
         "review_item_count": unclassified_count + len(people),
+        "reviewed_person_alias_count": reviewed_person_alias_count,
+        "reviewed_topic_assignment_count": reviewed_topic_assignment_count,
         "written_file_count": statuses.count("written"),
         "planned_file_count": statuses.count("planned"),
         "unchanged_file_count": statuses.count("unchanged"),
