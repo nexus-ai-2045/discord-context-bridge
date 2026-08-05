@@ -50,6 +50,14 @@ Knowledge Wiki/
 
 人物同一性の統合、話題名の統合・改名、推論の事実昇格は人間レビュー境界とする。
 
+## 日次運用
+
+`scripts/run_knowledge_wiki_projection.py` は既存projectionを呼ぶ薄い運用runnerである。同時起動をlockで停止し、本文とローカルパスを含まない最新実行receiptをatomicに保存する。`--dry-run`はWikiとreceiptを変更せず、`--verify`は最後の成功receiptを読み取り専用で確認する。
+
+Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのactionを照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。
+
+定期実行が自動化するのは再投影だけである。人物同一性、話題の意味、Review Queueの判断は引き続き人間が行う。
+
 ## 人間レビュー台帳
 
 人物名寄せと話題付与は、private localのJSON台帳を明示指定した場合だけ適用する。台帳を省略した場合は従来どおり人物をtarget単位で分離し、明示タグのないイベントを未分類に残す。
