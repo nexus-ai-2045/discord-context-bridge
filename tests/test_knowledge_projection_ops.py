@@ -60,6 +60,40 @@ def test_failure_is_sanitized(tmp_path):
     assert result["reason"] == "snapshot_store_missing"
 
 
+def test_raised_failure_replaces_previous_success_receipt(tmp_path, monkeypatch):
+    source = tmp_path / "snapshots.ndjson"
+    _snapshot(source)
+    receipt = tmp_path / "latest.json"
+    lock = tmp_path / "run.lock"
+    successful = run_projection(
+        snapshot_store=source,
+        output_root=tmp_path / "wiki",
+        receipt_path=receipt,
+        lock_path=lock,
+    )
+    assert successful["ok"] is True
+
+    def fail_projection(**_kwargs):
+        raise ValueError("private input must not be reflected")
+
+    monkeypatch.setattr(
+        "discord_context_bridge.knowledge_projection_ops.export_knowledge_projection",
+        fail_projection,
+    )
+    failed = run_projection(
+        snapshot_store=source,
+        output_root=tmp_path / "wiki",
+        receipt_path=receipt,
+        lock_path=lock,
+    )
+    assert failed["reason"] == "projection_failed"
+    assert verify_projection_receipt(receipt) == {
+        "ok": False,
+        "reason": "receipt_not_successful",
+    }
+    assert "private input" not in receipt.read_text(encoding="utf-8")
+
+
 def test_runner_works_directly_from_source_checkout(tmp_path):
     source = tmp_path / "snapshots.ndjson"
     _snapshot(source)

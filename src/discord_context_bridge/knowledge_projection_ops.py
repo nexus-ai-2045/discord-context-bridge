@@ -97,6 +97,19 @@ def _receipt(result: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     }
 
 
+def _failure_receipt(*, reason: str, dry_run: bool) -> dict[str, Any]:
+    return {
+        "schema": RECEIPT_SCHEMA,
+        "ok": False,
+        "reason": reason,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "dry_run": dry_run,
+        "private_local_only": True,
+        "outbound_actions": "disabled",
+        "paths_returned": False,
+    }
+
+
 def run_projection(
     *,
     snapshot_store: Path,
@@ -121,25 +134,15 @@ def run_projection(
                 _atomic_json(receipt_path, receipt)
             return receipt
     except ProjectionAlreadyRunning:
-        return {
-            "schema": RECEIPT_SCHEMA,
-            "ok": False,
-            "reason": "projection_already_running",
-            "dry_run": dry_run,
-            "private_local_only": True,
-            "outbound_actions": "disabled",
-            "paths_returned": False,
-        }
+        return _failure_receipt(reason="projection_already_running", dry_run=dry_run)
     except Exception:
-        return {
-            "schema": RECEIPT_SCHEMA,
-            "ok": False,
-            "reason": "projection_failed",
-            "dry_run": dry_run,
-            "private_local_only": True,
-            "outbound_actions": "disabled",
-            "paths_returned": False,
-        }
+        receipt = _failure_receipt(reason="projection_failed", dry_run=dry_run)
+        if not dry_run:
+            try:
+                _atomic_json(receipt_path, receipt)
+            except OSError:
+                pass
+        return receipt
 
 
 def verify_projection_receipt(receipt_path: Path) -> dict[str, Any]:
