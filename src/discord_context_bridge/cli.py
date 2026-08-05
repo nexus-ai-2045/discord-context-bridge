@@ -271,6 +271,16 @@ def build_parser() -> argparse.ArgumentParser:
     export_knowledge.add_argument(
         "--dry-run", action="store_true", help="ファイルを書かず生成予定だけ確認する"
     )
+    export_knowledge.add_argument(
+        "--person-registry",
+        type=Path,
+        help="人間レビュー済み人物名寄せ台帳（private local JSON）",
+    )
+    export_knowledge.add_argument(
+        "--topic-registry",
+        type=Path,
+        help="人間レビュー済み話題付与台帳（private local JSON）",
+    )
     export_knowledge.set_defaults(handler=_cmd_export_knowledge_wiki)
 
     fast_path = sub.add_parser(
@@ -994,6 +1004,8 @@ def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
             snapshot_store=args.snapshot_store,
             output_root=args.output_root,
             dry_run=args.dry_run,
+            person_registry=args.person_registry,
+            topic_registry=args.topic_registry,
         )
     except (OSError, ValueError, json.JSONDecodeError):
         result = {

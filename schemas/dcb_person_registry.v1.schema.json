@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_person_registry.v1.schema.json",
+  "title": "DCB private person registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "people", "private_local_only"],
+  "properties": {
+    "schema": {"const": "dcb.person_registry.v1"},
+    "private_local_only": {"const": true},
+    "people": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["person_id", "display_label", "aliases", "reviewed_at", "reviewed_by"],
+        "properties": {
+          "person_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
+          "display_label": {"type": "string", "minLength": 1},
+          "aliases": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"}
+          },
+          "reviewed_at": {"type": "string", "minLength": 1},
+          "reviewed_by": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

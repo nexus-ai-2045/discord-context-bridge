@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from discord_context_bridge.cli import main
 from discord_context_bridge.knowledge_projection import export_knowledge_projection
+
+
+def _stable_id(prefix: str, *parts: str) -> str:
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{digest}"
 
 
 def _append_snapshot(
@@ -408,6 +414,41 @@ def test_projection_consumes_all_structured_message_observations(tmp_path):
     assert result["projected_person_count"] == 2
 
 
+def test_structured_duplicate_text_messages_get_distinct_observation_ids(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    for sequence, message_id in ((1, "message-a"), (2, "message-b")):
+        record = {
+            "event_type": "message_observation",
+            "target_key": "target",
+            "stream_id": "target",
+            "stream_sequence": sequence,
+            "message_id": message_id,
+            "author_label": "Alice",
+            "text": "same body",
+            "captured_at": f"2026-07-31T0{sequence}:00:00+00:00",
+            "source": "structured",
+            "content_hash": "same-content-hash",
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    review = (output_root / "Review Queue.generated.md").read_text(
+        encoding="utf-8"
+    )
+    observation_ids = {
+        token.strip("`")
+        for line in review.splitlines()
+        for token in line.split()
+        if token.startswith("`observation-")
+    }
+    assert len(observation_ids) == 2
+
+
 def test_projection_missing_ledger_fails_without_removing_pages(tmp_path):
     output_root = tmp_path / "Knowledge Wiki"
     existing = output_root / "People" / "person-old.generated.md"
@@ -516,3 +557,238 @@ def test_export_knowledge_wiki_sanitizes_projection_errors(tmp_path, capsys):
     assert code == 2
     assert '"reason": "projection_read_failed"' in output
     assert str(snapshot_store) not in output
+
+
+def test_projection_merges_only_human_reviewed_person_aliases(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    person_registry = tmp_path / "person-registry.json"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="Alice: target A",
+        content_hash="a",
+        target_key="target-a",
+    )
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="alice-new: target B",
+        content_hash="b",
+        target_key="target-b",
+    )
+    person_registry.write_text(
+        json.dumps(
+            {
+                "schema": "dcb.person_registry.v1",
+                "people": [
+                    {
+                        "person_id": "person-alice",
+                        "display_label": "Alice",
+                        "aliases": [
+                            _stable_id(
+                                "person", _stable_id("stream", "target-a"), "alice"
+                            ),
+                            _stable_id(
+                                "person",
+                                _stable_id("stream", "target-b"),
+                                "alice-new",
+                            ),
+                        ],
+                        "reviewed_at": "2026-08-05T10:00:00+09:00",
+                        "reviewed_by": "human",
+                    }
+                ],
+                "private_local_only": True,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+        person_registry=person_registry,
+    )
+
+    assert result["projected_person_count"] == 1
+    assert result["reviewed_person_alias_count"] == 2
+    person = output_root / "People" / "person-alice.generated.md"
+    assert person.exists()
+    assert person.read_text(encoding="utf-8").count("### ") == 2
+    review = (output_root / "Review Queue.generated.md").read_text(
+        encoding="utf-8"
+    )
+    assert "- 未確認の人物候補: 0" in review
+    assert result["review_item_count"] == 2
+
+
+def test_projection_applies_human_reviewed_topic_assignment(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    topic_registry = tmp_path / "topic-registry.json"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="member-a: 明示話題なし",
+        content_hash="plain",
+        target_key="target-a",
+    )
+    observation_id = _stable_id("observation", "target-a", "plain", "1")
+    topic_registry.write_text(
+        json.dumps(
+            {
+                "schema": "dcb.topic_assignment_registry.v1",
+                "topics": [
+                    {"topic_id": "topic-architecture", "label": "Architecture"}
+                ],
+                "assignments": [
+                    {
+                        "observation_id": observation_id,
+                        "topic_ids": ["topic-architecture"],
+                        "reviewed_at": "2026-08-05T10:00:00+09:00",
+                        "reviewed_by": "human",
+                    }
+                ],
+                "private_local_only": True,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+        topic_registry=topic_registry,
+    )
+
+    assert result["projected_topic_count"] == 1
+    assert result["unclassified_event_count"] == 0
+    assert result["reviewed_topic_assignment_count"] == 1
+    topic = output_root / "Topics" / "topic-architecture.generated.md"
+    assert "明示話題なし" in topic.read_text(encoding="utf-8")
+
+
+def test_projection_review_queue_exposes_stable_decision_keys(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="member-a: 明示話題なし",
+        content_hash="plain",
+        target_key="target-a",
+    )
+
+    export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+    )
+
+    review = (output_root / "Review Queue.generated.md").read_text(
+        encoding="utf-8"
+    )
+    assert "observation-" in review
+    assert "person-" in review
+    assert "## 話題未分類イベント" in review
+
+
+def test_export_knowledge_wiki_cli_accepts_private_review_registries(
+    tmp_path, capsys
+):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    person_registry = tmp_path / "person-registry.json"
+    topic_registry = tmp_path / "topic-registry.json"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="member-a: 本文",
+        content_hash="plain",
+    )
+    person_registry.write_text(
+        json.dumps(
+            {
+                "schema": "dcb.person_registry.v1",
+                "people": [],
+                "private_local_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    topic_registry.write_text(
+        json.dumps(
+            {
+                "schema": "dcb.topic_assignment_registry.v1",
+                "topics": [],
+                "assignments": [],
+                "private_local_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(
+        [
+            "export-knowledge-wiki",
+            "--snapshot-store",
+            str(snapshot_store),
+            "--output-root",
+            str(output_root),
+            "--person-registry",
+            str(person_registry),
+            "--topic-registry",
+            str(topic_registry),
+            "--dry-run",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert code == 0
+    assert str(person_registry) not in output
+    assert str(topic_registry) not in output
+
+
+def test_projection_rejects_registry_ids_that_escape_output_root(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="member-a: 本文",
+        content_hash="plain",
+    )
+    registry = tmp_path / "person-registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "dcb.person_registry.v1",
+                "people": [
+                    {
+                        "person_id": "../escape",
+                        "display_label": "member-a",
+                        "aliases": ["person-safe"],
+                        "reviewed_at": "2026-08-05T10:00:00+09:00",
+                        "reviewed_by": "human",
+                    }
+                ],
+                "private_local_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        export_knowledge_projection(
+            snapshot_store=snapshot_store,
+            output_root=tmp_path / "Knowledge Wiki",
+            person_registry=registry,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unsafe registry id must be rejected")
+
+    assert not (tmp_path / "escape.generated.md").exists()
