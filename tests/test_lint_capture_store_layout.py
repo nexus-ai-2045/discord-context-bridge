@@ -47,6 +47,13 @@ def _build_clean_store(root: Path) -> None:
     )
 
 
+def _build_shared_snapshot_bundle(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "INDEX.md").write_text("private bundle index", encoding="utf-8")
+    (root / "raw").mkdir()
+    (root / "projections").mkdir()
+
+
 def test_clean_layout_has_no_violations(tmp_path):
     store_root = tmp_path / "store"
     _build_clean_store(store_root)
@@ -350,3 +357,127 @@ def test_symlink_files_are_excluded_from_scan(tmp_path):
 
     assert report["ok"] is True
     assert report["violations"] == []
+
+
+def test_shared_snapshot_bundle_routes_to_full_capture_gate_without_layout_details(tmp_path):
+    store_root = tmp_path / "private-target-123456789"
+    _build_shared_snapshot_bundle(store_root)
+    (store_root / "raw" / "private-message.json").write_text(
+        json.dumps({"url": "https://discord.com/channels/1/2/3", "text": "PRIVATE RAW TEXT"}),
+        encoding="utf-8",
+    )
+
+    report = lint.build_report(
+        store_root=store_root,
+        baseline_path=None,
+        store_kind="shared_snapshot_bundle",
+    )
+
+    assert report == {
+        "schema": "dcb_lint_capture_store_layout_report.v1",
+        "ok": False,
+        "violation_count": 0,
+        "violations": [],
+        "known_violation_count": 0,
+        "new_violations": [],
+        "lint_performed": False,
+        "store_kind": "shared_snapshot_bundle",
+        "reason": "wrong_gate_for_store_kind",
+        "required_gate": "full-capture-gate",
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+    serialized = json.dumps(report)
+    assert str(store_root) not in serialized
+    assert "private-target-123456789" not in serialized
+    assert "private-message.json" not in serialized
+    assert "PRIVATE RAW TEXT" not in serialized
+    assert "https://" not in serialized
+
+
+def test_stray_bundle_markers_remain_event_store_violations_by_default(tmp_path):
+    store_root = tmp_path / "bundle"
+    _build_shared_snapshot_bundle(store_root)
+    (store_root / "full-capture-evidence-secret-id.json").write_text(
+        json.dumps({"capture_id": "secret-id", "raw_text": "PRIVATE RAW TEXT"}),
+        encoding="utf-8",
+    )
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is False
+    assert "store_kind" not in report
+    assert {entry["path"] for entry in report["violations"]} == {
+        "INDEX.md",
+        "full-capture-evidence-secret-id.json",
+    }
+    assert {entry["kind"] for entry in report["violations"]} == {"disallowed_path"}
+
+
+def test_shared_snapshot_bundle_fails_before_baseline_write(tmp_path):
+    store_root = tmp_path / "bundle"
+    _build_shared_snapshot_bundle(store_root)
+    baseline_path = tmp_path / "must-not-be-written.json"
+
+    report = lint.build_report(
+        store_root=store_root,
+        baseline_path=baseline_path,
+        write_baseline=True,
+        store_kind="shared_snapshot_bundle",
+    )
+
+    assert report["ok"] is False
+    assert report["reason"] == "wrong_gate_for_store_kind"
+    assert report["lint_performed"] is False
+    assert report["violations"] == []
+    assert "baseline_written" not in report
+    assert not baseline_path.exists()
+
+
+def test_cli_explicit_bundle_mode_is_metadata_only_and_fails_closed(tmp_path, capsys):
+    store_root = tmp_path / "private-target-123456789"
+    _build_shared_snapshot_bundle(store_root)
+    (store_root / "raw" / "private-message.json").write_text(
+        json.dumps({"url": "https://discord.com/channels/1/2/3", "text": "PRIVATE RAW TEXT"}),
+        encoding="utf-8",
+    )
+
+    rc = lint.main(
+        [
+            "--store-root",
+            str(store_root),
+            "--store-kind",
+            "shared_snapshot_bundle",
+            "--json",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert rc == 1
+    assert payload["lint_performed"] is False
+    assert payload["required_gate"] == "full-capture-gate"
+    assert str(store_root) not in output
+    assert "private-target-123456789" not in output
+    assert "private-message.json" not in output
+    assert "PRIVATE RAW TEXT" not in output
+    assert "https://" not in output
+
+
+def test_symlinked_bundle_markers_do_not_change_event_store_behavior(tmp_path):
+    store_root = tmp_path / "store"
+    _build_clean_store(store_root)
+    outside = tmp_path / "outside"
+    _build_shared_snapshot_bundle(outside)
+    evidence = outside / "full-capture-evidence.json"
+    evidence.write_text("{}", encoding="utf-8")
+    try:
+        (store_root / "full-capture-evidence.json").symlink_to(evidence)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    report = lint.build_report(store_root=store_root, baseline_path=None)
+
+    assert report["ok"] is True
+    assert report["violations"] == []
+    assert "store_kind" not in report
