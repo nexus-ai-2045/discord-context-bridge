@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_topic_assignment_registry.v1.schema.json",
+  "title": "DCB private topic assignment registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "topics", "assignments", "private_local_only"],
+  "properties": {
+    "schema": {"const": "dcb.topic_assignment_registry.v1"},
+    "private_local_only": {"const": true},
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["topic_id", "label"],
+        "properties": {
+          "topic_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
+          "label": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observation_id", "topic_ids", "reviewed_at", "reviewed_by"],
+        "properties": {
+          "observation_id": {"type": "string", "pattern": "^observation-[a-f0-9]{12}$"},
+          "topic_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"}
+          },
+          "reviewed_at": {"type": "string", "minLength": 1},
+          "reviewed_by": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}
