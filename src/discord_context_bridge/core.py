@@ -441,8 +441,9 @@ def build_coverage_report(
     requested_start: str = "",
     requested_end: str = "",
     user_confirmed: bool = False,
+    full_capture_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
-    from .acquisition_gate import build_acquisition_completion_gate
+    from .acquisition_gate import build_acquisition_completion_gate, load_full_capture_receipt
 
     generated = generated_at or utc_now()
     key = target_key or (target_key_for_url(url) if url else "")
@@ -469,6 +470,7 @@ def build_coverage_report(
         "blocked_reason": "url_missing",
         "same_guild_fuzzy_match_allowed": False,
     }
+    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
     completion_gate = build_acquisition_completion_gate(
         selected_records,
         requested_start=requested_start,
@@ -476,6 +478,8 @@ def build_coverage_report(
         freshness_status=str(freshness.get("status") or "unknown"),
         source_kind=source_kind,
         user_confirmed=user_confirmed,
+        full_capture_receipt=full_capture_receipt,
+        receipt_load_error=receipt_load_error,
     )
     return {
         "language": DEFAULT_LANGUAGE,
