@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 次の変更をここに記録します。
+- Knowledge Wiki projectionの日次運用runnerとWindows Task Scheduler設定スクリプトを追加しました。同時起動防止、metadata-only実行receipt、dry-run、設定照合を備え、人物・話題判断は人間レビューのまま維持します。
 
 ## 0.11.0 - 2026-07-28
 
