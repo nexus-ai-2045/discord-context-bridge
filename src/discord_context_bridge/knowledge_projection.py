@@ -180,6 +180,21 @@ def _projection_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any
     return [*_latest_by_target(legacy), *ordered_structured]
 
 
+def _structured_message_identity(record: dict[str, Any]) -> str:
+    return str(
+        record.get("message_id")
+        or record.get("event_id")
+        or record.get("stream_sequence")
+        or "|".join(
+            [
+                str(record.get("ordinal") or ""),
+                str(record.get("author_label") or ""),
+                str(record.get("visible_timestamp") or ""),
+            ]
+        )
+    )
+
+
 def _extract_topics(text: str) -> list[str]:
     candidates = [
         *(match.group(1).strip() for match in _WIKILINK_PATTERN.finditer(text)),
@@ -652,6 +667,7 @@ def export_knowledge_projection(
     statuses: list[str] = []
     unclassified_count = 0
     unclassified_events: list[dict[str, str]] = []
+    unreviewed_people: dict[str, str] = {}
 
     for record in latest_records:
         target = str(record.get("target_key") or record.get("stream_id") or "unknown")
@@ -692,6 +708,8 @@ def export_knowledge_projection(
                 person_label,
             )
             candidate_person_id = default_person[0]
+            if candidate_person_id not in person_aliases:
+                unreviewed_people.setdefault(candidate_person_id, person_label)
             person_id, person_label = person_aliases.get(
                 candidate_person_id, default_person
             )
@@ -702,9 +720,10 @@ def export_knowledge_projection(
                 topic_id = _stable_id("topic", topic_label.casefold())
                 topics.setdefault(topic_id, topic_label)
                 topic_pairs.append((topic_id, topic_label))
-            observation_id = _stable_id(
-                "observation", target, content_hash, str(index)
-            )
+            observation_parts = [target, content_hash, str(index)]
+            if record.get("event_type") == "message_observation":
+                observation_parts.append(_structured_message_identity(record))
+            observation_id = _stable_id("observation", *observation_parts)
             for topic_id in topic_assignments.get(observation_id, []):
                 _, topic_label = reviewed_topics[topic_id]
                 topics.setdefault(topic_id, topic_label)
@@ -849,7 +868,7 @@ def export_knowledge_projection(
             output_root / "Review Queue.generated.md",
             _render_review_queue(
                 unclassified_events=unclassified_events,
-                people=people,
+                people=unreviewed_people,
                 recorded_at=recorded_at,
             ),
             dry_run=dry_run,
@@ -896,7 +915,7 @@ def export_knowledge_projection(
         "projected_person_count": len(people),
         "projected_topic_count": len(topics),
         "unclassified_event_count": unclassified_count,
-        "review_item_count": unclassified_count + len(people),
+        "review_item_count": unclassified_count + len(unreviewed_people),
         "reviewed_person_alias_count": reviewed_person_alias_count,
         "reviewed_topic_assignment_count": reviewed_topic_assignment_count,
         "written_file_count": statuses.count("written"),

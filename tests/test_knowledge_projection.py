@@ -414,6 +414,41 @@ def test_projection_consumes_all_structured_message_observations(tmp_path):
     assert result["projected_person_count"] == 2
 
 
+def test_structured_duplicate_text_messages_get_distinct_observation_ids(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    for sequence, message_id in ((1, "message-a"), (2, "message-b")):
+        record = {
+            "event_type": "message_observation",
+            "target_key": "target",
+            "stream_id": "target",
+            "stream_sequence": sequence,
+            "message_id": message_id,
+            "author_label": "Alice",
+            "text": "same body",
+            "captured_at": f"2026-07-31T0{sequence}:00:00+00:00",
+            "source": "structured",
+            "content_hash": "same-content-hash",
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    review = (output_root / "Review Queue.generated.md").read_text(
+        encoding="utf-8"
+    )
+    observation_ids = {
+        token.strip("`")
+        for line in review.splitlines()
+        for token in line.split()
+        if token.startswith("`observation-")
+    }
+    assert len(observation_ids) == 2
+
+
 def test_projection_missing_ledger_fails_without_removing_pages(tmp_path):
     output_root = tmp_path / "Knowledge Wiki"
     existing = output_root / "People" / "person-old.generated.md"
@@ -582,6 +617,11 @@ def test_projection_merges_only_human_reviewed_person_aliases(tmp_path):
     person = output_root / "People" / "person-alice.generated.md"
     assert person.exists()
     assert person.read_text(encoding="utf-8").count("### ") == 2
+    review = (output_root / "Review Queue.generated.md").read_text(
+        encoding="utf-8"
+    )
+    assert "- 未確認の人物候補: 0" in review
+    assert result["review_item_count"] == 2
 
 
 def test_projection_applies_human_reviewed_topic_assignment(tmp_path):
