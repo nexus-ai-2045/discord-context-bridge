@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""ADR-0162 Phase 1 W4: capture store layout drift detector。
+"""ADR-0162 Phase 1 W4: canonical capture event store layout drift detector。
 
 `.local/discord-context-bridge/` (`--store-root`) が単一 append-only store
 契約から外れていないかを read-only で確認する。
+
+per-target shared snapshot bundle は別の store kind であり、この lint の対象外。
+`--store-kind shared_snapshot_bundle` が明示された場合は内容を走査せず fail
+closed し、既存の `full-capture-gate` へ誘導する。
 
 チェック内容:
 
@@ -44,6 +48,8 @@ if str(SRC) not in sys.path:
 from discord_context_bridge.core import stable_text_hash  # noqa: E402
 
 DEFAULT_STORE_ROOT = Path(".local/discord-context-bridge")
+DEFAULT_STORE_KIND = "canonical_event_store"
+STORE_KINDS = (DEFAULT_STORE_KIND, "shared_snapshot_bundle")
 
 ALLOWED_TOP_LEVEL_FILES = {
     "text-snapshots.ndjson",
@@ -87,9 +93,15 @@ def _json(payload: dict[str, Any]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="capture store layout の許可リスト / schema drift を検知する。"
+        description="canonical append-only capture event store の許可リスト / schema drift を検知する。"
     )
     parser.add_argument("--store-root", type=Path, default=DEFAULT_STORE_ROOT)
+    parser.add_argument(
+        "--store-kind",
+        choices=STORE_KINDS,
+        default=DEFAULT_STORE_KIND,
+        help="既定は canonical_event_store。shared snapshot bundle は明示指定する",
+    )
     parser.add_argument("--baseline", type=Path, default=None, help="既定は <store-root>/lint-baseline.json")
     parser.add_argument("--write-baseline", action="store_true", help="現状の violation を baseline として書く")
     parser.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
@@ -244,7 +256,27 @@ def build_report(
     store_root: Path = DEFAULT_STORE_ROOT,
     baseline_path: Path | None = None,
     write_baseline: bool = False,
+    store_kind: str = DEFAULT_STORE_KIND,
 ) -> dict[str, Any]:
+    if store_kind not in STORE_KINDS:
+        raise ValueError("unsupported store kind")
+
+    if store_kind == "shared_snapshot_bundle":
+        return {
+            "schema": "dcb_lint_capture_store_layout_report.v1",
+            "ok": False,
+            "violation_count": 0,
+            "violations": [],
+            "known_violation_count": 0,
+            "new_violations": [],
+            "lint_performed": False,
+            "store_kind": "shared_snapshot_bundle",
+            "reason": "wrong_gate_for_store_kind",
+            "required_gate": "full-capture-gate",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+
     resolved_baseline_path = baseline_path if baseline_path is not None else (store_root / "lint-baseline.json")
     violations = collect_violations(store_root)
 
@@ -297,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         store_root=args.store_root,
         baseline_path=args.baseline,
         write_baseline=args.write_baseline,
+        store_kind=args.store_kind,
     )
     if args.json:
         print(_json(report))
