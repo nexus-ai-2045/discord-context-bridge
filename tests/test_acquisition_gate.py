@@ -22,6 +22,11 @@ def full_receipt(capture_id="capture-1", **overrides):
     return receipt
 
 
+# fixture の captured_at から鮮度窓 (24h) 内に収まる固定の「現在時刻」。
+# これを CLI へ渡さないと、時間の経過だけでテストが落ちるようになる。
+FIXED_NOW = "2026-08-01T08:00:00+00:00"
+
+
 def matching_record(capture_id="capture-1"):
     return {"capture_id": capture_id, "captured_at": "2026-08-01T07:01:00+00:00",
             "message_period": {"start": "2026-08-01T05:00:00+00:00", "end": "2026-08-01T07:00:00+00:00"},
@@ -106,9 +111,12 @@ def _write_cli_artifacts(tmp_path, *, receipt=None, record_capture_id="capture-1
 
 
 def _strict_cli_args(url, store, receipt_path=None):
+    # fixture の captured_at は固定時刻なので、鮮度判定の基準時刻も固定する。
+    # 既定 (実行時刻) のままだと日が経つほど cache_not_recent で必ず落ちる。
     args = ["coverage-report", "--url", url, "--ai-log", str(store),
             "--requested-start", "2026-08-01T05:00:00+00:00",
-            "--requested-end", "2026-08-01T07:00:00+00:00", "--user-confirmed",
+            "--requested-end", "2026-08-01T07:00:00+00:00",
+            "--generated-at", FIXED_NOW, "--user-confirmed",
             "--require-summary-ready"]
     if receipt_path:
         args.extend(["--full-capture-receipt", str(receipt_path)])

@@ -392,6 +392,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     coverage.add_argument("--requested-start", default="", help="要求期間の開始。timezone付きISO 8601")
     coverage.add_argument("--requested-end", default="", help="要求期間の終了。timezone付きISO 8601")
+    coverage.add_argument(
+        "--generated-at", default="",
+        help="鮮度判定の基準時刻。timezone付きISO 8601。既定は実行時刻。"
+             "固定時刻の fixture を使う試験や、過去時点の再現に使う",
+    )
     coverage.add_argument("--user-confirmed", action="store_true", help="取得範囲をユーザーが確認済み")
     coverage.add_argument(
         "--require-summary-ready", action="store_true",
@@ -1277,6 +1282,7 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
         ai_log_path=args.ai_log,
         source_kind=args.source_kind,
         dedupe_policy=args.dedupe_policy,
+        generated_at=args.generated_at or None,
         requested_start=args.requested_start,
         requested_end=args.requested_end,
         user_confirmed=args.user_confirmed,
