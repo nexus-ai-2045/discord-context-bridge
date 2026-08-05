@@ -56,6 +56,19 @@ Knowledge Wiki/
 
 Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのactionを照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。
 
+```powershell
+.\scripts\setup_knowledge_wiki_projection_task.ps1 `
+  -PythonPath <PYTHON_EXE> `
+  -RepoRoot <STABLE_DCB_CHECKOUT> `
+  -SnapshotStore <DCB_SNAPSHOT_STORE> `
+  -OutputRoot <PRIVATE_KNOWLEDGE_WIKI_ROOT> `
+  -ReceiptPath <PRIVATE_RUN_RECEIPT_JSON> `
+  -LockPath <PRIVATE_RUN_LOCK> `
+  -Json
+```
+
+この確認結果が`action: dry_run`かつ`changed: false`であることを確認してから、同じ引数へ`-Apply`を追加する。Task Schedulerからworktreeを参照させず、merge後の安定したcheckoutを`RepoRoot`に指定する。
+
 定期実行が自動化するのは再投影だけである。人物同一性、話題の意味、Review Queueの判断は引き続き人間が行う。
 
 ## 人間レビュー台帳
