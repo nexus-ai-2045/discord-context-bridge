@@ -438,7 +438,13 @@ def build_coverage_report(
     source_kind: str = "saved_log",
     dedupe_policy: str = "by_hash",
     generated_at: str | None = None,
+    requested_start: str = "",
+    requested_end: str = "",
+    user_confirmed: bool = False,
+    full_capture_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
+    from .acquisition_gate import build_acquisition_completion_gate, load_full_capture_receipt
+
     generated = generated_at or utc_now()
     key = target_key or (target_key_for_url(url) if url else "")
     raw_matches = (
@@ -450,7 +456,21 @@ def build_coverage_report(
     exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
     selected_records = ai_matches or raw_matches
     freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
-    freshness = snapshot_freshness(selected_records, generated_at=generated, source=freshness_source)
+    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
+    receipt_capture_id = str((full_capture_receipt or {}).get("capture_id") or "").strip()
+    # receipt がある場合は ai_log 優先で raw-cache を落とさず、capture_id 一致レコードを選ぶ。
+    gate_records = selected_records
+    if receipt_capture_id:
+        combined_records = list(ai_matches) + list(raw_matches)
+        receipt_matched = [
+            row
+            for row in combined_records
+            if str(row.get("capture_id") or row.get("evidence_id") or "").strip() == receipt_capture_id
+        ]
+        if receipt_matched:
+            gate_records = receipt_matched
+            freshness_source = "receipt_matched_records"
+    freshness = snapshot_freshness(gate_records, generated_at=generated, source=freshness_source)
     url_shape = analyze_discord_forum_url_shape(url) if url else {
         "language": DEFAULT_LANGUAGE,
         "schema": "discord_forum_url_shape.v1",
@@ -464,6 +484,16 @@ def build_coverage_report(
         "blocked_reason": "url_missing",
         "same_guild_fuzzy_match_allowed": False,
     }
+    completion_gate = build_acquisition_completion_gate(
+        gate_records,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        freshness_status=str(freshness.get("status") or "unknown"),
+        source_kind=source_kind,
+        user_confirmed=user_confirmed,
+        full_capture_receipt=full_capture_receipt,
+        receipt_load_error=receipt_load_error,
+    )
     return {
         "language": DEFAULT_LANGUAGE,
         "schema": "discord_context_coverage_report.v1",
@@ -488,9 +518,10 @@ def build_coverage_report(
             "ai_log_match_count": len(ai_matches),
             "exact_coverage": exact_coverage,
             "target_match": exact_coverage,
-            "full_capture_confirmed": False,
+            "full_capture_confirmed": completion_gate["coverage_state"] == "full",
             "full_capture_gate": "strict_full_capture_v1",
         },
+        "acquisition_completion_gate": completion_gate,
         "fallback_policy": {
             "allowed": "dom_export_or_manual_paste_only",
             "ocr_allowed": False,
@@ -1556,6 +1587,8 @@ def plan_full_thread_capture(
     oldest to latest, repeats the scan until stable, and passes the strict
     completion gate.
     """
+    from .acquisition_gate import build_acquisition_completion_gate
+
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
         return {
@@ -1576,6 +1609,17 @@ def plan_full_thread_capture(
     target_key = target_key_for_url(url)
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
+    current_records = raw_matches or saved_matches
+    current_freshness = snapshot_freshness(
+        current_records,
+        generated_at=utc_now(),
+        source="raw_cache" if raw_matches else "ai_log" if saved_matches else "none",
+    )
+    acquisition_gate = build_acquisition_completion_gate(
+        current_records,
+        freshness_status=str(current_freshness.get("status") or "unknown"),
+        source_kind="raw_cache" if raw_matches else "saved_log",
+    )
     browser_policy = build_capture_route_policy(browser_route)
     # visible_dom_available=True は「DOM 走査ができる route」であることが前提。
     # supported でも DOM 非対応 (rest_backfill / saved_artifacts 等) の route では
@@ -1663,6 +1707,7 @@ def plan_full_thread_capture(
                 else "保存済み visible snapshot は可視範囲の証拠であり、全文スレッド取得の証明ではありません。"
             ),
         },
+        "acquisition_completion_gate": acquisition_gate,
         "route_allocation": full_routes,
         "execution_lanes": {
             "immediate_visible": {
@@ -1793,6 +1838,8 @@ def build_cache_first_intake(
     cache_root: Path = DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
     book_output: Path | None = None,
 ) -> dict[str, Any]:
+    from .acquisition_gate import build_acquisition_completion_gate
+
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
         return {
@@ -1816,6 +1863,12 @@ def build_cache_first_intake(
     saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key)
     records = raw_matches or saved_matches
     source_label = "raw_cache" if raw_matches else "saved_snapshot" if saved_matches else "none"
+    freshness = snapshot_freshness(records, generated_at=utc_now(), source=source_label)
+    acquisition_gate = build_acquisition_completion_gate(
+        records,
+        freshness_status=str(freshness.get("status") or "unknown"),
+        source_kind=source_label,
+    )
     book_created = False
     if records and book_output:
         book_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1857,10 +1910,11 @@ def build_cache_first_intake(
         "book": {
             "created": book_created,
             "record_count": len(records),
-            "full_thread_confirmed": bool(raw_matches),
+            "full_thread_confirmed": False,
             "status": "raw_cache_book" if raw_matches else "partial_visible_snapshot_book" if saved_matches else "not_created",
             "path_output": "omitted",
         },
+        "acquisition_completion_gate": acquisition_gate,
         "next_actions": (
             ["book を local private projection として使い、必要なら context-passport / review-draft に渡します。"]
             if records
@@ -3940,11 +3994,16 @@ def build_discord_post_send_closeout_packet(
     observed_message_id: str = "",
     observed_url: str = "",
     note_label: str = "",
+    learning_handoff_status: str = "",
 ) -> dict[str, Any]:
     """Build a metadata-only closeout for sent or intentionally not-sent flows.
 
     This records only state transitions. It never returns Discord body text,
     message URLs, or snowflake values.
+
+    learning_handoff_status:
+      closed 送信後の学習 handoff 状態。pending / completed / held。
+      未指定かつ closed の場合は pending とし、recommended_next_state を done にしない。
     """
     normalized_external_action_state = external_action_state.strip().lower().replace("-", "_") or "human_sent"
     normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
@@ -4022,6 +4081,39 @@ def build_discord_post_send_closeout_packet(
         recommended_next_state = "review_unread_items"
     else:
         recommended_next_state = "fix_blockers"
+    learning_handoff_required = closeout_status == "closed"
+    allowed_learning_statuses = {"pending", "completed", "held"}
+    if learning_handoff_required:
+        normalized_learning_status = learning_handoff_status.strip().casefold() or "pending"
+        if normalized_learning_status not in allowed_learning_statuses:
+            normalized_learning_status = "pending"
+    else:
+        normalized_learning_status = "not_applicable"
+    # 送信 closeout 自体が closed でも、学習 handoff が pending なら done にしない。
+    if learning_handoff_required and normalized_learning_status == "pending":
+        recommended_next_state = "complete_learning_handoff"
+    learning_handoff = {
+        "schema": "discord_post_send_learning_handoff.v1",
+        "required": learning_handoff_required,
+        "status": normalized_learning_status,
+        "route": "absorbed-dialogue-router" if learning_handoff_required else "none",
+        "required_inputs": ["posted_record", "abstracted_reply_lesson"] if learning_handoff_required else [],
+        "forbidden_inputs": ["raw_discord_text", "participant_identifiers", "discord_url"],
+        "completion_evidence": (
+            "absorbed_dialogue_pointer_or_explicit_hold"
+            if learning_handoff_required
+            else "not_sent"
+        ),
+        "next_action": (
+            "posted-recordから再利用可能な返信上の学びだけを抽象化し、"
+            "absorbed-dialogue-routerへ渡してください。"
+            if learning_handoff_required and normalized_learning_status == "pending"
+            else "学習 handoff は完了または明示 hold 済みです。"
+            if learning_handoff_required
+            else "送信がないため対話スタイル吸収は行いません。"
+        ),
+        "outbound_actions": "disabled",
+    }
     return {
         "schema": "discord_post_send_closeout_packet.v1",
         "language": DEFAULT_LANGUAGE,
@@ -4050,6 +4142,7 @@ def build_discord_post_send_closeout_packet(
         if dry_run_report is not None
         else "not_provided",
         "recommended_next_state": recommended_next_state,
+        "learning_handoff": learning_handoff,
         "text_returned": False,
         "raw_discord_text_output": "omitted",
         "outbound_actions": "disabled",
