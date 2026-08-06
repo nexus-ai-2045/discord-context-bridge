@@ -69,6 +69,13 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
     counts = receipt.get("counts") if isinstance(receipt.get("counts"), dict) else {}
     messages = _positive_int(counts.get("messages"))
     artifact_counts = [_positive_int(counts.get(key)) for key in ("raw_records", "markdown_messages", "ledger_messages")]
+    attachment_counts = [
+        _positive_int(counts.get(key))
+        for key in ("attachments_discovered", "attachments_saved", "attachments_manifested")
+    ]
+    attachments_count_aligned = (
+        all(value is not None for value in attachment_counts) and len(set(attachment_counts)) == 1
+    )
     checks = [
         (receipt.get("schema") != "discord_full_capture_completion_gate.v1", "full_capture_receipt_schema_invalid"),
         (receipt.get("status") != "full", "full_capture_receipt_not_full"),
@@ -79,6 +86,8 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
         (receipt.get("counts_consistent") is not True, "full_capture_receipt_counts_inconsistent"),
         (messages is None or messages <= 0 or any(value != messages for value in artifact_counts),
          "full_capture_receipt_counts_invalid"),
+        (receipt.get("attachments_consistent") is not True, "full_capture_receipt_attachments_inconsistent"),
+        (not attachments_count_aligned, "full_capture_receipt_attachment_counts_invalid"),
         (_positive_int(receipt.get("unresolved_gap_count")) != 0, "full_capture_receipt_has_gaps"),
         (bool(receipt.get("blockers")), "full_capture_receipt_has_blockers"),
         (receipt.get("raw_text_returned") is not False, "full_capture_receipt_raw_output_invalid"),
@@ -109,6 +118,17 @@ def build_acquisition_completion_gate(
     ends = [end for _, end in periods if end is not None]
     acquired_start = min(starts) if starts else None
     acquired_end = max(ends) if ends else None
+    # receipt 自身が message_period を持つ場合は、snapshot row の欠落を補完する。
+    # full-capture-gate の verified range を gate 側で再利用できるようにする。
+    if (acquired_start is None or acquired_end is None) and isinstance(full_capture_receipt, Mapping):
+        receipt_period = full_capture_receipt.get("message_period")
+        if isinstance(receipt_period, dict):
+            receipt_start = _parse_time(receipt_period.get("start"))
+            receipt_end = _parse_time(receipt_period.get("end"))
+            if acquired_start is None:
+                acquired_start = receipt_start
+            if acquired_end is None:
+                acquired_end = receipt_end
     hashes = [str(row.get("content_hash") or "").strip() for row in rows]
     unique_records = len(set(hashes)) if rows and all(hashes) else None
     message_count = receipt_message_count

@@ -627,6 +627,12 @@ def build_parser() -> argparse.ArgumentParser:
     closeout_send.add_argument("--observed-message-id", default="", help="任意: 確認した message id。出力には表示しません")
     closeout_send.add_argument("--observed-url", default="", help="任意: 確認した Discord URL。出力には表示しません")
     closeout_send.add_argument("--note-label", default="", help="任意: closeout 用の短い安全ラベル")
+    closeout_send.add_argument(
+        "--learning-handoff-status",
+        choices=["pending", "completed", "held"],
+        default="",
+        help="送信後学習 handoff の状態。closed 時の既定は pending で、done にはしない",
+    )
     closeout_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     closeout_send.set_defaults(handler=_cmd_closeout_discord_send)
 
@@ -1678,6 +1684,7 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         observed_message_id=args.observed_message_id,
         observed_url=args.observed_url,
         note_label=args.note_label,
+        learning_handoff_status=args.learning_handoff_status,
     )
     exit_code = 0 if packet["closeout_status"] in {"closed", "not_sent"} else 2
     if args.json:

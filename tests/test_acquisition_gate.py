@@ -86,6 +86,41 @@ def test_partial_canonical_receipt_fails_closed():
     assert "full_capture_receipt_not_full" in gate["blockers"]
 
 
+def test_incomplete_attachment_artifacts_fail_closed():
+    receipt = full_receipt(
+        attachments_consistent=False,
+        counts={
+            "messages": 12, "raw_records": 12, "markdown_messages": 12, "ledger_messages": 12,
+            "attachments_discovered": 3, "attachments_saved": 1, "attachments_manifested": 1,
+        },
+    )
+    gate = build_acquisition_completion_gate(
+        [matching_record()], requested_start="2026-08-01T05:00:00+00:00",
+        requested_end="2026-08-01T07:00:00+00:00", freshness_status="recent", user_confirmed=True,
+        full_capture_receipt=receipt)
+    assert gate["summary_ready"] is False
+    assert "full_capture_receipt_attachments_inconsistent" in gate["blockers"]
+    assert "full_capture_receipt_attachment_counts_invalid" in gate["blockers"]
+
+
+def test_receipt_message_period_can_cover_requested_range_without_row_period():
+    record = {
+        "capture_id": "capture-1",
+        "captured_at": "2026-08-01T07:01:00+00:00",
+        "content_hash": "hash",
+        "source_route": "rest_backfill",
+    }
+    receipt = full_receipt(
+        message_period={"start": "2026-08-01T05:00:00+00:00", "end": "2026-08-01T07:00:00+00:00"},
+    )
+    gate = build_acquisition_completion_gate(
+        [record], requested_start="2026-08-01T05:00:00+00:00",
+        requested_end="2026-08-01T07:00:00+00:00", freshness_status="recent", user_confirmed=True,
+        full_capture_receipt=receipt)
+    assert gate["summary_ready"] is True
+    assert gate["acquired_range"]["covers_requested_range"] is True
+
+
 def test_snapshot_capture_time_never_becomes_message_period():
     record = {"capture_id": "capture-1", "captured_at": "2026-08-01T07:00:00+00:00",
               "observed_at": "2026-08-01T07:00:00+00:00", "time": "2026-08-01T07:00:00+00:00"}

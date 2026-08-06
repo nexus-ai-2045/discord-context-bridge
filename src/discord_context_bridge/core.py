@@ -456,7 +456,21 @@ def build_coverage_report(
     exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
     selected_records = ai_matches or raw_matches
     freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
-    freshness = snapshot_freshness(selected_records, generated_at=generated, source=freshness_source)
+    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
+    receipt_capture_id = str((full_capture_receipt or {}).get("capture_id") or "").strip()
+    # receipt がある場合は ai_log 優先で raw-cache を落とさず、capture_id 一致レコードを選ぶ。
+    gate_records = selected_records
+    if receipt_capture_id:
+        combined_records = list(ai_matches) + list(raw_matches)
+        receipt_matched = [
+            row
+            for row in combined_records
+            if str(row.get("capture_id") or row.get("evidence_id") or "").strip() == receipt_capture_id
+        ]
+        if receipt_matched:
+            gate_records = receipt_matched
+            freshness_source = "receipt_matched_records"
+    freshness = snapshot_freshness(gate_records, generated_at=generated, source=freshness_source)
     url_shape = analyze_discord_forum_url_shape(url) if url else {
         "language": DEFAULT_LANGUAGE,
         "schema": "discord_forum_url_shape.v1",
@@ -470,9 +484,8 @@ def build_coverage_report(
         "blocked_reason": "url_missing",
         "same_guild_fuzzy_match_allowed": False,
     }
-    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
     completion_gate = build_acquisition_completion_gate(
-        selected_records,
+        gate_records,
         requested_start=requested_start,
         requested_end=requested_end,
         freshness_status=str(freshness.get("status") or "unknown"),
@@ -3981,11 +3994,16 @@ def build_discord_post_send_closeout_packet(
     observed_message_id: str = "",
     observed_url: str = "",
     note_label: str = "",
+    learning_handoff_status: str = "",
 ) -> dict[str, Any]:
     """Build a metadata-only closeout for sent or intentionally not-sent flows.
 
     This records only state transitions. It never returns Discord body text,
     message URLs, or snowflake values.
+
+    learning_handoff_status:
+      closed 送信後の学習 handoff 状態。pending / completed / held。
+      未指定かつ closed の場合は pending とし、recommended_next_state を done にしない。
     """
     normalized_external_action_state = external_action_state.strip().lower().replace("-", "_") or "human_sent"
     normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
@@ -4064,10 +4082,20 @@ def build_discord_post_send_closeout_packet(
     else:
         recommended_next_state = "fix_blockers"
     learning_handoff_required = closeout_status == "closed"
+    allowed_learning_statuses = {"pending", "completed", "held"}
+    if learning_handoff_required:
+        normalized_learning_status = learning_handoff_status.strip().casefold() or "pending"
+        if normalized_learning_status not in allowed_learning_statuses:
+            normalized_learning_status = "pending"
+    else:
+        normalized_learning_status = "not_applicable"
+    # 送信 closeout 自体が closed でも、学習 handoff が pending なら done にしない。
+    if learning_handoff_required and normalized_learning_status == "pending":
+        recommended_next_state = "complete_learning_handoff"
     learning_handoff = {
         "schema": "discord_post_send_learning_handoff.v1",
         "required": learning_handoff_required,
-        "status": "pending" if learning_handoff_required else "not_applicable",
+        "status": normalized_learning_status,
         "route": "absorbed-dialogue-router" if learning_handoff_required else "none",
         "required_inputs": ["posted_record", "abstracted_reply_lesson"] if learning_handoff_required else [],
         "forbidden_inputs": ["raw_discord_text", "participant_identifiers", "discord_url"],
@@ -4079,6 +4107,8 @@ def build_discord_post_send_closeout_packet(
         "next_action": (
             "posted-recordから再利用可能な返信上の学びだけを抽象化し、"
             "absorbed-dialogue-routerへ渡してください。"
+            if learning_handoff_required and normalized_learning_status == "pending"
+            else "学習 handoff は完了または明示 hold 済みです。"
             if learning_handoff_required
             else "送信がないため対話スタイル吸収は行いません。"
         ),
