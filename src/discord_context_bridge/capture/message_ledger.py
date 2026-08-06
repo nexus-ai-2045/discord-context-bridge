@@ -318,3 +318,68 @@ def build_capture_projections(
         "attachment_manifest": attachment_manifest,
         "evidence": evidence,
     }
+
+
+def build_strict_full_capture_evidence_from_projections(
+    projections: Mapping[str, Any],
+    *,
+    route: str,
+    target_bound: bool = True,
+    evidence_fresh: bool = True,
+) -> dict[str, Any]:
+    """Map ledger projections into the existing full-capture gate evidence shape.
+
+    ``full_candidate`` is a local pre-check only. Final full confirmation must
+    still come from ``evaluate_full_capture`` using the trusted reconcile
+    producer contract — this helper does not invent a second full SSOT.
+    """
+
+    from .reconcile import build_reconciliation_evidence
+
+    evidence = projections.get("evidence") if isinstance(projections.get("evidence"), Mapping) else {}
+    raw = projections.get("raw") if isinstance(projections.get("raw"), Mapping) else {}
+    markdown = projections.get("markdown") if isinstance(projections.get("markdown"), Mapping) else {}
+    attachment = (
+        projections.get("attachment_manifest")
+        if isinstance(projections.get("attachment_manifest"), Mapping)
+        else {}
+    )
+    raw_ids = [str(item) for item in list(raw.get("message_ids") or [])]
+    markdown_ids = [str(item) for item in list(markdown.get("message_ids") or [])]
+    discovered = [str(item) for item in list(attachment.get("attachment_ids") or [])]
+    saved = [str(item) for item in list(attachment.get("saved_attachment_ids") or [])]
+    recon = build_reconciliation_evidence(
+        raw_message_ids=raw_ids,
+        markdown_message_ids=markdown_ids,
+        ledger_message_ids=raw_ids,
+        discovered_attachment_ids=discovered,
+        saved_attachment_ids=saved,
+        manifest_attachment_ids=saved,
+        attachment_inventory_traversal_complete=bool(
+            evidence.get("attachment_inventory_complete")
+        ),
+    )
+    capture_id = str(evidence.get("capture_id") or "").strip()
+    return {
+        **recon,
+        "capture_id": capture_id,
+        "route": str(route or "unknown"),
+        "oldest_reached": bool(evidence.get("oldest_reached")),
+        "latest_reached": bool(evidence.get("latest_reached")),
+        "upper_watermark_reached": bool(evidence.get("upper_watermark_reached")),
+        "capture_stable_after_rescan": bool(evidence.get("capture_stable_after_rescan")),
+        "stable_scan_count": int(evidence.get("stable_scan_count") or 0),
+        "unresolved_gap_count": int(evidence.get("unresolved_gap_count") or 0),
+        "pending_retry_count": int(evidence.get("pending_retry_count") or 0),
+        "target_bound": bool(target_bound),
+        "capture_id_present": bool(capture_id),
+        "evidence_schema_valid": evidence.get("schema") == "dcb-derived-full-capture-evidence.v1",
+        "evidence_fresh": bool(evidence_fresh),
+        "artifact_hashes_verified": bool(evidence.get("artifact_hashes")),
+        "manifest_schema_valid": (
+            attachment.get("schema") == "dcb-attachment-manifest-projection.v1"
+        ),
+        "external_actions": "disabled",
+        "source_evidence_schema": str(evidence.get("schema") or ""),
+        "full_candidate": bool(evidence.get("full_candidate")),
+    }

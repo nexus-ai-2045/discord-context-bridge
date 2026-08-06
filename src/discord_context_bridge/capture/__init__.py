@@ -29,6 +29,7 @@ from .virtual_scroll import merge_capture_window, new_virtual_scroll_coverage
 from .message_ledger import (
     append_message_event,
     build_capture_projections,
+    build_strict_full_capture_evidence_from_projections,
     new_message_ledger,
 )
 
@@ -50,6 +51,7 @@ __all__ = [
     "merge_persisted_capture_window",
     "append_message_event",
     "build_capture_projections",
+    "build_strict_full_capture_evidence_from_projections",
     "new_message_ledger",
     "new_capture_loop",
     "new_capture_run",

@@ -294,14 +294,22 @@ def rebuild_persisted_capture_projections(
     pending_retry_count: int,
     attachment_inventory_complete: bool,
 ) -> dict[str, Any]:
-    """Rebuild all views in memory; projection state is never persisted."""
+    """Rebuild all views in memory; projection state is never persisted.
+
+    Full confirmation is delegated to ``evaluate_full_capture``. Ledger
+    ``full_candidate`` alone never confirms full capture.
+    """
+
+    from discord_context_bridge.full_capture import evaluate_full_capture
+
+    from .message_ledger import build_strict_full_capture_evidence_from_projections
 
     ledger = store.load_message_ledger(capture_id)
     if ledger is None:
         raise SequenceConflictError("message ledger does not exist")
     coverage = store.load_coverage(capture_id)
     measured_gap_count = int(coverage.get("gap_count") or 0) if coverage else 0
-    return build_capture_projections(
+    projections = build_capture_projections(
         ledger,
         oldest_reached=oldest_reached,
         latest_reached=latest_reached,
@@ -312,6 +320,27 @@ def rebuild_persisted_capture_projections(
         pending_retry_count=pending_retry_count,
         attachment_inventory_complete=attachment_inventory_complete,
     )
+    run = store.load_checkpoint(capture_id)
+    route = str((run or {}).get("route") or "unknown")
+    strict_evidence = build_strict_full_capture_evidence_from_projections(
+        projections,
+        route=route,
+    )
+    gate = evaluate_full_capture(strict_evidence)
+    return {
+        **projections,
+        "full_capture_gate": {
+            "schema": gate.get("schema"),
+            "status": gate.get("status"),
+            "full_capture_confirmed": bool(gate.get("full_capture_confirmed")),
+            "blockers": list(gate.get("blockers") or []),
+            "counts_consistent": bool(gate.get("counts_consistent")),
+            "attachments_consistent": bool(gate.get("attachments_consistent")),
+            "full_candidate": bool(projections.get("evidence", {}).get("full_candidate")),
+            "outbound_actions": "disabled",
+            "raw_text_returned": False,
+        },
+    }
 
 
 def advance_persisted_capture(

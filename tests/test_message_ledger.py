@@ -5,8 +5,10 @@ import pytest
 from discord_context_bridge.capture.message_ledger import (
     append_message_event,
     build_capture_projections,
+    build_strict_full_capture_evidence_from_projections,
     new_message_ledger,
 )
+from discord_context_bridge.full_capture import evaluate_full_capture
 from discord_context_bridge.capture.service import (
     append_persisted_message_event,
     merge_persisted_capture_window,
@@ -212,7 +214,47 @@ def test_persisted_capture_rebuilds_views_without_storing_projection_state(
     assert store.load_message_ledger(started["capture_id"]) is not None
     assert rebuilt["normalized"]["message_count"] == 2
     assert rebuilt["evidence"]["full_candidate"] is True
+    # full_candidate は候補。最終 full は既存 evaluate_full_capture のみ。
+    assert rebuilt["full_capture_gate"]["schema"] == "discord_full_capture_completion_gate.v1"
+    assert rebuilt["full_capture_gate"]["full_capture_confirmed"] is True
+    assert rebuilt["full_capture_gate"]["full_candidate"] is True
     assert not (tmp_path / "projections").exists()
+
+
+def test_ledger_full_candidate_is_not_a_second_full_ssot() -> None:
+    ledger = new_message_ledger(
+        "capture-1",
+        target_key="private-target",
+        upper_watermark="message-1",
+    )
+    ledger = append_message_event(
+        ledger,
+        _observed("event-1", 1, "message-1", "hash-1"),
+    )
+    projections = build_capture_projections(
+        ledger,
+        oldest_reached=True,
+        latest_reached=True,
+        stable_scan_digests=["same", "same"],
+        saved_attachment_ids=[],
+        upper_watermark_reached=True,
+        unresolved_gap_count=0,
+        pending_retry_count=0,
+        attachment_inventory_complete=True,
+    )
+    assert projections["evidence"]["full_candidate"] is True
+    # derived evidence alone is untrusted by evaluate_full_capture
+    direct = evaluate_full_capture(projections["evidence"])
+    assert direct["full_capture_confirmed"] is False
+    assert "untrusted_evidence_producer" in direct["blockers"]
+    # bridge through reconcile producer is the only allowed path
+    bridged = build_strict_full_capture_evidence_from_projections(
+        projections,
+        route="chrome_extension",
+    )
+    gate = evaluate_full_capture(bridged)
+    assert gate["full_capture_confirmed"] is True
+    assert bridged["evidence_producer"] == "discord_context_bridge.capture.reconcile.v1"
 
 
 def test_full_candidate_fails_closed_on_coverage_or_attachment_uncertainty() -> None:

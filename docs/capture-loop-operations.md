@@ -16,9 +16,10 @@ attachment manifest、full-capture evidenceは、message event ledgerから
 同じdeterministic reducerで再生成する。projection自体はcapture storeへ
 永続化せず、必要時に再構築する。
 
-`full` は本文データの種類ではない。target binding、upper watermark、
-先頭・末尾到達、安定再走査、message ID集合・順序、attachment集合が
-一致した時点のderived statusである。
+`full_candidate` は ledger projection の局所 pre-check であり、最終 full ではない。
+最終 full は既存 `evaluate_full_capture`（schema `discord_full_capture_completion_gate.v1`）だけが確定する。
+`rebuild` は ledger projection を reconcile 契約へ写し、その gate 結果を `full_capture_gate` として返す。
+`full_candidate` 単独や derived evidence 直接評価で full を主張しない。
 
 ## Plan
 
