@@ -1309,7 +1309,8 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     assert closeout["schema"] == "discord_post_send_closeout_packet.v1"
     assert closeout["closeout_status"] == "closed"
     assert closeout["blockers"] == []
-    assert closeout["recommended_next_state"] == "done"
+    # 送信自体は closed でも、学習 handoff が pending の間は done にしない。
+    assert closeout["recommended_next_state"] == "complete_learning_handoff"
     assert closeout["unread_check_status"] == "none_unread"
     assert closeout["unread_signal_count"] == 0
     assert closeout["observed_message_id_output"] == "omitted"
@@ -1318,8 +1319,32 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     assert closeout["text_returned"] is False
     assert closeout["send_capability"] == "disabled"
     assert closeout["outbound_actions"] == "disabled"
+    assert closeout["learning_handoff"] == {
+        "schema": "discord_post_send_learning_handoff.v1",
+        "required": True,
+        "status": "pending",
+        "route": "absorbed-dialogue-router",
+        "required_inputs": ["posted_record", "abstracted_reply_lesson"],
+        "forbidden_inputs": ["raw_discord_text", "participant_identifiers", "discord_url"],
+        "completion_evidence": "absorbed_dialogue_pointer_or_explicit_hold",
+        "next_action": "posted-recordから再利用可能な返信上の学びだけを抽象化し、absorbed-dialogue-routerへ渡してください。",
+        "outbound_actions": "disabled",
+    }
     assert "423456789012345678" not in serialized
     assert "discord.com/channels" not in serialized
+
+    completed = build_discord_post_send_closeout_packet(
+        staging_packet=packet,
+        dry_run_report=dry_run,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="human_edited_and_reviewed",
+        unread_check_status="none_unread",
+        learning_handoff_status="completed",
+    )
+    assert completed["closeout_status"] == "closed"
+    assert completed["recommended_next_state"] == "done"
+    assert completed["learning_handoff"]["status"] == "completed"
 
 
 def test_build_discord_post_send_closeout_packet_blocks_missing_human_observation():
@@ -1349,6 +1374,9 @@ def test_build_discord_post_send_closeout_packet_closes_not_sent_without_send_ob
     assert closeout["unread_check_status"] == "not_applicable"
     assert closeout["human_sent_observed"] is False
     assert closeout["raw_discord_text_output"] == "omitted"
+    assert closeout["learning_handoff"]["required"] is False
+    assert closeout["learning_handoff"]["status"] == "not_applicable"
+    assert closeout["learning_handoff"]["route"] == "none"
 
 
 def test_build_discord_post_send_closeout_packet_blocks_not_sent_with_send_observation():
@@ -1417,6 +1445,7 @@ def test_build_discord_send_operation_status_summarizes_existing_logs():
         unread_check_status="none_unread",
         observed_message_id="423456789012345678",
         observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+        learning_handoff_status="completed",
     )
 
     status = build_discord_send_operation_status(
@@ -3650,6 +3679,7 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        learning_handoff_status="completed",
     )
     staging_path = tmp_path / "staging.json"
     dry_run_path = tmp_path / "dry-run.json"
@@ -3689,6 +3719,7 @@ def test_cli_send_operation_status_closes_post_send_retrospective_without_claimi
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        learning_handoff_status="completed",
     )
     closeout_path = tmp_path / "closeout.json"
     closeout_path.write_text(json.dumps(closeout, ensure_ascii=False), encoding="utf-8")
@@ -3750,6 +3781,7 @@ def test_cli_send_operation_status_closes_post_send_retrospective_even_with_vali
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        learning_handoff_status="completed",
     )
     staging_path = tmp_path / "staging.json"
     dry_run_path = tmp_path / "dry-run.json"

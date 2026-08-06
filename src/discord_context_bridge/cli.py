@@ -390,6 +390,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="by_hash",
         help="重複判定方針",
     )
+    coverage.add_argument("--requested-start", default="", help="要求期間の開始。timezone付きISO 8601")
+    coverage.add_argument("--requested-end", default="", help="要求期間の終了。timezone付きISO 8601")
+    coverage.add_argument(
+        "--generated-at", default="",
+        help="鮮度判定の基準時刻。timezone付きISO 8601。既定は実行時刻。"
+             "固定時刻の fixture を使う試験や、過去時点の再現に使う",
+    )
+    coverage.add_argument("--user-confirmed", action="store_true", help="取得範囲をユーザーが確認済み")
+    coverage.add_argument(
+        "--require-summary-ready", action="store_true",
+        help="要約可能ゲートを必須化し、未達なら終了コード2にする",
+    )
+    coverage.add_argument(
+        "--full-capture-receipt", type=Path,
+        help="正規 discord_full_capture_completion_gate.v1 JSON artifact",
+    )
     coverage.set_defaults(handler=_cmd_coverage_report)
 
     full_thread = sub.add_parser(
@@ -611,6 +627,12 @@ def build_parser() -> argparse.ArgumentParser:
     closeout_send.add_argument("--observed-message-id", default="", help="任意: 確認した message id。出力には表示しません")
     closeout_send.add_argument("--observed-url", default="", help="任意: 確認した Discord URL。出力には表示しません")
     closeout_send.add_argument("--note-label", default="", help="任意: closeout 用の短い安全ラベル")
+    closeout_send.add_argument(
+        "--learning-handoff-status",
+        choices=["pending", "completed", "held"],
+        default="",
+        help="送信後学習 handoff の状態。closed 時の既定は pending で、done にはしない",
+    )
     closeout_send.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     closeout_send.set_defaults(handler=_cmd_closeout_discord_send)
 
@@ -1266,8 +1288,15 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
         ai_log_path=args.ai_log,
         source_kind=args.source_kind,
         dedupe_policy=args.dedupe_policy,
+        generated_at=args.generated_at or None,
+        requested_start=args.requested_start,
+        requested_end=args.requested_end,
+        user_confirmed=args.user_confirmed,
+        full_capture_receipt_path=args.full_capture_receipt,
     )
     print(_json(payload))
+    if args.require_summary_ready:
+        return 0 if payload["acquisition_completion_gate"]["summary_ready"] else 2
     return 0 if payload["coverage"]["exact_coverage"] else 2
 
 
@@ -1655,6 +1684,7 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         observed_message_id=args.observed_message_id,
         observed_url=args.observed_url,
         note_label=args.note_label,
+        learning_handoff_status=args.learning_handoff_status,
     )
     exit_code = 0 if packet["closeout_status"] in {"closed", "not_sent"} else 2
     if args.json:
@@ -1664,6 +1694,9 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
     print(f"closeout_status: {packet['closeout_status']}")
     if packet["blockers"]:
         print("blockers: " + " / ".join(packet["blockers"]))
+    print(f"learning_handoff: {packet['learning_handoff']['status']}")
+    if packet["learning_handoff"]["required"]:
+        print(f"learning_route: {packet['learning_handoff']['route']}")
     print(packet["send_capability_label"])
     return exit_code
 

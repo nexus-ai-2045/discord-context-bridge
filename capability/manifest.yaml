@@ -58,6 +58,8 @@ required_commands:
     purpose: 下書きの文脈適合・トーン・不足前提を確認する
   - command: auto-send-preflight
     purpose: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
+  - command: closeout-discord-send
+    purpose: 人間送信後のmetadata-only記録を閉じ、posted-recordから抽象化した学びをabsorbed-dialogue-routerへ渡すlearning_handoffを返す
 verification_commands:
   - command: python3 scripts/verify_ssot_projection.py --json
     purpose: SSOT から生成された runtime skill が最新か確認する
