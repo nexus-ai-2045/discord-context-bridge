@@ -148,3 +148,7 @@ Active TODO は `ISSUE_LIST.md` を正本にする。
 - Discord send、auto reply、reaction、edit、delete は実装しない。
 - GitHub push、PR、public visibility、release、外部投稿は人間レビューと明示承認まで止める。
 - raw Discord text、参加者名、実URL、snowflake、token、cookie、webhook、local absolute path は public-safe output に出さない。
+
+## Architecture notes
+
+- See also: [docs/future-proof-architecture.md](docs/future-proof-architecture.md) (proposed)
