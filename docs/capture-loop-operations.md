@@ -108,6 +108,16 @@ discord-context-bridge capture-loop status `
   --json
 ```
 
+fixture だけの metadata-only 運用 smoke（live Discord ではない）:
+
+```powershell
+python scripts/capture_loop_metadata_smoke.py --json
+```
+
+- `overall=ok` は CLI start/observe/status + ledger rebuild + `evaluate_full_capture` 橋渡しが通った証拠。
+- `live_discord=false` と `not_claimed` を必ず確認する。live 全文完了の代替にしない。
+
+
 - checkpoint は atomic replace、event ledger は append-only。
 - virtual scroll coverageもatomic checkpointで保存し、window countの楽観lockで並行writerを防ぐ。
 - sequence 不一致、破損、予算超過は fail-closed。
