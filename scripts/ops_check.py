@@ -371,6 +371,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             env=env,
         ),
         "capture store layout lint": lambda: run_capture_store_layout_lint(env),
+        "capture-loop metadata smoke": lambda: run_command(
+            "capture-loop metadata smoke",
+            [sys.executable, "scripts/capture_loop_metadata_smoke.py", "--json"],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.profile == "fast":
