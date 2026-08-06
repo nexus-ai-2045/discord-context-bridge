@@ -133,3 +133,17 @@ def test_process_boundary_removes_ocr_as_discord_text_intake_fallback():
 
     assert "Accessibility が空読み | OCR private adapter へ切る" not in body
     assert "画像添付のOCRが必要 | DCB本文取得ではなく" in body
+
+def test_future_proof_architecture_doc_is_proposed_and_linked():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    roadmap = (ROOT / "ROADMAP.md").read_text(encoding="utf-8")
+    body = (ROOT / "docs" / "future-proof-architecture.md").read_text(encoding="utf-8")
+    assert "docs/future-proof-architecture.md" in readme
+    assert "docs/future-proof-architecture.md" in roadmap
+    for term in [
+        "Status: proposed",
+        "append-only ledger",
+        "metadata-only",
+        "outbound disabled",
+    ]:
+        assert term in body

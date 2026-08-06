@@ -197,3 +197,7 @@ python scripts/gh_guard.py --json --history-ref HEAD
 生成済み`SKILL.md`を直接編集しません。
 
 ライセンスは[MIT License](LICENSE)です。
+
+## Architecture notes
+
+- Proposed architecture durability notes: [docs/future-proof-architecture.md](docs/future-proof-architecture.md)
