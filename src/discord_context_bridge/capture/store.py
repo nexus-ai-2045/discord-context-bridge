@@ -8,6 +8,7 @@ import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from datetime import datetime
 from typing import Any, Mapping
 
 
@@ -129,6 +130,130 @@ class CaptureCheckpointStore:
 
     def message_ledger_path(self, capture_id: str) -> Path:
         return self.root / "message-ledgers" / f"{_safe_capture_id(capture_id)}.json"
+
+    def full_capture_receipt_path(self, capture_id: str) -> Path:
+        return self.root / "receipts" / "full-capture" / f"{_safe_capture_id(capture_id)}.json"
+
+    def browser_route_receipt_path(self, capture_id: str) -> Path:
+        return self.root / "receipts" / "browser-route" / f"{_safe_capture_id(capture_id)}.json"
+
+    def learning_handoff_receipt_path(self, capture_id: str) -> Path:
+        return self.root / "receipts" / "learning-handoff" / f"{_safe_capture_id(capture_id)}.json"
+
+    def _load_receipt(self, path: Path, *, capture_id: str, schema: str) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CheckpointCorruptError("receipt is unreadable") from error
+        if not isinstance(payload, dict):
+            raise CheckpointCorruptError("receipt root is invalid")
+        if payload.get("schema") != schema or payload.get("capture_id") != capture_id:
+            raise CheckpointCorruptError("receipt binding is invalid")
+        if payload.get("schema_version") != "1.0":
+            raise CheckpointCorruptError("receipt schema version is invalid")
+        recorded_at = payload.get("recorded_at")
+        try:
+            parsed_recorded_at = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+        except ValueError as error:
+            raise CheckpointCorruptError("receipt recorded_at is invalid") from error
+        if parsed_recorded_at.tzinfo is None or payload.get("recorded_by") != "discord-context-bridge":
+            raise CheckpointCorruptError("receipt provenance is invalid")
+        if payload.get("raw_text_returned") is not False:
+            raise CheckpointCorruptError("receipt exposes raw text")
+        if payload.get("outbound_actions") != "disabled":
+            raise CheckpointCorruptError("receipt enables outbound actions")
+        return payload
+
+    def load_full_capture_receipt(self, capture_id: str, *, consumer: str) -> dict[str, Any] | None:
+        payload = self._load_receipt(
+            self.full_capture_receipt_path(capture_id),
+            capture_id=capture_id,
+            schema="dcb-strict-full-capture-receipt.v1",
+        )
+        if payload is not None and payload.get("consumer_binding") != consumer:
+            raise CheckpointCorruptError("full capture receipt consumer binding is invalid")
+        if payload is not None:
+            from discord_context_bridge.acquisition_gate import validate_full_capture_receipt
+
+            if not validate_full_capture_receipt(payload)["valid"]:
+                raise CheckpointCorruptError("full capture receipt evidence is invalid")
+        return payload
+
+    def load_browser_route_receipt(self, capture_id: str) -> dict[str, Any] | None:
+        payload = self._load_receipt(
+            self.browser_route_receipt_path(capture_id),
+            capture_id=capture_id,
+            schema="dcb-browser-route-observation-receipt.v1",
+        )
+        if payload is None:
+            return None
+        observations = payload.get("observations")
+        if not isinstance(observations, list) or not observations or len(observations) > 256:
+            raise CheckpointCorruptError("browser receipt observations are invalid")
+        if [item.get("sequence") for item in observations if isinstance(item, dict)] != list(
+            range(1, len(observations) + 1)
+        ):
+            raise CheckpointCorruptError("browser receipt sequence is not contiguous")
+        if any(not isinstance(item, dict) or not item.get("route") for item in observations):
+            raise CheckpointCorruptError("browser observation route binding is invalid")
+        allowed_routes = {"chrome_extension", "in_app_browser", "desktop_accessibility", "unknown"}
+        allowed_states = {
+            "connected", "tab_inventory_ok", "claim_ok", "ready", "blocked_extension_ui",
+            "extension_unavailable", "auth_required", "external_mutation_stop", "unknown",
+        }
+        allowed_errors = {
+            "none", "popup_open", "tab_inventory_failed", "claim_failed",
+            "navigation_failed", "unknown",
+        }
+        if any(
+            item.get("route") not in allowed_routes
+            or item.get("state") not in allowed_states
+            or item.get("error_code") not in allowed_errors
+            or not isinstance(item.get("observed_at"), str)
+            for item in observations
+        ):
+            raise CheckpointCorruptError("browser observation value is invalid")
+        for item in observations:
+            try:
+                observed_at = datetime.fromisoformat(item["observed_at"].replace("Z", "+00:00"))
+            except ValueError as error:
+                raise CheckpointCorruptError("browser observation time is invalid") from error
+            if observed_at.tzinfo is None:
+                raise CheckpointCorruptError("browser observation time is invalid")
+        latest = observations[-1]
+        if payload.get("route") != latest.get("route") or payload.get("latest_state") != latest.get("state"):
+            raise CheckpointCorruptError("browser receipt projection is inconsistent")
+        return payload
+
+    def load_learning_handoff_receipt(self, capture_id: str) -> dict[str, Any] | None:
+        payload = self._load_receipt(
+            self.learning_handoff_receipt_path(capture_id),
+            capture_id=capture_id,
+            schema="dcb-learning-handoff-receipt.v1",
+        )
+        if payload is None:
+            return None
+        status = payload.get("status")
+        if status not in {"completed", "held"}:
+            raise CheckpointCorruptError("learning handoff status is invalid")
+        if (status == "completed") != (payload.get("completion_confirmed") is True):
+            raise CheckpointCorruptError("learning handoff completion evidence is invalid")
+        digest = str(payload.get("closeout_correlation_digest") or "")
+        pointer_digest = str(payload.get("evidence_pointer_digest") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise CheckpointCorruptError("learning handoff correlation is invalid")
+        if status == "completed" and not re.fullmatch(r"[0-9a-f]{64}", pointer_digest):
+            raise CheckpointCorruptError("learning handoff pointer evidence is invalid")
+        if payload.get("adapter") != "absorbed-dialogue-router":
+            raise CheckpointCorruptError("learning handoff adapter is invalid")
+        return payload
+
+    def save_receipt(self, path: Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        payload = dict(receipt)
+        _atomic_json(path, payload)
+        return payload
 
     @contextmanager
     def transition_lock(self, capture_id: str):

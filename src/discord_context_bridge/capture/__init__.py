@@ -25,6 +25,11 @@ from .store import (
     EventConflictError,
     SequenceConflictError,
 )
+from .receipts import (
+    persist_browser_route_observation,
+    persist_learning_handoff_receipt,
+    persist_strict_full_capture_receipt,
+)
 from .virtual_scroll import merge_capture_window, new_virtual_scroll_coverage
 from .message_ledger import (
     append_message_event,
@@ -60,4 +65,7 @@ __all__ = [
     "rebuild_persisted_capture_projections",
     "start_capture_loop",
     "validate_observed_full_receipt",
+    "persist_browser_route_observation",
+    "persist_learning_handoff_receipt",
+    "persist_strict_full_capture_receipt",
 ]
