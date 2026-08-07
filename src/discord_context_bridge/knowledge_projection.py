@@ -215,6 +215,11 @@ def _is_person_candidate(label: str) -> bool:
         return False
     if re.fullmatch(r"[\d\s:/.+\-]+", candidate):
         return False
+    # 日時表記は人物ではない。日本語の日時 (`2026年6月30日火曜日 22:32` 等) は
+    # 曜日漢字を含むため上の数字クラス判定を素通りする。呼び出し元の分岐順序に
+    # 依存せず弾けるよう、候補判定そのものに置く。
+    if TIMESTAMP_METADATA_RE.match(candidate):
+        return False
     if candidate.casefold() in {"http", "https"}:
         return False
     if re.match(r"(?i)^(?:https?://|www\.)", candidate):
@@ -282,6 +287,13 @@ def _parse_knowledge_events(
     while index < len(lines):
         line = TIMESTAMP_RE.sub("", lines[index]).strip()
         next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
+        # 日時行そのものは発言者行ではない。以降のどの分岐 (発言者+日時 / 次行が日時 /
+        # `発言者: 本文`) よりも先に落とす。後ろに置くと、時刻のコロンが区切りと誤認されたり
+        # (`2026年6月30日火曜日 22:32` -> `2026年6月30日火曜日 22`)、次行 lookahead により
+        # 日時行自体が発言者名として採用される。
+        if TIMESTAMP_METADATA_RE.match(line):
+            index += 1
+            continue
         author_with_timestamp = AUTHOR_WITH_TIMESTAMP_RE.match(line)
         if author_with_timestamp:
             candidate = author_with_timestamp.group("author").strip()
@@ -311,9 +323,6 @@ def _parse_knowledge_events(
             flush()
             current_author = candidate
             pending.append(colon_message.group("text").strip())
-            index += 1
-            continue
-        if TIMESTAMP_METADATA_RE.match(line):
             index += 1
             continue
         if current_author:
