@@ -29,7 +29,7 @@
 - decision: `approve / changes_requested`
 - 外から見える files と commit history:
 - review 済み:
-- 未 review: personal path **history**、identity policy、dependency vuln audit
+- 未 review: identity policy、dependency vuln audit、human visual review
 - 残余リスク:
   - dependency vulnerability の現行監査は unknown
   - remote CI の毎回機械確定は unknown
