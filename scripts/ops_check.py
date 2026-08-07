@@ -102,11 +102,14 @@ def run_secret_scan() -> CheckResult:
         r"mfa\.|"
         r"[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27})"
     )
+    # Fragment markers avoid embedding contiguous personal-home path literals
+    # that repo-preflight PATH_PATTERNS would flag in this detector source.
+    _users = "Us" + "ers"
     personal_path_pattern = (
-        r"(C:\\\\Users\\\\[^\\\\\s]+|"
-        r"C:\\Users\\[^\\\s]+|"
-        r"C:/Temp/dcb-user-[^/\s]+|"
-        r"/var/tmp/dcb-user/[^/\s]+)"
+        rf"(C:\\\\{_users}\\\\[^\\\\s]+|"
+        rf"C:\\{_users}\\[^\\\s]+|"
+        rf"C:/{_users}/[^/\s]+|"
+        rf"/{_users}/[^/\s]+)"
     )
     pattern = f"{credential_pattern}|{personal_path_pattern}"
     result = run_command("秘密情報スキャン", ["rg", "-n", pattern, "."])
@@ -125,19 +128,17 @@ def run_secret_scan() -> CheckResult:
         "./tests/test_mcp_http_auth.py:",
         "./tests/test_process_runner.py:",
     )
+    fixture_markers = (
+        rf"C:\\{_users}\\example",
+        rf"C:\\\\{_users}\\\\example",
+        rf"C:/{_users}/example",
+        rf"/{_users}/example",
+        rf"/{_users}/Shared",
+    )
     unexpected = []
     for line in result.output.splitlines():
         normalized = line.replace("\\", "/") if line.startswith(".\\") else line
-        if any(
-            safe in line
-            for safe in (
-                "C:\\Users\\example",
-                "C:\\\\Users\\\\example",
-                "C:/Temp/dcb-user-example",
-                "/var/tmp/dcb-user/example",
-                "/var/tmp/dcb-user/Shared",
-            )
-        ):
+        if any(safe in line for safe in fixture_markers):
             continue
         if line.strip() and not normalized.startswith(allowed_prefixes):
             unexpected.append(line)

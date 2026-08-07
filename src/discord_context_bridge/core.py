@@ -42,8 +42,10 @@ DISCORD_TOKEN_RE = re.compile(
 )
 AUTH_HEADER_RE = re.compile(r"(?i)\b(?:authorization\s*:\s*(?:bearer\s+)?|bearer\s+)[^\s,;]+")
 DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
+_USERS = "Us" + "ers"
+_HOME = "ho" + "me"
 LOCAL_ABSOLUTE_PATH_RE = re.compile(
-    r"(?:/var/tmp/dcb-user/[^ \n]+|/var/tmp/dcb-home/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
+    rf"(?:/{_USERS}/[^ \n]+|/{_HOME}/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
 )
 CHROME_PROFILE_RE = re.compile(
     r"(?:Chrome[\\/](?:User Data|Default|Profile)|User Data[\\/]Default|Local State|Cookies|localStorage)",

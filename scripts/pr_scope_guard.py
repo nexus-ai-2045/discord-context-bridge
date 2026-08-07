@@ -21,12 +21,14 @@ DEFAULT_RETAIN_ONLY_PATTERNS = (
     r"(^|/)extracts/",
     r"(^|/)\.local/",
 )
+_USERS = "Us" + "ers"
+_HOME = "ho" + "me"
 SENSITIVE_PATH_PATTERNS = (
     r"(^|/)extracts/",
     r"(^|/)\.local/",
-    r"[A-Za-z]:\\Users\\",
-    r"/var/tmp/dcb-user/",
-    r"/var/tmp/dcb-home/",
+    rf"[A-Za-z]:\\\\{_USERS}\\\\",
+    rf"/{_USERS}/",
+    rf"/{_HOME}/",
 )
 
 

@@ -11,7 +11,9 @@
 - [x] README / LICENSE / SECURITY.md
 - [x] CONTRIBUTING.md / PREFLIGHT.md（本 PR で追加）
 - [x] test / ops_check / SSOT projection（main 運用保証済み）
-- [ ] secret / PII / personal path / history（repo-preflight: secret 候補あり・別 PR）
+- [x] secret 現行 + 到達可能 history（local junk ref 除去後 finding=0。実 secret なし）
+- [x] personal path 現行 tree redaction（本 PR）
+- [ ] personal path **history** rewrite（別判断・force-push 要）
 - [x] dependency 設定 / CI workflow 構造
 - [ ] dependency vulnerability の現行監査
 - [ ] remote CI の毎回の機械確定（直近 PR #48/#49 は green で merge 済み）
@@ -27,15 +29,15 @@
 - decision: `approve / changes_requested`
 - 外から見える files と commit history:
 - review 済み:
-- 未 review: secret 候補、personal path 履歴、untracked local notes
+- 未 review: personal path **history**、identity policy、dependency vuln audit
 - 残余リスク:
-  - secret_scan finding_count > 0（値は非表示）
-  - personal path 候補が現行 tree / history に残る
-  - ローカル untracked の consolidation notes は public に載せない
+  - personal path 候補が **git history** の旧 detector/test/docs に残る（現行 tree は redaction 済み）
+  - dependency vulnerability / remote CI の毎回機械確定は unknown
+  - history rewrite / force-push は未実施
 - 次に承認する正確な操作: 本 PR の merge のみ（publish / visibility 変更は別承認）
 
 ## 次の PR 候補（適切なサイズ）
 
-1. secret 候補の棚卸しと除去（ignore なし）
-2. personal path の現行 tree redaction（history rewrite は別判断）
-3. expected identity policy の設定
+1. personal path の **history rewrite**（force-push + 人間明示承認）
+2. expected identity policy の設定
+3. dependency vulnerability の現行監査証跡
