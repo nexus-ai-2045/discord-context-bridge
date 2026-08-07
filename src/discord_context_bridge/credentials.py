@@ -109,6 +109,10 @@ def load_bot_token_from_provider(
         )
     except subprocess.TimeoutExpired:
         return BotTokenLoadResult(ok=False, provider="secret_command", failure_stage="token_command_timeout")
+    except FileNotFoundError:
+        return BotTokenLoadResult(ok=False, provider="secret_command", failure_stage="token_command_not_found")
+    except OSError:
+        return BotTokenLoadResult(ok=False, provider="secret_command", failure_stage="token_command_start_failed")
 
     if completed.returncode != 0:
         return BotTokenLoadResult(

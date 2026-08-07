@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -35,6 +36,8 @@ from .capture.service import (
     start_capture_loop,
 )
 from .capture.store import CaptureCheckpointStore, CaptureStoreError
+from .url_identity import classify_discord_url
+from .completeness_store import CompletenessStore
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -832,6 +835,59 @@ def build_parser() -> argparse.ArgumentParser:
     watch_guide.add_argument("--source-timeout", type=float, default=20.0, help="入力元コマンドの最大秒数")
     watch_guide.add_argument("--json", action="store_true", help="機械処理用に JSON lines で出力する")
     watch_guide.set_defaults(handler=_cmd_watch_guide)
+
+    classify_url = sub.add_parser(
+        "classify-discord-url",
+        help="URLの構造と、API/DOM等で解決したDiscord種別を分離して返す",
+    )
+    classify_url.add_argument("--url", required=True, help="対象Discord URL。出力には表示しません")
+    classify_url.add_argument(
+        "--resolved-kind",
+        choices=["unknown", "channel", "forum_parent", "thread", "message"],
+        default="unknown",
+    )
+    classify_url.add_argument("--evidence-source", default="")
+    classify_url.add_argument("--evidence-observed-at", default="")
+    classify_url.add_argument("--json", action="store_true")
+    classify_url.set_defaults(handler=_cmd_classify_discord_url)
+
+    init_completeness = sub.add_parser(
+        "init-completeness-db",
+        help="親配下の完全性証拠を保存するlocal SQLiteを初期化する",
+    )
+    init_completeness.add_argument("--db", type=Path, required=True)
+    init_completeness.add_argument("--json", action="store_true")
+    init_completeness.set_defaults(handler=_cmd_init_completeness_db)
+
+    record_inventory = sub.add_parser(
+        "record-parent-inventory",
+        help="active/archivedを列挙した親スキャン証拠をlocal SQLiteへ保存する",
+    )
+    record_inventory.add_argument("--db", type=Path, required=True)
+    record_inventory.add_argument("--evidence", type=Path, required=True)
+    record_inventory.add_argument("--json", action="store_true")
+    record_inventory.set_defaults(handler=_cmd_record_parent_inventory)
+
+    record_child = sub.add_parser(
+        "record-child-certificate",
+        help="strict_full_capture_v1の子スレッド証明書をlocal SQLiteへ保存する",
+    )
+    record_child.add_argument("--db", type=Path, required=True)
+    record_child.add_argument("--parent-target-key", required=True)
+    record_child.add_argument("--thread-id", required=True)
+    record_child.add_argument("--certificate", type=Path, required=True)
+    record_child.add_argument("--json", action="store_true")
+    record_child.set_defaults(handler=_cmd_record_child_certificate)
+
+    audit_parent = sub.add_parser(
+        "audit-parent-completeness",
+        help="親配下の棚卸し安定性・集合一致・子全文・添付・残作業ゼロを監査する",
+    )
+    audit_parent.add_argument("--db", type=Path, required=True)
+    audit_parent.add_argument("--parent-target-key", required=True)
+    audit_parent.add_argument("--json", action="store_true")
+    audit_parent.set_defaults(handler=_cmd_audit_parent_completeness)
+
     return parser
 
 
@@ -2187,6 +2243,124 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(_json(payload) if getattr(args, "json", False) else payload["message"])
         return 2
+
+
+def _cmd_classify_discord_url(args: argparse.Namespace) -> int:
+    payload = classify_discord_url(
+        args.url,
+        resolved_kind=args.resolved_kind,
+        evidence_source=args.evidence_source,
+        evidence_observed_at=args.evidence_observed_at,
+    )
+    print(_json(payload))
+    return 0 if payload["valid"] else 2
+
+def _cmd_init_completeness_db(args: argparse.Namespace) -> int:
+    CompletenessStore(args.db).initialize()
+    print(
+        _json(
+            {
+                "language": "ja",
+                "schema": "discord_completeness_store_operation.v1",
+                "ok": True,
+                "operation": "initialize",
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0
+
+def _load_private_json(path: Path) -> dict[str, Any]:
+    """Load a private local JSON evidence file without echoing path or raw content."""
+
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError("private_json_empty")
+    if len(raw.encode("utf-8")) > 1_000_000:
+        raise ValueError("private_json_too_large")
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("private_json_object_required")
+    if not parsed:
+        raise ValueError("private_json_empty_object")
+    return parsed
+
+
+def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
+    try:
+        evidence = _load_private_json(args.evidence)
+        store = CompletenessStore(args.db)
+        store.initialize()
+        store.record_inventory_scan(
+            parent_target_key=str(evidence["parent_target_key"]),
+            scan_id=str(evidence["scan_id"]),
+            observed_at=str(evidence["observed_at"]),
+            thread_ids=[str(value) for value in evidence["thread_ids"]],
+            scopes=dict(evidence["scopes"]),
+            pagination_exhausted=evidence["pagination_exhausted"],
+        )
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+        payload = {
+            "language": "ja",
+            "schema": "discord_completeness_store_operation.v1",
+            "ok": False,
+            "operation": "record_parent_inventory",
+            "blockers": ["inventory_evidence_invalid"],
+            "path_output": "omitted",
+            "identifiers_returned": False,
+            "outbound_actions": "disabled",
+        }
+    else:
+        payload = {
+            "language": "ja",
+            "schema": "discord_completeness_store_operation.v1",
+            "ok": True,
+            "operation": "record_parent_inventory",
+            "thread_count": len(evidence["thread_ids"]),
+            "path_output": "omitted",
+            "identifiers_returned": False,
+            "outbound_actions": "disabled",
+        }
+    print(_json(payload))
+    return 0 if payload["ok"] else 2
+
+def _cmd_record_child_certificate(args: argparse.Namespace) -> int:
+    try:
+        certificate = _load_private_json(args.certificate)
+        store = CompletenessStore(args.db)
+        store.initialize()
+        store.record_child_certificate(
+            args.parent_target_key,
+            args.thread_id,
+            certificate,
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+        ok = False
+    else:
+        ok = True
+    print(
+        _json(
+            {
+                "language": "ja",
+                "schema": "discord_completeness_store_operation.v1",
+                "ok": ok,
+                "operation": "record_child_certificate",
+                "blockers": [] if ok else ["child_certificate_invalid"],
+                "path_output": "omitted",
+                "identifiers_returned": False,
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0 if ok else 2
+
+def _cmd_audit_parent_completeness(args: argparse.Namespace) -> int:
+    store = CompletenessStore(args.db)
+    store.initialize()
+    payload = store.audit_parent(args.parent_target_key)
+    print(_json(payload))
+    return 0 if payload["parent_full_capture_confirmed"] else 2
 
 
 if __name__ == "__main__":
