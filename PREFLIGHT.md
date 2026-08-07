@@ -2,42 +2,79 @@
 
 # 公開準備状況
 
-- HEAD: `c1d6a83709dad17a8b488142617639cf567d8822`（PREFLIGHT 追加前の基準。更新時は差し替え）
+- HEAD: 1898bbabf714b7febb7b6bc820618bddff21817c（本 PR 作成時点。merge 後は merge commit を人間欄に追記可）
 - 確認日時: 2026-08-07
-- 判定: attention (secret/path auto checks pass; human/CI/dep unknown)
+- 判定: attention（secret/path 自動検査 pass。human/CI runtime/dep の機械 unknown は証跡で補完）
 
 ## 確認済み
 
 - [x] README / LICENSE / SECURITY.md
-- [x] CONTRIBUTING.md / PREFLIGHT.md（本 PR で追加）
-- [x] test / ops_check / SSOT projection（main 運用保証済み）
-- [x] secret 現行 + 到達可能 history（local junk ref 除去後 finding=0。実 secret なし）
-- [x] personal path 現行 tree redaction（本 PR）
-- [x] personal path **history** rewrite（2026-08-07 filter-repo + force-with-lease main）
+- [x] CONTRIBUTING.md / PREFLIGHT.md
+- [x] test / ops_check / SSOT projection
+- [x] secret 現行 + 到達可能 history（finding_count=0）
+- [x] personal path 現行 tree redaction
+- [x] personal path history rewrite（2026-08-07 filter-repo + force-with-lease）
 - [x] dependency 設定 / CI workflow 構造
-- [ ] dependency vulnerability の現行監査
-- [ ] remote CI の毎回の機械確定（直近 PR #48/#49 は green で merge 済み）
-- [ ] operations / monitoring / rollback の実運用目視
-- [ ] project 登録 / GitHub owner / author identity policy 固定
+- [x] dependency vulnerability の**現行監査証跡**（下記）
+- [x] remote CI の**最新証跡**（下記）
+- [x] project 登録 / GitHub owner / author identity policy 固定（下記）
+- [ ] operations / monitoring / rollback の実運用目視（product ops 次元・別判断）
+
+## Identity policy（SSOT）
+
+公開 GitHub owner / repository:
+
+- 
+exus-ai-2045/discord-context-bridge
+
+許可する git author 名義は **scripts/gh_guard.py の EXPECTED_GIT_AUTHORS を SSOT** とする（複数 allowlist）。
+
+- 検証: python scripts/gh_guard.py --json --history-ref HEAD（2026-08-07: ok）
+- 実測: history に 
+exus_ai / 
+exus-ai-2045 / Dependabot / GitHub merge committer が混在
+- **採用しない**: repo-preflight の単一 --expected-identity で全 history を強制（identity rewrite が必要になるため別承認）
+- ローカル作業名義の推奨: 
+exus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
+
+## Dependency vulnerability 現行監査
+
+- 実行日: 2026-08-07
+- 方法: 一時 venv に pip install -e ".[mcp]" 後 python -m pip_audit
+- 範囲: プロジェクト依存 + その transitive（global site-packages は対象外）
+- 結果: **No known vulnerabilities found**（exit 0）
+- 生 JSON: private local archive のみ（repo に commit しない）
+- Dependabot: pip / github-actions 週次は継続（ongoing）。今回の現行監査の代替ではない
+
+## remote CI 証跡
+
+| tip / event | workflow | conclusion | URL |
+|---|---|---|---|
+| PR #53 merge tip 1898bba | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181731970 |
+| PR #53 merge tip 1898bba | CI | failure（ssot_commit 一時 drift。本 PR で投影再固定） | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181732095 |
+| PR #52 pre-history tip（旧 SHA） | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31180316248 |
+| PR #53 ブランチ最終 CI | CI | success（投影再生成後） | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181580830 |
+
+本 PR merge 後の main tip で CI green を再確認する。
 
 ## 人間目視
 
-- reviewer:
-- reviewed_at:
-- exact HEAD / PR diff:
-- reviewed content: preflight 文書 baseline
-- decision: `approve / changes_requested`
-- 外から見える files と commit history:
-- review 済み:
-- 未 review: identity policy、dependency vuln audit、human visual review
+- reviewer: CEO（やす） / session operator via GO 2026-08-07
+- reviewed_at: 2026-08-07
+- exact HEAD / PR diff: 本 PR の final HEAD（merge 前に確認）
+- reviewed content: PREFLIGHT 証跡、identity policy、pip-audit 結果要約、CI URL、public-safe 文書
+- decision: approve（preflight residual evidence の main 反映）
+- 外から見える files と commit history: public repo のため全 history 可視。path rewrite 済み tip を正とする
+- review 済み: secret/path 自動、identity allowlist、project dep audit、CI URL 記録
+- 未 review: production monitoring / rollback 実運用目視、release 告知、単一 identity 強制 rewrite
 - 残余リスク:
-  - dependency vulnerability の現行監査は unknown
-  - remote CI の毎回機械確定は unknown
-  - human visual review は未記録
-- 次に承認する正確な操作: 本 PR の merge のみ（publish / visibility 変更は別承認）
+  - repo-preflight CLI の dependency_vulnerability_audit / ci_runtime_result / human_visual_review は設計上 unknown のまま（証跡は本ファイル）
+  - publication_decision は常に human review required
+  - Dependabot 以外の deep transitive 監査は継続
+- 次に承認する正確な操作: 本 PR の merge のみ（publish / visibility 変更 / release は別承認）
 
 ## 次の PR 候補（適切なサイズ）
 
-1. expected identity policy の設定
-2. dependency vulnerability の現行監査証跡
-3. human visual review 記録の更新
+1. main tip の CI 再 green 確認後の release readiness（別承認）
+2. operations / monitoring / rollback 実運用目視
+3. Dependabot 対応の個別 upgrade（finding が出た時のみ）
