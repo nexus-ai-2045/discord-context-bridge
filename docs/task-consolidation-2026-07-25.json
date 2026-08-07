@@ -1,0 +1,86 @@
+{
+  "schema_version": "fact-provenance/v1",
+  "thread_id": "019f97e4-bcd8-7e63-b32f-c222d655581a",
+  "recorded_at": "2026-07-25T15:12:31+09:00",
+  "recorded_by": "codex",
+  "claims": [
+    {
+      "classification": "fact",
+      "claim": "専用repoのmainはorigin/mainと同期し、HEADは3459c31fec1ed345a0166b3c68bfa5940e6b0deeである",
+      "source": "git status --short --branch; git rev-list --left-right --count HEAD...origin/main",
+      "actor": "codex",
+      "event_time": "2026-07-25T15:12:31+09:00",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "<local-dcb-repo>"
+    },
+    {
+      "classification": "fact",
+      "claim": "PR #29はmerge済みでmerge commitはa6d58835222fad064365d213f232d186371ac7f5である",
+      "source": "gh pr view 29 --repo nexus-ai-2045/discord-context-bridge",
+      "actor": "GitHub",
+      "event_time": "2026-07-25T04:06:13Z",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "nexus-ai-2045/discord-context-bridge PR #29"
+    },
+    {
+      "classification": "fact",
+      "claim": "open PRは0件で、PR #27は未mergeでclose済み、PR #28はmerge済みである",
+      "source": "gh pr list; gh pr view 27; gh pr view 28",
+      "actor": "GitHub",
+      "event_time": "unknown",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "nexus-ai-2045/discord-context-bridge pull requests"
+    },
+    {
+      "classification": "fact",
+      "claim": "引き継ぎ用worktreeでrepo goal statusを実行すると未コミット文書によりattention_requiredかつresidual_count 1である",
+      "source": "python scripts/repo_goal_status.py --run-smoke",
+      "actor": "codex",
+      "event_time": "2026-07-25T15:12:31+09:00",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "local repository operational gate"
+    },
+    {
+      "classification": "fact",
+      "claim": "引き継ぎ用worktreeを含むworktreeが8本存在する",
+      "source": "git worktree list --porcelain",
+      "actor": "git",
+      "event_time": "unknown",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "local discord-context-bridge worktrees"
+    },
+    {
+      "classification": "non_fact",
+      "claim": "次はclose済みPR #27のbranchを比較し、独自価値の保全とcleanup可否を判断するのが安全である",
+      "non_fact_kind": "proposal",
+      "basis": "PR #27 is closed without merge while its worktree and branch remain and PR #29 is merged",
+      "source": "gh pr view 27; gh pr view 29; ISSUE_LIST.md",
+      "actor": "codex",
+      "event_time": "2026-07-25T15:12:31+09:00",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "recommended next action"
+    },
+    {
+      "classification": "unknown",
+      "claim": "PR #29 rollup内の非必須CodeQL failureの原因とmerge後mainの再解析結果",
+      "unknown_reason": "今回の取得ではcheck詳細とmerge後解析を確認していない",
+      "verification_next": "GitHub Actions run 89628738425とmain branchの最新CodeQL runをread-onlyで確認する",
+      "source": "gh pr view 29 statusCheckRollup",
+      "actor": "codex",
+      "event_time": "unknown",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "GitHub CodeQL"
+    },
+    {
+      "classification": "unknown",
+      "claim": "残存worktreeのcleanup可否",
+      "unknown_reason": "各worktreeのdirty、ahead、upstream、PR対応を個別確認していない",
+      "verification_next": "各worktreeでgit status、rev-list、branch upstream、対応PRをread-only測定する",
+      "source": "git worktree list --porcelain",
+      "actor": "codex",
+      "event_time": "unknown",
+      "observed_at": "2026-07-25T15:12:31+09:00",
+      "scope": "local discord-context-bridge worktrees"
+    }
+  ]
+}
