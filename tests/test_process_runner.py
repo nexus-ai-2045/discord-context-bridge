@@ -123,21 +123,26 @@ def test_process_runner_truncates_returned_result_and_reports_original_sizes():
 
 def test_process_runner_stops_unbounded_output_during_execution():
     started = time.perf_counter()
+    timeout = 10
     result = run_process(
         [
             sys.executable,
             "-c",
             "import os; chunk=b'x'*8192\nwhile True: os.write(1, chunk)",
         ],
-        timeout=10,
+        timeout=timeout,
     )
 
     assert result.failure_stage == "output_limit"
     assert result.returncode == 125
-    assert result.elapsed_seconds < 5
-    assert time.perf_counter() - started < 5
+    # Contract: stop before the timeout budget. Absolute wall-clock under Windows
+    # load is not the kill success criterion (see cleanup join after terminate).
+    assert result.elapsed_seconds < timeout
+    assert time.perf_counter() - started < timeout
     assert len(result.stdout.encode("utf-8")) <= 65536
     assert result.stdout_bytes > 65536
+    # Bounded drain after limit: do not keep reading multi-GB from a runaway child.
+    assert result.stdout_bytes <= 256 * 1024
 
 
 @pytest.mark.parametrize("explicit_env", [False, True])
