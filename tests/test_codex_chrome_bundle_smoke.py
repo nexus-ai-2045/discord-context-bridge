@@ -18,7 +18,9 @@ def test_smoke_detects_global_process_overwrite_regression(tmp_path: Path) -> No
     payload = codex_chrome_bundle_smoke.build_probe(bundle=bundle)
     assert payload["ok"] is False
     assert payload["state"] == "protected_process_conflict"
-    assert payload["checks"]["normal_import"]["state"] == "pass"
+    # Static precheck may skip Node execution; either path is a conflict signal.
+    assert payload["checks"]["normal_import"]["state"] in {"pass", "static_skip"}
+    assert payload["checks"]["protected_process_import"]["state"] == "protected_process_conflict"
     assert payload["guarantee"]["chrome_extension_checked"] is False
 
 

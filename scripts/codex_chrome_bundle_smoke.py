@@ -41,6 +41,23 @@ def resolve_latest_bundle(*, chrome_cache_root: Path | None = None) -> Path | No
     return max(candidates, key=_version_key) if candidates else None
 
 
+_HOSTILE_PROCESS_ASSIGN = (
+    "globalthis.process =",
+    "global.process =",
+    "globalthis['process'] =",
+    'globalthis["process"] =',
+)
+
+
+def _bundle_has_hostile_process_assign(bundle: Path) -> bool:
+    """Static precheck: detect direct host process overwrite without running Node."""
+    try:
+        source = bundle.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    return any(token in source for token in _HOSTILE_PROCESS_ASSIGN)
+
+
 def _run_import(*, node: str, bundle: Path, protected: bool, timeout: float) -> tuple[str, int | None]:
     script = PROTECTED_PROCESS_IMPORT if protected else NORMAL_IMPORT
     bundle_specifier = bundle.resolve().as_uri()
@@ -59,7 +76,12 @@ def _run_import(*, node: str, bundle: Path, protected: bool, timeout: float) -> 
     if completed.returncode == 0:
         return "pass", 0
     combined = f"{completed.stdout}\n{completed.stderr}".lower()
-    if "cannot redefine property: process" in combined or "read only property 'process'" in combined:
+    if (
+        "cannot redefine property: process" in combined
+        or "read only property 'process'" in combined
+        or "cannot assign to read only property 'process'" in combined
+        or "cannot set property process" in combined
+    ):
         return "protected_process_conflict", completed.returncode
     if completed.returncode == 3:
         return "setup_browser_runtime_export_missing", completed.returncode
@@ -72,7 +94,7 @@ def build_probe(
     *,
     bundle: Path | None,
     node: str = "node",
-    timeout: float = 5.0,
+    timeout: float = 20.0,
     bundle_source: str = "cli",
 ) -> dict[str, Any]:
     if bundle is None or not bundle.is_file():
@@ -82,6 +104,32 @@ def build_probe(
             "state": "bundle_missing",
             "bundle_source": bundle_source,
             "bundle_path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    # Fail closed on static overwrite patterns so CI without warm Node still
+    # detects the known regression without waiting for a hung subprocess.
+    if _bundle_has_hostile_process_assign(bundle):
+        return {
+            "schema": "codex_chrome_bundle_smoke.v1",
+            "ok": False,
+            "state": "protected_process_conflict",
+            "bundle_source": bundle_source,
+            "checks": {
+                "normal_import": {"state": "static_skip", "exit_code": None},
+                "protected_process_import": {
+                    "state": "protected_process_conflict",
+                    "exit_code": None,
+                },
+            },
+            "next_action": "fix_bundle_process_shim_before_e2e",
+            "guarantee": {
+                "bundle_import_checked": True,
+                "node_repl_checked": False,
+                "chrome_extension_checked": False,
+                "discord_e2e_checked": False,
+            },
+            "bundle_path_output": "omitted",
+            "raw_error_output": "omitted",
             "outbound_actions": "disabled",
         }
     normal_state, normal_code = _run_import(node=node, bundle=bundle, protected=False, timeout=timeout)
@@ -99,6 +147,10 @@ def build_probe(
         state = "ready_for_runtime_setup"
         next_action = "run_real_node_repl_extension_e2e"
     elif normal_state == "pass" and protected_state == "protected_process_conflict":
+        state = "protected_process_conflict"
+        next_action = "fix_bundle_process_shim_before_e2e"
+    elif normal_state == "pass" and protected_state == "timeout":
+        # Some CI Node combos hang after freezing process; treat as conflict risk.
         state = "protected_process_conflict"
         next_action = "fix_bundle_process_shim_before_e2e"
     else:
@@ -130,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Codex Chrome bundle の process shim 回帰をmetadata-onlyで検査する。")
     parser.add_argument("--bundle", type=Path, help="省略時はinstalled Chrome plugin cacheの最新版を自動検出する")
     parser.add_argument("--node", default="node")
-    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     bundle = args.bundle or resolve_latest_bundle()

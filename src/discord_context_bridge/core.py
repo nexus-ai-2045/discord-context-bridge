@@ -23,19 +23,27 @@ DEFAULT_REST_BACKFILL_MANIFEST = Path(".local/discord-context-bridge/inbox/manif
 DEFAULT_LANGUAGE = "ja"
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
+# Discord UI が出す日時区切りの表記。英語 UI と日本語 UI (DEFAULT_LANGUAGE = "ja") の両方を持つ。
+# ここに無い表記は「発言者候補」として扱われ、時刻のコロンが `発言者: 本文` と誤認される。
+_WEEKDAY_JA = "[月火水木金土日]"
+_TIMESTAMP_FORMS = (
+    # 英語 UI
+    r"(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?"
+    r"|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}"
+    # 日本語 UI
+    rf"|\d{{4}}年\d{{1,2}}月\d{{1,2}}日(?:{_WEEKDAY_JA}曜日)?\s*\d{{1,2}}:\d{{2}}"
+    r"|(?:昨日|今日)\s*\d{1,2}:\d{2}"
+    rf"|\d{{1,2}}月\s*\d{{1,2}}日\s*[（(]{_WEEKDAY_JA}[）)]\s*\d{{1,2}}:\d{{2}}"
+    rf"|\d{{1,2}}/\d{{1,2}}\s*[（(]{_WEEKDAY_JA}[）)]\s*\d{{1,2}}:\d{{2}}"
+    rf"|{_WEEKDAY_JA}\s+\d{{1,2}}月\s*\d{{1,2}}日\s*[·・]\s*\d{{1,2}}:\d{{2}}"
+    r"|\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}"
+)
 AUTHOR_WITH_TIMESTAMP_RE = re.compile(
-    r"^(?P<author>.{1,80}?)\s+(?:—|–|-)\s+"
-    r"(?:(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?|"
-    r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?|"
-    r"\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})$",
+    rf"^(?P<author>.{{1,80}}?)\s+(?:—|–|-)\s+(?:{_TIMESTAMP_FORMS})$",
     re.IGNORECASE,
 )
-TIMESTAMP_METADATA_RE = re.compile(
-    r"^(?:(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?|"
-    r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?|"
-    r"\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})$",
-    re.IGNORECASE,
-)
+TIMESTAMP_METADATA_RE = re.compile(rf"^(?:{_TIMESTAMP_FORMS})$", re.IGNORECASE)
 DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d{17,20}/[A-Za-z0-9_-]+")
 DISCORD_TOKEN_RE = re.compile(
     r"(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})"

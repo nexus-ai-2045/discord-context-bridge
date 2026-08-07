@@ -142,6 +142,80 @@ def test_projection_rejects_numeric_metadata_and_url_as_people(tmp_path):
     assert 'title: "member-a"' in person.read_text(encoding="utf-8")
 
 
+def test_projection_rejects_japanese_discord_timestamps_as_people(tmp_path):
+    """日本語 Discord UI の日時区切りを人物候補にしない。
+
+    実運用の Knowledge Wiki で人物候補 395 件中 286 件 (72%) が日時文字列だった。
+    原因は日時行が TIMESTAMP_METADATA_RE に一致せず COLON_MESSAGE_RE へ落ち、
+    時刻のコロンが「発言者: 本文」の区切りと誤認されること
+    (例: `2026年6月30日火曜日 22:32` -> 人物 `2026年6月30日火曜日 22`)。
+    fixture は実データで観測した表記をそのまま使う。
+    """
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    # 日本語 Discord UI も英語 UI と同じく `発言者 -> 日時 -> 本文` の順で並ぶ。
+    # 日時の書式だけが異なり、実データで観測した 6 種類を全て含める。
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text=(
+            "member-a\n2026年6月30日火曜日 22:32\n本文A\n"
+            "member-b\n昨日 20:15\n本文B\n"
+            "member-c\n8月3日(月)21:30\n本文C\n"
+            "member-d\n火 7月 28日 · 22:10\n本文D\n"
+            "member-e\n2026/06/30 22:32\n本文E\n"
+            "member-f\n6/19(金) 21:05\n本文F"
+        ),
+        content_hash="ja-discord-timestamps",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+    )
+
+    pages = list((output_root / "People").glob("*.generated.md"))
+    titles = sorted(
+        line.split("title:", 1)[1].strip().strip('"')
+        for path in pages
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("title:")
+    )
+
+    assert titles == [f"member-{suffix}" for suffix in "abcdef"], titles
+    assert result["projected_person_count"] == 6
+
+
+def test_projection_rejects_consecutive_timestamp_lines_as_people(tmp_path):
+    """日時行が連続しても発言者名にならない (レビュー指摘の回帰固定)。
+
+    「次行が日時なら現在行を発言者にする」lookahead は、現在行自体が日時の時に
+    日時を発言者として採用してしまう。日時判定をループ先頭へ置くことで塞ぐ。
+    """
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    _append_snapshot(
+        snapshot_store,
+        sequence=1,
+        text="2026年6月30日火曜日 22:32\n昨日 20:15\nmember-a\n8月3日(月)21:30\n本文A",
+        content_hash="consecutive-timestamps",
+    )
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store,
+        output_root=output_root,
+    )
+
+    titles = [
+        line.split("title:", 1)[1].strip().strip('"')
+        for path in (output_root / "People").glob("*.generated.md")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("title:")
+    ]
+    assert titles == ["member-a"], titles
+    assert result["projected_person_count"] == 1
+
+
 def test_projection_does_not_merge_same_label_across_targets(tmp_path):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     output_root = tmp_path / "Knowledge Wiki"
