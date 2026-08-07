@@ -66,7 +66,9 @@ def classify_discord_url(
         "channel": {2},
         "forum_parent": {2},
         "thread": {3},
-        "message": {4},
+        # Normal Discord message URLs are 3-ID (/guild/channel/message).
+        # 4-ID remains accepted for nested/message targets when evidence resolves them.
+        "message": {3, 4},
         "unknown": {1, 2, 3, 4},
     }
     if count not in expected_counts[normalized_kind]:

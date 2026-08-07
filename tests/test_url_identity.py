@@ -35,7 +35,7 @@ def test_three_id_url_is_structurally_nested_but_not_assumed_thread():
     assert result["ids"]["nested_id_present"] is True
 
 
-def test_message_resolution_requires_four_id_shape():
+def test_message_resolution_rejects_two_id_shape():
     result = classify_discord_url(
         "https://discord.com/channels/1/20",
         resolved_kind="message",
@@ -45,6 +45,20 @@ def test_message_resolution_requires_four_id_shape():
 
     assert result["valid"] is False
     assert "resolved_kind_shape_mismatch" in result["blockers"]
+
+
+def test_message_resolution_accepts_three_id_shape_with_evidence():
+    result = classify_discord_url(
+        "https://discord.com/channels/1/20/30",
+        resolved_kind="message",
+        evidence_source="discord_rest_api",
+        evidence_observed_at="2026-07-28T10:00:00+09:00",
+    )
+
+    assert result["valid"] is True
+    assert result["structural_shape"] == "nested_target"
+    assert result["resolved_kind"] == "message"
+    assert result["resolution"]["state"] == "resolved"
 
 
 def test_cli_classification_does_not_echo_url(capsys):
