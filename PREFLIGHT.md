@@ -4,7 +4,7 @@
 
 - HEAD: `c1d6a83709dad17a8b488142617639cf567d8822`（PREFLIGHT 追加前の基準。更新時は差し替え）
 - 確認日時: 2026-08-07
-- 判定: `blocked`
+- 判定: ttention（secret/path 自動検査 pass。human/CI/dep は unknown）
 
 ## 確認済み
 
