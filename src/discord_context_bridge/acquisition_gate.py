@@ -76,8 +76,29 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
     attachments_count_aligned = (
         all(value is not None for value in attachment_counts) and len(set(attachment_counts)) == 1
     )
+    receipt_schema = receipt.get("schema")
+    is_canonical_persisted_receipt = receipt_schema == "dcb-strict-full-capture-receipt.v1"
+    source_gate_schema = (
+        receipt.get("source_gate_schema")
+        if is_canonical_persisted_receipt
+        else receipt_schema
+    )
     checks = [
-        (receipt.get("schema") != "discord_full_capture_completion_gate.v1", "full_capture_receipt_schema_invalid"),
+        (source_gate_schema != "discord_full_capture_completion_gate.v1", "full_capture_receipt_schema_invalid"),
+        (
+            is_canonical_persisted_receipt
+            and receipt.get("consumer_binding") != "context_acquisition",
+            "full_capture_receipt_consumer_binding_invalid",
+        ),
+        (
+            is_canonical_persisted_receipt
+            and (
+                receipt.get("schema_version") != "1.0"
+                or receipt.get("recorded_by") != "discord-context-bridge"
+                or _parse_time(receipt.get("recorded_at")) is None
+            ),
+            "full_capture_receipt_provenance_invalid",
+        ),
         (receipt.get("status") != "full", "full_capture_receipt_not_full"),
         (receipt.get("full_capture_confirmed") is not True, "full_capture_receipt_not_confirmed"),
         (not capture_id, "full_capture_receipt_capture_id_missing"),
@@ -98,6 +119,18 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
     ]
     blockers.extend(reason for failed, reason in checks if failed)
     return capture_id, messages, blockers
+
+
+def validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Expose the canonical strict validator without duplicating its rules."""
+
+    capture_id, message_count, blockers = _validate_full_capture_receipt(receipt)
+    return {
+        "valid": not blockers,
+        "capture_id": capture_id,
+        "message_count": message_count,
+        "blockers": blockers,
+    }
 
 
 def build_acquisition_completion_gate(
