@@ -2,7 +2,7 @@
 
 # 公開準備状況
 
-- HEAD: efc2f390a6d72815acea79524e33211b212df173 (2026-08-07 ops closeout)
+- HEAD: 4b6502943e21bbc600cd59d7cf0d40b8d26ee8e1 (2026-08-07 ops closeout + PUBLIC_READY tip refresh)
 - 確認日時: 2026-08-07
 - 判定: attention（secret/path 自動検査 pass。human/CI runtime/dep の機械 unknown は証跡で補完）
 
@@ -25,18 +25,14 @@
 
 公開 GitHub owner / repository:
 
-- 
-exus-ai-2045/discord-context-bridge
+- nexus-ai-2045/discord-context-bridge
 
 許可する git author 名義は **scripts/gh_guard.py の EXPECTED_GIT_AUTHORS を SSOT** とする（複数 allowlist）。
 
 - 検証: python scripts/gh_guard.py --json --history-ref HEAD（2026-08-07: ok）
-- 実測: history に 
-exus_ai / 
-exus-ai-2045 / Dependabot / GitHub merge committer が混在
+- 実測: history に nexus_ai / nexus-ai-2045 / Dependabot / GitHub merge committer が混在
 - **採用しない**: repo-preflight の単一 --expected-identity で全 history を強制（identity rewrite が必要になるため別承認）
-- ローカル作業名義の推奨: 
-exus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
+- ローカル作業名義の推奨: nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
 
 ## Dependency vulnerability 現行監査
 
@@ -51,9 +47,10 @@ exus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
 
 | tip / event | workflow | conclusion | URL |
 |---|---|---|---|
+| PR #55 merge tip 4b65029 | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31184266910 |
+| PR #55 merge tip 4b65029 | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31184266926 |
+| PR #54 merge tip efc2f39 | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31182984471 |
 | PR #53 merge tip 1898bba | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181731970 |
-| PR #53 merge tip 1898bba | CI | failure（ssot_commit 一時 drift。本 PR で投影再固定） | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181732095 |
-| PR #52 pre-history tip（旧 SHA） | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31180316248 |
 | PR #53 ブランチ最終 CI | CI | success（投影再生成後） | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181580830 |
 
 本 PR merge 後の main tip で CI green を再確認する。
@@ -84,12 +81,13 @@ exus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
 
 | 項目 | 結果 |
 |---|---|
-| HEAD | efc2f390a6d72815acea79524e33211b212df173 |
-| ops_check.py --profile release --skip-http | success |
+| HEAD (ops closeout) | efc2f390a6d72815acea79524e33211b212df173 |
+| HEAD (current tip before this PR) | 4b6502943e21bbc600cd59d7cf0d40b8d26ee8e1 |
+| ops_check.py --profile release --skip-http | success (ops closeout session) |
 | host skill sync (sync_runtime_skills.py --apply) | claude-code / codex / grok applied |
 | lint_runtime_skill_sync.py (claude-code) | in_sync |
-| main CI tip #54 | success |
-| 
-epo_goal_status.py | state=done when tree clean / open PR 0 |
+| main CI tip #55 | success |
+| repo_goal_status.py | state=done when tree clean / open PR 0 |
+| PUBLIC_READY.md tip refresh | 2026-08-07 (this PR) |
 
 host skill は local 機械にだけ適用。Discord 送信・Release 作成は未実行。

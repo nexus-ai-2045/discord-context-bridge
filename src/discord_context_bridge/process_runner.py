@@ -12,7 +12,11 @@ from typing import Mapping, Sequence
 
 
 OUTPUT_LIMIT = 64 * 1024
+# After the retained quota is exceeded, keep draining only briefly so a runaway
+# producer cannot force multi-GB reads while the process tree is being killed.
+DRAIN_AFTER_LIMIT = 256 * 1024
 PROCESS_CLEANUP_TIMEOUT = 5.0
+POST_TERMINATE_READER_JOIN = 1.0
 _CHILD_ENV_ALLOWLIST = (
     "PATH",
     "SystemRoot",
@@ -82,6 +86,9 @@ def _read_bounded_stream(stream, limit_reached: threading.Event) -> tuple[bytes,
             retained.extend(chunk[:remaining])
         if size > OUTPUT_LIMIT:
             limit_reached.set()
+            # Stop reading after a bounded drain so kill can complete under load.
+            if size >= DRAIN_AFTER_LIMIT:
+                break
     return bytes(retained), size
 
 
@@ -192,8 +199,13 @@ def run_process(
     else:
         returncode = process.returncode
 
+    join_timeout = (
+        POST_TERMINATE_READER_JOIN
+        if failure_stage in {"output_limit", "timeout"}
+        else PROCESS_CLEANUP_TIMEOUT
+    )
     for reader in readers:
-        reader.join(timeout=PROCESS_CLEANUP_TIMEOUT)
+        reader.join(timeout=join_timeout)
     # A short-lived child can exit between writing past the quota and the main
     # loop observing the event. The completed output is still a quota failure.
     if limit_reached.is_set() and failure_stage is None:
