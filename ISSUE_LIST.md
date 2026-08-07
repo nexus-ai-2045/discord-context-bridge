@@ -1,5 +1,8 @@
 # Discord Context Bridge active TODO
 
+> **測定メモ (2026-08-07):** ops residual closeout 済み。main efc2f39 / secret·path pass / open PR 0 / 
+epo_goal_status residual 0 は運用ゲート。下表の active（P1/P2）は**製品 roadmap 残**であり、運用残務ゼロとは別次元。
+>
 Updated: 2026-07-09
 
 このファイルを、リポジトリ内の active TODO 正本にする。
