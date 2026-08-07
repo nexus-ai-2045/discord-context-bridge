@@ -165,3 +165,109 @@ def test_cli_audit_is_metadata_only(tmp_path, capsys):
     assert exit_code == 2
     assert "private-parent-key" not in output
     assert str(database) not in output
+
+
+def test_string_false_certificate_flags_are_rejected(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    _record_stable_inventory(store, "forum-parent")
+    certificate = _full_certificate("c1")
+    certificate["full_capture_confirmed"] = "false"  # truthy string must not pass
+
+    try:
+        store.record_child_certificate("forum-parent", "t1", certificate)
+    except ValueError as exc:
+        assert "full_capture_confirmed_boolean_required" in str(exc)
+    else:
+        raise AssertionError("string flags must fail closed")
+
+
+def test_capture_id_cannot_be_reused_across_threads(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    _record_stable_inventory(store, "forum-parent")
+    store.record_child_certificate("forum-parent", "t1", _full_certificate("same-capture"))
+
+    try:
+        store.record_child_certificate("forum-parent", "t2", _full_certificate("same-capture"))
+    except ValueError as exc:
+        assert "capture_id_already_bound_to_other_thread" in str(exc)
+    else:
+        raise AssertionError("capture_id reuse must fail closed")
+
+
+def test_incomplete_older_scan_blocks_stable_full(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    scopes = {"active": True, "archived_public": True, "archived_private": True}
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-1",
+        observed_at="2026-07-28T09:00:00+09:00",
+        thread_ids=["t1"],
+        scopes=scopes,
+        pagination_exhausted=False,
+    )
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-2",
+        observed_at="2026-07-28T09:01:00+09:00",
+        thread_ids=["t1"],
+        scopes=scopes,
+        pagination_exhausted=True,
+    )
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+
+    result = store.audit_parent(target)
+
+    assert result["status"] != "full"
+    assert "inventory_rescan_incomplete" in result["blockers"]
+
+
+def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    scopes = {"active": True, "archived_public": True, "archived_private": True}
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-1",
+        observed_at="2026-07-28T09:00:00+09:00",
+        thread_ids=["t1", "t2"],
+        scopes=scopes,
+        pagination_exhausted=True,
+    )
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-2",
+        observed_at="2026-07-28T09:01:00+09:00",
+        thread_ids=["t1", "t2"],
+        scopes=scopes,
+        pagination_exhausted=True,
+    )
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    # Thread t2 disappears from later stable inventories.
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-3",
+        observed_at="2026-07-28T09:02:00+09:00",
+        thread_ids=["t1"],
+        scopes=scopes,
+        pagination_exhausted=True,
+    )
+    store.record_inventory_scan(
+        parent_target_key=target,
+        scan_id="scan-4",
+        observed_at="2026-07-28T09:03:00+09:00",
+        thread_ids=["t1"],
+        scopes=scopes,
+        pagination_exhausted=True,
+    )
+
+    result = store.audit_parent(target)
+
+    assert result["status"] == "full"
+    assert result["counts"]["retired_certificates"] == 1
+    assert "child_certificate_not_in_latest_inventory" not in result["blockers"]

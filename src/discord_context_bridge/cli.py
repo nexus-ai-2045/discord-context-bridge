@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -2270,6 +2271,22 @@ def _cmd_init_completeness_db(args: argparse.Namespace) -> int:
     )
     return 0
 
+def _load_private_json(path: Path) -> dict[str, Any]:
+    """Load a private local JSON evidence file without echoing path or raw content."""
+
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError("private_json_empty")
+    if len(raw.encode("utf-8")) > 1_000_000:
+        raise ValueError("private_json_too_large")
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("private_json_object_required")
+    if not parsed:
+        raise ValueError("private_json_empty_object")
+    return parsed
+
+
 def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
     try:
         evidence = _load_private_json(args.evidence)
@@ -2283,7 +2300,7 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
             scopes=dict(evidence["scopes"]),
             pagination_exhausted=evidence["pagination_exhausted"],
         )
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         payload = {
             "language": "ja",
             "schema": "discord_completeness_store_operation.v1",
@@ -2318,7 +2335,7 @@ def _cmd_record_child_certificate(args: argparse.Namespace) -> int:
             args.thread_id,
             certificate,
         )
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         ok = False
     else:
         ok = True
