@@ -2,7 +2,7 @@
 
 # 公開準備状況
 
-- HEAD: 1898bbabf714b7febb7b6bc820618bddff21817c（本 PR 作成時点。merge 後は merge commit を人間欄に追記可）
+- HEAD: efc2f390a6d72815acea79524e33211b212df173 (2026-08-07 ops closeout)
 - 確認日時: 2026-08-07
 - 判定: attention（secret/path 自動検査 pass。human/CI runtime/dep の機械 unknown は証跡で補完）
 
@@ -18,7 +18,8 @@
 - [x] dependency vulnerability の**現行監査証跡**（下記）
 - [x] remote CI の**最新証跡**（下記）
 - [x] project 登録 / GitHub owner / author identity policy 固定（下記）
-- [ ] operations / monitoring / rollback の実運用目視（product ops 次元・別判断）
+- [x] operations gate (ops_check.py --profile release --skip-http) success + host runtime skill sync applied (2026-08-07)
+- [ ] production monitoring / rollback live environment review (live Discord / on-call; separate decision)
 
 ## Identity policy（SSOT）
 
@@ -66,15 +67,29 @@ exus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
 - decision: approve（preflight residual evidence の main 反映）
 - 外から見える files と commit history: public repo のため全 history 可視。path rewrite 済み tip を正とする
 - review 済み: secret/path 自動、identity allowlist、project dep audit、CI URL 記録
-- 未 review: production monitoring / rollback 実運用目視、release 告知、単一 identity 強制 rewrite
+- 未 review: production live monitoring / rollback 実環境、GitHub Release / tag、単一 identity 強制 rewrite
 - 残余リスク:
-  - repo-preflight CLI の dependency_vulnerability_audit / ci_runtime_result / human_visual_review は設計上 unknown のまま（証跡は本ファイル）
+  - repo-preflight CLI の dep/ci/human は設計上 unknown（証跡は本ファイル）
   - publication_decision は常に human review required
-  - Dependabot 以外の deep transitive 監査は継続
-- 次に承認する正確な操作: 本 PR の merge のみ（publish / visibility 変更 / release は別承認）
+  - v0.11.0 tag / GitHub Release は未作成（PUBLIC_READY の人間承認待ち）
+- 次に承認する正確な操作: 本 PR の merge のみ（release tag / visibility / Discord live は別承認）
 
 ## 次の PR 候補（適切なサイズ）
 
-1. main tip の CI 再 green 確認後の release readiness（別承認）
-2. operations / monitoring / rollback 実運用目視
-3. Dependabot 対応の個別 upgrade（finding が出た時のみ）
+1. release readiness: version/tag/GitHub Release（PUBLIC_READY.md / 別承認）
+2. production live monitoring / rollback 実環境目視（別判断）
+3. ISSUE_LIST 製品残（P1/P2）— 運用残務ゼロとは別次元
+
+## Ops gate 証跡（2026-08-07）
+
+| 項目 | 結果 |
+|---|---|
+| HEAD | efc2f390a6d72815acea79524e33211b212df173 |
+| ops_check.py --profile release --skip-http | success |
+| host skill sync (sync_runtime_skills.py --apply) | claude-code / codex / grok applied |
+| lint_runtime_skill_sync.py (claude-code) | in_sync |
+| main CI tip #54 | success |
+| 
+epo_goal_status.py | state=done when tree clean / open PR 0 |
+
+host skill は local 機械にだけ適用。Discord 送信・Release 作成は未実行。
