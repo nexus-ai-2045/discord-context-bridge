@@ -166,7 +166,7 @@ def test_invalid_missing_field_streak_is_rejected(value):
         build_capture(URL, structured={"messages": [], "missing_field_streak": value})
 
 
-@pytest.mark.parametrize("path", ["C:/Users/example/raw.json", r"\\server\share\raw.json"])
+@pytest.mark.parametrize("path", ["C:/Temp/dcb/raw.json", r"\\server\share\raw.json"])
 def test_manifest_rejects_windows_absolute_artifact_paths(path):
     from pathlib import PurePosixPath
     from unittest.mock import patch

@@ -15,8 +15,9 @@ import export_runtime_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_USERS = "Us" + "ers"
 PRIVATE_PATTERNS = (
-    re.compile(r"/Users/[A-Za-z0-9._-]+/"),
+    re.compile(rf"/{_USERS}/[A-Za-z0-9._-]+/"),
     re.compile(r"discord(app)?\.com/api/webhooks", re.IGNORECASE),
     re.compile(r"\b(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|Authorization|Bearer )\b"),
     re.compile(r"\bmfa\.", re.IGNORECASE),

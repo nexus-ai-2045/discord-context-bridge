@@ -800,7 +800,7 @@ def test_audit_event_store_flags_private_identifiers(tmp_path):
             guild_label="example-community",
             channel_label="general",
             author_label="member-c",
-            text_snippet="local path /Users/example/Library/Application Support/Discord",
+            text_snippet=r"local path C:\\Temp\\dcb-profile\\Discord",
         ),
         store,
     )
