@@ -26,5 +26,7 @@ def test_capture_loop_metadata_smoke_script_passes() -> None:
     assert payload["overall"] == "ok"
     assert payload["live_discord"] is False
     assert payload["full_capture_confirmed"] is True
+    assert payload["receipt_persisted"] is True
+    assert payload["reconcile_returncode"] == 0
     assert payload["privacy_ok"] is True
     assert "live_discord_full_capture" in payload["not_claimed"]

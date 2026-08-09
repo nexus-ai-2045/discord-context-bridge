@@ -91,7 +91,7 @@ def run_smoke() -> dict[str, Any]:
             "direction": "toward_latest",
             "scan_pass": 1,
             "oldest_reached": True,
-            "latest_reached": False,
+            "latest_reached": True,
             "messages": [
                 {"message_id": "message-1", "content_hash": "hash-1"},
                 {"message_id": "message-2", "content_hash": "hash-2"},
@@ -143,38 +143,28 @@ def run_smoke() -> dict[str, Any]:
             ["status", "--capture-id", capture_id],
         )
 
-        # rebuild is Python API in current CLI surface; keep smoke on that contract.
-        sys.path.insert(0, str(SRC))
-        from discord_context_bridge.capture.service import (  # noqa: WPS433
-            rebuild_persisted_capture_projections,
+        code_reconcile, reconcile, reconcile_out = _run_cli(
+            store_root,
+            [
+                "reconcile",
+                "--capture-id",
+                capture_id,
+            ],
         )
-        from discord_context_bridge.capture.store import CaptureCheckpointStore  # noqa: WPS433
-
-        rebuilt = rebuild_persisted_capture_projections(
-            CaptureCheckpointStore(store_root),
-            capture_id,
-            oldest_reached=True,
-            latest_reached=True,
-            stable_scan_digests=["scan-a", "scan-a"],
-            saved_attachment_ids=[],
-            upper_watermark_reached=True,
-            unresolved_gap_count=0,
-            pending_retry_count=0,
-            attachment_inventory_complete=True,
+        combined_out = "\n".join(
+            [start_out, cache_out, live_out, status_out, reconcile_out]
         )
-        gate = rebuilt.get("full_capture_gate") if isinstance(rebuilt, dict) else {}
-        combined_out = "\n".join([start_out, cache_out, live_out, status_out])
         privacy_ok = private_target not in combined_out and "discord.com/channels" not in combined_out
         steps_ok = (
             code == 0
             and code_cache == 0
             and code_live == 0
             and code_status == 0
+            and code_reconcile == 0
             and bool(status.get("capture_id"))
             and int((observe_live.get("coverage") or {}).get("window_count") or 0) == 2
-            and bool((rebuilt.get("evidence") or {}).get("full_candidate"))
-            and bool((gate or {}).get("full_capture_confirmed"))
-            and (gate or {}).get("schema") == "discord_full_capture_completion_gate.v1"
+            and bool(reconcile.get("full_capture_confirmed"))
+            and bool(reconcile.get("receipt_persisted"))
             and privacy_ok
         )
         return {
@@ -191,15 +181,16 @@ def run_smoke() -> dict[str, Any]:
             "observe_window_count": int(
                 (observe_live.get("coverage") or {}).get("window_count") or 0
             ),
-            "full_candidate": bool((rebuilt.get("evidence") or {}).get("full_candidate")),
-            "full_capture_confirmed": bool((gate or {}).get("full_capture_confirmed")),
-            "full_capture_gate_schema": (gate or {}).get("schema"),
+            "full_capture_confirmed": bool(reconcile.get("full_capture_confirmed")),
+            "receipt_persisted": bool(reconcile.get("receipt_persisted")),
+            "reconcile_returncode": code_reconcile,
             "privacy_ok": privacy_ok,
             "returncodes": {
                 "start": code,
                 "observe_cache": code_cache,
                 "observe_live": code_live,
                 "status": code_status,
+                "reconcile": code_reconcile,
             },
             "outbound_actions": "disabled",
             "raw_text_returned": False,

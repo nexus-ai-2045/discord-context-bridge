@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 
 from discord_context_bridge.capture.message_ledger import (
@@ -15,7 +16,39 @@ from discord_context_bridge.capture.service import (
     rebuild_persisted_capture_projections,
     start_capture_loop,
 )
-from discord_context_bridge.capture.store import CaptureCheckpointStore
+from discord_context_bridge.capture.store import (
+    CaptureCheckpointStore,
+    CheckpointCorruptError,
+)
+
+
+@pytest.mark.parametrize("field", ["content_hash", "previous_event_hash", "tip_hash"])
+def test_message_ledger_load_rejects_hash_chain_tamper(tmp_path, field) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(
+        store, "private-target", "saved_artifacts", "message-1"
+    )["capture_id"]
+    merge_persisted_capture_window(
+        store,
+        capture_id,
+        {
+            "window_id": "window-1",
+            "source": "saved_snapshot",
+            "direction": "toward_latest",
+            "messages": [{"message_id": "message-1", "content_hash": "hash-1"}],
+        },
+        expected_window_count=0,
+    )
+    ledger = store.load_message_ledger(capture_id)
+    if field == "tip_hash":
+        ledger[field] = "0" * 64
+    else:
+        ledger["events"][0][field] = "tampered"
+    store.message_ledger_path(capture_id).write_text(
+        json.dumps(ledger), encoding="utf-8"
+    )
+    with pytest.raises(CheckpointCorruptError):
+        store.load_message_ledger(capture_id)
 
 
 def _observed(

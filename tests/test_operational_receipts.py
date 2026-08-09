@@ -11,6 +11,8 @@ from discord_context_bridge.capture.receipts import (
 )
 from discord_context_bridge.capture.store import CaptureCheckpointStore, CaptureStoreError
 from discord_context_bridge.capture.store import CheckpointCorruptError
+from discord_context_bridge.capture.message_ledger import new_message_ledger
+from discord_context_bridge.capture.virtual_scroll import new_virtual_scroll_coverage
 
 
 def _full_gate(capture_id: str = "capture-safe-a") -> dict[str, object]:
@@ -45,6 +47,18 @@ def _full_gate(capture_id: str = "capture-safe-a") -> dict[str, object]:
     }
 
 
+def _seed_receipt_sources(store, capture_id="capture-safe-a"):
+    store.save_message_ledger(
+        new_message_ledger(
+            capture_id, target_key="private-target", upper_watermark="message-1"
+        ),
+        expected_sequence=0,
+    )
+    store.save_coverage(
+        new_virtual_scroll_coverage(capture_id), expected_window_count=0
+    )
+
+
 def _closed_post_send() -> dict[str, object]:
     return {
         "schema": "discord_post_send_closeout_packet.v1",
@@ -76,6 +90,7 @@ def _write_adapter_receipt(tmp_path, closeout, *, capture_id="capture-safe-a", *
 
 def test_strict_full_receipt_is_atomically_persisted_and_consumer_bound(tmp_path) -> None:
     store = CaptureCheckpointStore(tmp_path)
+    _seed_receipt_sources(store)
 
     receipt = persist_strict_full_capture_receipt(
         store,
@@ -151,8 +166,10 @@ def test_strict_full_receipt_rejects_self_attested_or_wrong_capture_gate(tmp_pat
 
 def test_strict_full_receipt_uses_metadata_allowlist(tmp_path) -> None:
     gate = {**_full_gate(), "raw_private_extension": "must-not-persist"}
+    store = CaptureCheckpointStore(tmp_path)
+    _seed_receipt_sources(store)
     receipt = persist_strict_full_capture_receipt(
-        CaptureCheckpointStore(tmp_path), "capture-safe-a", gate, consumer="context_acquisition"
+        store, "capture-safe-a", gate, consumer="context_acquisition"
     )
     assert "raw_private_extension" not in receipt
 
@@ -303,8 +320,10 @@ def test_full_receipt_nested_metadata_is_projected_to_exact_keys(tmp_path) -> No
         "end": "2026-08-01T07:00:00+00:00",
         "private_extra": "drop",
     }
+    store = CaptureCheckpointStore(tmp_path)
+    _seed_receipt_sources(store)
     receipt = persist_strict_full_capture_receipt(
-        CaptureCheckpointStore(tmp_path), "capture-safe-a", gate, consumer="context_acquisition"
+        store, "capture-safe-a", gate, consumer="context_acquisition"
     )
     assert set(receipt["boundaries"]) == {
         "oldest_reached", "latest_reached", "capture_stable_after_rescan"

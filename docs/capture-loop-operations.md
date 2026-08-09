@@ -100,6 +100,43 @@ message IDがないrecordを本文hashだけでcanonical dedupeしない。
 - stable message ID欠落、window overlap gap、未処理cacheが0件。
 - このcoverage成立後も、添付inventoryとraw/Markdown/ledger照合は別gateとして必須。
 
+### Ledger再構築とfull receipt保存
+
+利用者が境界、安定再走査、添付完了、`full=true`を手書きする入口はない。
+`reconcile`はdurableなvirtual-scroll coverageとmessage ledgerからprojectionを再構築し、
+既存の正規full gateで判定する。添付IDがあるのにdurableな保存証拠がない場合はfail-closedとなる。
+`full_capture_confirmed=true`の時だけ`context_acquisition`向けstrict receiptを永続化する。
+partialはreceiptを作らず正常終了する。
+
+```powershell
+discord-context-bridge capture-loop reconcile `
+  --capture-id "<opaque capture id>" `
+  --json
+```
+
+stdoutは判定状態、blocker、receipt保存有無だけを返し、Discord URL、本文、local pathを返さない。
+`status=full`かつ`receipt_persisted=true`をreceipt保存完了の組として確認する。
+
+添付が発見されたrunでは、各source objectを同一file handleでhash/size検証し、capture固有の
+`attachment-objects`配下へatomic copyしてからmanaged refを保存台帳へ記録し、
+全IDが揃った時点でinventoryをsealする。sealはmessage ledger sequence/tip hash、coverage digest、
+window countへ結合されるため、その後の`observe`で失効し、既存full receiptも破棄される。
+
+```powershell
+discord-context-bridge capture-loop attachment-save `
+  --capture-id "<opaque capture id>" `
+  --attachment-id "<discovered attachment id>" `
+  --object-file "<private local object>" `
+  --private-ref "attachments/<relative private ref>" `
+  --expected-attachment-sequence 0 `
+  --json
+
+discord-context-bridge capture-loop attachment-seal `
+  --capture-id "<opaque capture id>" `
+  --expected-attachment-sequence 1 `
+  --json
+```
+
 ## Check
 
 ```powershell
@@ -114,7 +151,7 @@ fixture だけの metadata-only 運用 smoke（live Discord ではない）:
 python scripts/capture_loop_metadata_smoke.py --json
 ```
 
-- `overall=ok` は CLI start/observe/status + ledger rebuild + `evaluate_full_capture` 橋渡しが通った証拠。
+- `overall=ok` は CLI start/observe/status/reconcile + ledger rebuild + 正規full gate + receipt保存が通った証拠。
 - `live_discord=false` と `not_claimed` を必ず確認する。live 全文完了の代替にしない。
 
 

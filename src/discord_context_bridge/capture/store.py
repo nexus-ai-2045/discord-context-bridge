@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+from hashlib import sha256
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
@@ -113,6 +114,45 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def canonical_capture_digest(value: object) -> str:
+    return sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _safe_private_ref(value: object) -> bool:
+    ref = str(value or "")
+    return bool(
+        ref
+        and "\\" not in ref
+        and ":" not in ref
+        and not ref.startswith("/")
+        and all(part not in {"", ".", ".."} for part in ref.split("/"))
+    )
+
+
+def _contained_managed_path(root: Path, managed_ref: str) -> Path:
+    if not _safe_private_ref(managed_ref):
+        raise CheckpointCorruptError("managed attachment ref is invalid")
+    root_absolute = root.absolute()
+    path = root_absolute.joinpath(*managed_ref.split("/"))
+    current = root_absolute
+    for part in (Path(), *Path(*managed_ref.split("/")).parts):
+        current = current / part
+        try:
+            stat_result = current.lstat()
+        except FileNotFoundError:
+            continue
+        attributes = int(getattr(stat_result, "st_file_attributes", 0) or 0)
+        if current.is_symlink() or attributes & 0x400:
+            raise CheckpointCorruptError("managed attachment path uses a link or reparse point")
+    try:
+        path.resolve(strict=False).relative_to(root_absolute.resolve(strict=False))
+    except ValueError as error:
+        raise CheckpointCorruptError("managed attachment path escapes store root") from error
+    return path
+
+
 class CaptureCheckpointStore:
     """File-backed checkpoint and event ledger scoped by capture id."""
 
@@ -131,8 +171,79 @@ class CaptureCheckpointStore:
     def message_ledger_path(self, capture_id: str) -> Path:
         return self.root / "message-ledgers" / f"{_safe_capture_id(capture_id)}.json"
 
+    def attachment_save_ledger_path(self, capture_id: str) -> Path:
+        return self.root / "attachment-save-ledgers" / f"{_safe_capture_id(capture_id)}.json"
+
+    def load_attachment_save_ledger(self, capture_id: str) -> dict[str, Any] | None:
+        path = self.attachment_save_ledger_path(capture_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CheckpointCorruptError("attachment save ledger is unreadable") from error
+        if not isinstance(payload, dict):
+            raise CheckpointCorruptError("attachment save ledger root is invalid")
+        if payload.get("schema") != "dcb-private-attachment-save-ledger.v1":
+            raise CheckpointCorruptError("attachment save ledger schema is invalid")
+        if payload.get("capture_id") != capture_id:
+            raise CheckpointCorruptError("attachment save ledger binding is invalid")
+        records = payload.get("records")
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise CheckpointCorruptError("attachment save ledger records are invalid")
+        if [item.get("sequence") for item in records] != list(range(1, len(records) + 1)):
+            raise CheckpointCorruptError("attachment save ledger sequence is invalid")
+        if any(
+            not str(item.get("attachment_id") or "")
+            or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256") or ""))
+            or type(item.get("size")) is not int
+            or item["size"] < 0
+            or not _safe_private_ref(item.get("managed_ref"))
+            for item in records
+        ):
+            raise CheckpointCorruptError("attachment save ledger record is invalid")
+        expected_tip = canonical_capture_digest(records)
+        if payload.get("tip_hash") != expected_tip:
+            raise CheckpointCorruptError("attachment save ledger tip hash is invalid")
+        seal = payload.get("seal")
+        if seal is not None and (
+            not isinstance(seal, dict)
+            or set(seal) != {
+                "message_sequence", "message_tip_hash", "coverage_digest",
+                "window_count", "attachment_tip_hash",
+            }
+            or type(seal.get("message_sequence")) is not int
+            or type(seal.get("window_count")) is not int
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", str(seal.get(key) or ""))
+                for key in ("message_tip_hash", "coverage_digest", "attachment_tip_hash")
+            )
+        ):
+            raise CheckpointCorruptError("attachment save ledger seal is invalid")
+        return payload
+
+    def save_attachment_save_ledger(
+        self, ledger: Mapping[str, Any], *, expected_sequence: int
+    ) -> dict[str, Any]:
+        capture_id = _safe_capture_id(ledger.get("capture_id"))
+        current = self.load_attachment_save_ledger(capture_id)
+        current_sequence = len(current.get("records", [])) if current else 0
+        if current_sequence != expected_sequence:
+            raise SequenceConflictError(
+                f"attachment ledger sequence conflict: expected {expected_sequence}, "
+                f"found {current_sequence}"
+            )
+        payload = dict(ledger)
+        if len(payload.get("records", [])) < current_sequence:
+            raise SequenceConflictError("attachment ledger cannot move backwards")
+        _atomic_json(self.attachment_save_ledger_path(capture_id), payload)
+        return payload
+
     def full_capture_receipt_path(self, capture_id: str) -> Path:
         return self.root / "receipts" / "full-capture" / f"{_safe_capture_id(capture_id)}.json"
+
+    def invalidate_full_capture_receipt(self, capture_id: str) -> None:
+        self.full_capture_receipt_path(capture_id).unlink(missing_ok=True)
 
     def browser_route_receipt_path(self, capture_id: str) -> Path:
         return self.root / "receipts" / "browser-route" / f"{_safe_capture_id(capture_id)}.json"
@@ -179,6 +290,46 @@ class CaptureCheckpointStore:
 
             if not validate_full_capture_receipt(payload)["valid"]:
                 raise CheckpointCorruptError("full capture receipt evidence is invalid")
+            binding = payload.get("source_binding")
+            if not isinstance(binding, dict) or set(binding) != {
+                "message_ledger_digest", "coverage_digest", "attachment_ledger_digest"
+            }:
+                raise CheckpointCorruptError("full capture receipt source binding is invalid")
+            current = {
+                "message_ledger_digest": canonical_capture_digest(
+                    self.load_message_ledger(capture_id)
+                ),
+                "coverage_digest": canonical_capture_digest(self.load_coverage(capture_id)),
+                "attachment_ledger_digest": canonical_capture_digest(
+                    self.load_attachment_save_ledger(capture_id)
+                ),
+            }
+            if binding != current:
+                raise CheckpointCorruptError("full capture receipt source binding is stale")
+            attachment_ledger = self.load_attachment_save_ledger(capture_id)
+            if attachment_ledger is not None:
+                for record in attachment_ledger["records"]:
+                    managed_ref = str(record["managed_ref"])
+                    path = _contained_managed_path(self.root, managed_ref)
+                    try:
+                        with path.open("rb") as handle:
+                            before = os.fstat(handle.fileno())
+                            content = handle.read(100_000_001)
+                            after = os.fstat(handle.fileno())
+                    except OSError as error:
+                        raise CheckpointCorruptError(
+                            "full capture receipt managed object is missing"
+                        ) from error
+                    if (
+                        len(content) > 100_000_000
+                        or before.st_size != after.st_size
+                        or after.st_size != len(content)
+                        or sha256(content).hexdigest() != record["sha256"]
+                        or len(content) != record["size"]
+                    ):
+                        raise CheckpointCorruptError(
+                            "full capture receipt managed object is stale"
+                        )
         return payload
 
     def load_browser_route_receipt(self, capture_id: str) -> dict[str, Any] | None:
@@ -410,6 +561,16 @@ class CaptureCheckpointStore:
             range(1, len(events) + 1)
         ):
             raise CheckpointCorruptError("message ledger sequence is not contiguous")
+        previous = ""
+        for event in events:
+            if not isinstance(event, dict) or event.get("previous_event_hash") != previous:
+                raise CheckpointCorruptError("message ledger hash chain is invalid")
+            canonical = {key: value for key, value in event.items() if key != "event_hash"}
+            if event.get("event_hash") != canonical_capture_digest(canonical):
+                raise CheckpointCorruptError("message ledger event hash is invalid")
+            previous = str(event["event_hash"])
+        if payload.get("tip_hash") != previous:
+            raise CheckpointCorruptError("message ledger tip hash is invalid")
         if payload.get("outbound_actions") != "disabled":
             raise CheckpointCorruptError("message ledger enables outbound actions")
         return payload

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Mapping
 
 from .loop import (
@@ -11,7 +14,11 @@ from .loop import (
     build_capture_status_projection,
     new_capture_loop,
 )
-from .store import CaptureCheckpointStore, SequenceConflictError
+from .store import (
+    CaptureCheckpointStore,
+    SequenceConflictError,
+    canonical_capture_digest,
+)
 from .virtual_scroll import merge_capture_window, new_virtual_scroll_coverage
 from .message_ledger import (
     append_message_event,
@@ -26,6 +33,253 @@ def _event_digest(event: str | Mapping[str, Any]) -> str:
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def _new_attachment_save_ledger(capture_id: str) -> dict[str, Any]:
+    return {
+        "schema": "dcb-private-attachment-save-ledger.v1",
+        "capture_id": capture_id,
+        "records": [],
+        "tip_hash": canonical_capture_digest([]),
+        "seal": None,
+        "raw_text_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def _validated_private_ref(value: str) -> str:
+    if (
+        not value
+        or "\\" in value
+        or ":" in value
+        or value.startswith("/")
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        raise ValueError("attachment private ref is invalid")
+    return value
+
+
+def _managed_object_path(
+    store: CaptureCheckpointStore, capture_id: str, managed_ref: str
+) -> Path:
+    prefix = f"attachment-objects/{capture_id}/"
+    if not managed_ref.startswith(prefix):
+        raise ValueError("managed attachment ref is invalid")
+    relative = _validated_private_ref(managed_ref)
+    path = store.root.joinpath(*relative.split("/"))
+    _assert_managed_path_contained(store.root, path)
+    return path
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = int(getattr(stat_result, "st_file_attributes", 0) or 0)
+    return path.is_symlink() or bool(attributes & 0x400)
+
+
+def _assert_managed_path_contained(root: Path, path: Path) -> None:
+    root_absolute = root.absolute()
+    try:
+        relative = path.absolute().relative_to(root_absolute)
+    except ValueError as error:
+        raise ValueError("managed attachment path escapes store root") from error
+    current = root_absolute
+    if _is_link_or_reparse(current):
+        raise ValueError("managed attachment root is a link or reparse point")
+    for part in relative.parts:
+        current = current / part
+        if current.exists() and _is_link_or_reparse(current):
+            raise ValueError("managed attachment path contains a link or reparse point")
+    resolved_root = root_absolute.resolve(strict=False)
+    resolved_path = path.absolute().resolve(strict=False)
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as error:
+        raise ValueError("managed attachment path escapes resolved store root") from error
+
+
+def _read_verified_object(path: Path, *, max_bytes: int) -> tuple[bytes, str, int]:
+    with path.open("rb") as handle:
+        before = os.fstat(handle.fileno())
+        content = handle.read(max_bytes + 1)
+        after = os.fstat(handle.fileno())
+    if len(content) > max_bytes:
+        raise ValueError("attachment object is too large")
+    if before.st_size != after.st_size or after.st_size != len(content):
+        raise ValueError("attachment object changed while hashing")
+    return content, sha256(content).hexdigest(), len(content)
+
+
+def _verify_managed_record(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    record: Mapping[str, Any],
+    *,
+    max_bytes: int = 100_000_000,
+) -> None:
+    _, object_hash, size = _read_verified_object(
+        _managed_object_path(store, capture_id, str(record.get("managed_ref") or "")),
+        max_bytes=max_bytes,
+    )
+    if object_hash != record.get("sha256") or size != record.get("size"):
+        raise ValueError("managed attachment object does not match ledger")
+
+
+def record_persisted_attachment_save(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    attachment_id: str,
+    object_file: Path,
+    private_ref: str,
+    *,
+    expected_sequence: int,
+    max_bytes: int = 100_000_000,
+) -> dict[str, Any]:
+    """Hash one saved object and CAS-append metadata without exposing its path."""
+
+    if not attachment_id:
+        raise ValueError("attachment save identity is invalid")
+    private_ref = _validated_private_ref(private_ref)
+    content, object_hash, object_size = _read_verified_object(
+        object_file, max_bytes=max_bytes
+    )
+    managed_ref = f"attachment-objects/{capture_id}/{private_ref}"
+    with store.transition_lock(capture_id):
+        message_ledger = store.load_message_ledger(capture_id)
+        if message_ledger is None:
+            raise SequenceConflictError("message ledger does not exist")
+        discovered = {
+            str(item)
+            for event in message_ledger["events"]
+            for item in list(event.get("attachment_ids") or [])
+        }
+        if attachment_id not in discovered:
+            raise SequenceConflictError("attachment id was not discovered")
+        ledger = store.load_attachment_save_ledger(capture_id) or _new_attachment_save_ledger(
+            capture_id
+        )
+        records = list(ledger["records"])
+        existing = next(
+            (item for item in records if item.get("attachment_id") == attachment_id), None
+        )
+        comparable = {
+            "attachment_id": attachment_id,
+            "sha256": object_hash,
+            "size": object_size,
+            "managed_ref": managed_ref,
+        }
+        if existing is not None:
+            if {key: existing.get(key) for key in comparable} != comparable:
+                raise SequenceConflictError("attachment save record is immutable")
+            return {
+                "capture_id": capture_id,
+                "attachment_sequence": len(records),
+                "idempotent": True,
+                "raw_text_returned": False,
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        if ledger.get("seal") is not None or len(records) != expected_sequence:
+            raise SequenceConflictError("attachment save ledger is sealed or stale")
+        destination = _managed_object_path(store, capture_id, managed_ref)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _assert_managed_path_contained(store.root, destination)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        record = {"sequence": len(records) + 1, **comparable}
+        records.append(record)
+        updated = {
+            **ledger,
+            "records": records,
+            "tip_hash": canonical_capture_digest(records),
+        }
+        store.save_attachment_save_ledger(updated, expected_sequence=expected_sequence)
+        return {
+            "capture_id": capture_id,
+            "attachment_sequence": len(records),
+            "idempotent": False,
+            "raw_text_returned": False,
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+
+
+def seal_persisted_attachment_inventory(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    *,
+    expected_sequence: int,
+) -> dict[str, Any]:
+    """Seal all discovered attachment saves to current durable capture evidence."""
+
+    with store.transition_lock(capture_id):
+        message_ledger = store.load_message_ledger(capture_id)
+        coverage = store.load_coverage(capture_id)
+        if message_ledger is None or coverage is None:
+            raise SequenceConflictError("durable capture evidence does not exist")
+        ledger = store.load_attachment_save_ledger(capture_id) or _new_attachment_save_ledger(
+            capture_id
+        )
+        records = list(ledger["records"])
+        if len(records) != expected_sequence:
+            raise SequenceConflictError("attachment save ledger sequence conflict")
+        for record in records:
+            _verify_managed_record(store, capture_id, record)
+        discovered = sorted(
+            {
+                str(item)
+                for event in message_ledger["events"]
+                for item in list(event.get("attachment_ids") or [])
+            }
+        )
+        if discovered != sorted(str(item["attachment_id"]) for item in records):
+            raise SequenceConflictError("attachment inventory is incomplete")
+        seal = {
+            "message_sequence": len(message_ledger["events"]),
+            "message_tip_hash": canonical_capture_digest(message_ledger["events"]),
+            "coverage_digest": canonical_capture_digest(coverage),
+            "window_count": len(coverage["windows"]),
+            "attachment_tip_hash": str(ledger["tip_hash"]),
+        }
+        if ledger.get("seal") is not None and ledger["seal"] != seal:
+            raise SequenceConflictError("attachment inventory seal is stale")
+        updated = {**ledger, "seal": seal}
+        store.save_attachment_save_ledger(updated, expected_sequence=expected_sequence)
+        return {
+            "capture_id": capture_id,
+            "attachment_sequence": len(records),
+            "sealed": True,
+            "raw_text_returned": False,
+            "outbound_actions": "disabled",
+        }
+
+
+def verified_persisted_attachment_ids(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+    ledger: Mapping[str, Any],
+) -> list[str] | None:
+    """Return managed attachment IDs only when every object still matches."""
+
+    try:
+        for record in list(ledger.get("records") or []):
+            _verify_managed_record(store, capture_id, record)
+    except (OSError, ValueError):
+        return None
+    return [str(item.get("attachment_id") or "") for item in ledger.get("records") or []]
 
 
 def _append_window_events(
@@ -169,6 +423,7 @@ def merge_persisted_capture_window(
         )
         current_sequence = len(ledger["events"])
         updated_ledger = _append_window_events(ledger, observation)
+        store.invalidate_full_capture_receipt(capture_id)
         store.save_message_ledger(
             updated_ledger,
             expected_sequence=current_sequence,
@@ -237,6 +492,7 @@ def merge_capture_windows_cache_first(
         coverage["cache_first_applied"] = True
         coverage["initial_cache_message_count"] = cache_message_count
         coverage["intake_order"] = intake_order
+        store.invalidate_full_capture_receipt(capture_id)
         store.save_message_ledger(ledger, expected_sequence=current_sequence)
         store.save_coverage(
             coverage,
@@ -272,6 +528,7 @@ def append_persisted_message_event(
                 f"expected {expected_sequence}, found {len(ledger['events'])}"
             )
         updated = append_message_event(ledger, event)
+        store.invalidate_full_capture_receipt(capture_id)
         store.save_message_ledger(updated, expected_sequence=expected_sequence)
         return {
             "capture_id": capture_id,
