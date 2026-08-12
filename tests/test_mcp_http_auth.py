@@ -34,7 +34,10 @@ class FakeFastMCP:
 
 
 def test_http_mcp_refuses_to_start_without_auth_token(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     with pytest.raises(SystemExit, match="認証必須"):
@@ -45,7 +48,10 @@ def test_http_mcp_refuses_to_start_without_auth_token(monkeypatch, tmp_path):
 
 
 def test_http_mcp_allow_unauthenticated_is_loopback_only(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     with pytest.raises(SystemExit, match="loopback host 限定"):
@@ -55,6 +61,17 @@ def test_http_mcp_allow_unauthenticated_is_loopback_only(monkeypatch, tmp_path):
                 str(tmp_path / "events.ndjson"),
                 "--host",
                 "0.0.0.0",
+                "--allow-unauthenticated",
+            ],
+            run=lambda app: None,
+        )
+    with pytest.raises(SystemExit, match="loopback host 限定"):
+        mcp_server.main_http(
+            [
+                "--store",
+                str(tmp_path / "events.ndjson"),
+                "--host",
+                "127.0.0.2",
                 "--allow-unauthenticated",
             ],
             run=lambda app: None,
@@ -76,7 +93,10 @@ def test_http_mcp_allow_unauthenticated_is_loopback_only(monkeypatch, tmp_path):
 
 
 def test_http_mcp_conflicting_store_flags_are_rejected(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
 
     with pytest.raises(SystemExit, match="同時に指定できません"):
         mcp_server.main_http(
@@ -111,7 +131,10 @@ async def _call_app(app, scope):
 
 
 def test_http_mcp_with_token_wraps_app_and_enforces_bearer(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     monkeypatch.setenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, "test-secret-token")
     launched = []
 
@@ -132,6 +155,22 @@ def test_http_mcp_with_token_wraps_app_and_enforces_bearer(monkeypatch, tmp_path
         denied = asyncio.run(_call_app(app, _asgi_http_scope(bad)))
         assert denied[0]["status"] == 401, f"認証なし/不一致が通過: {bad!r}"
         assert b"unauthorized" in denied[1]["body"]
+
+
+def test_real_mcp_http_app_is_wrapped_by_bearer_auth(monkeypatch, tmp_path):
+    pytest.importorskip("mcp")
+    monkeypatch.setenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, "test-secret-token")
+    launched = []
+
+    result = mcp_server.main_http(
+        ["--store", str(tmp_path / "events.ndjson")],
+        run=lambda app: launched.append(app),
+    )
+
+    assert result == 0
+    assert len(launched) == 1
+    assert isinstance(launched[0], mcp_server.BearerAuthASGI)
+    assert callable(launched[0]._app)
 
 
 def test_bearer_auth_asgi_passes_lifespan_and_rejects_websocket():

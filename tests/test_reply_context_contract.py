@@ -64,7 +64,10 @@ def test_mcp_infers_fetched_count_when_omitted(monkeypatch, tmp_path):
 
             return register
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     server = mcp_server.build_server(store=tmp_path / "events.ndjson")
 
     payload = server.tools["plan_reply_context_before_draft"](
