@@ -642,6 +642,7 @@ def advance_persisted_capture(
                     raise SequenceConflictError(
                         "ledger event does not match recoverable checkpoint"
                     )
+                store.invalidate_full_capture_receipt(capture_id)
                 store.save_checkpoint(recovered, expected_sequence=current_sequence)
                 return build_capture_status_projection(recovered)
         current_sequence = len(run["checkpoints"])
@@ -665,6 +666,7 @@ def advance_persisted_capture(
             "raw_text_returned": False,
             "outbound_actions": "disabled",
         }
+        store.invalidate_full_capture_receipt(capture_id)
         store.append_event(ledger_event, expected_sequence=expected_sequence)
         store.save_checkpoint(updated, expected_sequence=expected_sequence)
         return build_capture_status_projection(updated)

@@ -741,3 +741,62 @@ def test_full_receipt_source_binding_rejects_direct_coverage_change(tmp_path, ca
     store.coverage_path(capture_id).write_text(json.dumps(coverage), encoding="utf-8")
     with pytest.raises(CheckpointCorruptError, match="source binding is stale"):
         store.load_full_capture_receipt(capture_id, consumer="context_acquisition")
+
+
+def test_retryable_failure_invalidates_full_receipt(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(tmp_path)
+    store = CaptureCheckpointStore(tmp_path)
+    assert main(
+        [
+            "capture-loop", "reconcile", "--store-root", str(tmp_path),
+            "--capture-id", capture_id, "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert store.full_capture_receipt_path(capture_id).exists() is True
+
+    status = advance_persisted_capture(
+        store,
+        capture_id,
+        "retryable-failure-after-receipt",
+        "retryable_failure",
+        expected_sequence=0,
+    )
+
+    assert status["state"] == "retry_wait"
+    assert store.full_capture_receipt_path(capture_id).exists() is False
+    assert store.load_full_capture_receipt(
+        capture_id, consumer="context_acquisition"
+    ) is None
+
+
+def test_event_checkpoint_crash_window_invalidates_full_receipt(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    capture_id = _capture_with_ledger(tmp_path)
+    store = CaptureCheckpointStore(tmp_path)
+    assert main(
+        [
+            "capture-loop", "reconcile", "--store-root", str(tmp_path),
+            "--capture-id", capture_id, "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert store.full_capture_receipt_path(capture_id).exists() is True
+
+    def fail_checkpoint_save(*args, **kwargs):
+        raise OSError("simulated checkpoint write failure")
+
+    monkeypatch.setattr(store, "save_checkpoint", fail_checkpoint_save)
+    with pytest.raises(OSError, match="simulated checkpoint write failure"):
+        advance_persisted_capture(
+            store,
+            capture_id,
+            "retryable-failure-before-checkpoint",
+            "retryable_failure",
+            expected_sequence=0,
+        )
+
+    assert store.full_capture_receipt_path(capture_id).exists() is False
+    assert len(store.load_events(capture_id)) == 1
+    assert len(store.load_checkpoint(capture_id)["checkpoints"]) == 0

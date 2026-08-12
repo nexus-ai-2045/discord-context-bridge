@@ -294,10 +294,13 @@ class CaptureCheckpointStore:
                 raise CheckpointCorruptError("full capture receipt evidence is invalid")
             binding = payload.get("source_binding")
             if not isinstance(binding, dict) or set(binding) != {
-                "message_ledger_digest", "coverage_digest", "attachment_ledger_digest"
+                "checkpoint_digest", "message_ledger_digest", "coverage_digest",
+                "attachment_ledger_digest",
             }:
                 raise CheckpointCorruptError("full capture receipt source binding is invalid")
+            checkpoint = self.load_checkpoint(capture_id)
             current = {
+                "checkpoint_digest": canonical_capture_digest(checkpoint),
                 "message_ledger_digest": canonical_capture_digest(
                     self.load_message_ledger(capture_id)
                 ),
@@ -308,6 +311,13 @@ class CaptureCheckpointStore:
             }
             if binding != current:
                 raise CheckpointCorruptError("full capture receipt source binding is stale")
+            if checkpoint is not None and (
+                checkpoint.get("blocker") is not None
+                or checkpoint.get("state") == "retry_wait"
+                or str(checkpoint.get("state") or "").startswith("paused_")
+                or checkpoint.get("state") == "blocked_closed"
+            ):
+                raise CheckpointCorruptError("full capture receipt checkpoint is not usable")
             attachment_ledger = self.load_attachment_save_ledger(capture_id)
             if attachment_ledger is not None:
                 for record in attachment_ledger["records"]:
@@ -495,6 +505,8 @@ class CaptureCheckpointStore:
         if next_sequence < current_sequence:
             raise SequenceConflictError("checkpoint sequence cannot move backwards")
         _atomic_json(self.checkpoint_path(capture_id), payload)
+        if current != payload:
+            self.invalidate_full_capture_receipt(capture_id)
         return payload
 
     def load_coverage(self, capture_id: str) -> dict[str, Any] | None:

@@ -151,12 +151,21 @@ def persist_strict_full_capture_receipt(
         "outbound_actions": "disabled",
     }
     with store.transition_lock(capture_id):
+        checkpoint = store.load_checkpoint(capture_id)
         message_ledger = store.load_message_ledger(capture_id)
         coverage = store.load_coverage(capture_id)
         attachment_ledger = store.load_attachment_save_ledger(capture_id)
         if message_ledger is None or coverage is None:
             raise CaptureStoreError("full capture receipt source evidence is missing")
+        if checkpoint is not None and (
+            checkpoint.get("blocker") is not None
+            or checkpoint.get("state") == "retry_wait"
+            or str(checkpoint.get("state") or "").startswith("paused_")
+            or checkpoint.get("state") == "blocked_closed"
+        ):
+            raise CaptureStoreError("full capture receipt checkpoint is not usable")
         receipt["source_binding"] = {
+            "checkpoint_digest": canonical_capture_digest(checkpoint),
             "message_ledger_digest": canonical_capture_digest(message_ledger),
             "coverage_digest": canonical_capture_digest(coverage),
             "attachment_ledger_digest": canonical_capture_digest(attachment_ledger),
