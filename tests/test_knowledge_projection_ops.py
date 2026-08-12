@@ -270,6 +270,7 @@ def test_task_verifier_checks_operational_settings():
     for expected in (
         "working_directory",
         "existing.State",
+        "enabledTriggers.Count -eq 1",
         "DaysInterval",
         "StartBoundary",
         "execution_time_limit",

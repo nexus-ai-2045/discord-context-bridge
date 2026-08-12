@@ -48,7 +48,8 @@ $matchDetails = @{
 }
 if ($existing) {
     $expectedTime = [TimeSpan]::Parse($At)
-    $dailyTriggers = @($existing.Triggers | Where-Object { $_.DaysInterval -eq 1 -and $_.Enabled })
+    $enabledTriggers = @($existing.Triggers | Where-Object { $_.Enabled })
+    $dailyTriggers = @($enabledTriggers | Where-Object { $_.DaysInterval -eq 1 })
     $matchingTriggers = @($dailyTriggers | Where-Object {
         ([DateTime]$_.StartBoundary).TimeOfDay -eq $expectedTime
     })
@@ -57,7 +58,8 @@ if ($existing) {
         ($existing.Actions.Arguments -eq ("--headless " + $argumentString))
     $matchDetails.working_directory = $existing.Actions.WorkingDirectory -eq $RepoRoot
     $matchDetails.enabled = ($existing.State -ne "Disabled") -and $existing.Settings.Enabled
-    $matchDetails.daily_trigger = $dailyTriggers.Count -eq 1
+    $matchDetails.daily_trigger = ($enabledTriggers.Count -eq 1) -and
+        ($dailyTriggers.Count -eq 1)
     $matchDetails.schedule = $matchingTriggers.Count -eq 1
     $matchDetails.multiple_instances = $existing.Settings.MultipleInstances -eq "IgnoreNew"
     $matchDetails.execution_time_limit = $existing.Settings.ExecutionTimeLimit -eq "PT15M"
