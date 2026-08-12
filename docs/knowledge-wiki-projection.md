@@ -52,9 +52,9 @@ Knowledge Wiki/
 
 ## 日次運用
 
-`scripts/run_knowledge_wiki_projection.py` は既存projectionを呼ぶ薄い運用runnerである。同時起動をlockで停止し、本文とローカルパスを含まない最新実行receiptをatomicに保存する。`--dry-run`はWikiとreceiptを変更せず、`--verify`は最後の成功receiptを読み取り専用で確認する。
+`scripts/run_knowledge_wiki_projection.py` は既存projectionを呼ぶ薄い運用runnerである。同時起動をlockで停止し、本文とローカルパスを含まない最新実行receiptをatomicに保存する。`--dry-run`はWikiとreceiptを変更せず、`--verify`は成功receiptのtimestampを含めて読み取り専用で確認する。既定では36時間より古いreceiptを失敗とし、必要な場合だけ`--max-receipt-age-hours`で変更する。
 
-Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのactionを照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。
+Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのaction、working directory、有効状態、日次trigger、時刻、同時起動、15分上限、hidden設定を照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。
 
 ```powershell
 .\scripts\setup_knowledge_wiki_projection_task.ps1 `
