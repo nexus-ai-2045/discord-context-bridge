@@ -36,14 +36,37 @@ $settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -A
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
 $matches = $false
+$matchDetails = @{
+    action = $false
+    working_directory = $false
+    enabled = $false
+    daily_trigger = $false
+    schedule = $false
+    multiple_instances = $false
+    execution_time_limit = $false
+    hidden = $false
+}
 if ($existing) {
-    $matches = ($existing.Actions.Execute -eq "conhost.exe") -and
-        ($existing.Actions.Arguments -eq ("--headless " + $argumentString)) -and
-        ($existing.Settings.MultipleInstances -eq "IgnoreNew")
+    $expectedTime = [TimeSpan]::Parse($At)
+    $dailyTriggers = @($existing.Triggers | Where-Object { $_.DaysInterval -eq 1 -and $_.Enabled })
+    $matchingTriggers = @($dailyTriggers | Where-Object {
+        ([DateTime]$_.StartBoundary).TimeOfDay -eq $expectedTime
+    })
+    $matchDetails.action = (@($existing.Actions).Count -eq 1) -and
+        ($existing.Actions.Execute -eq "conhost.exe") -and
+        ($existing.Actions.Arguments -eq ("--headless " + $argumentString))
+    $matchDetails.working_directory = $existing.Actions.WorkingDirectory -eq $RepoRoot
+    $matchDetails.enabled = ($existing.State -ne "Disabled") -and $existing.Settings.Enabled
+    $matchDetails.daily_trigger = $dailyTriggers.Count -eq 1
+    $matchDetails.schedule = $matchingTriggers.Count -eq 1
+    $matchDetails.multiple_instances = $existing.Settings.MultipleInstances -eq "IgnoreNew"
+    $matchDetails.execution_time_limit = $existing.Settings.ExecutionTimeLimit -eq "PT15M"
+    $matchDetails.hidden = [bool]$existing.Settings.Hidden
+    $matches = @($matchDetails.Values | Where-Object { -not $_ }).Count -eq 0
 }
 
 if ($Verify) {
-    $result = @{ schema = "dcb.knowledge_projection_task.v1"; ok = $matches; action = "verify"; task_present = [bool]$existing; task_matches = $matches; private_local_only = $true; paths_returned = $false }
+    $result = @{ schema = "dcb.knowledge_projection_task.v1"; ok = $matches; action = "verify"; task_present = [bool]$existing; task_matches = $matches; match_details = $matchDetails; private_local_only = $true; paths_returned = $false }
     if ($Json) { $result | ConvertTo-Json -Compress } else { $result }
     if ($matches) { exit 0 } else { exit 2 }
 }
