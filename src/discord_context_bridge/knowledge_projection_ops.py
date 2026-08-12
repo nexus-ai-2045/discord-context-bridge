@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,13 +19,20 @@ class ProjectionAlreadyRunning(RuntimeError):
     pass
 
 
+class ProjectionLockError(RuntimeError):
+    pass
+
+
 @contextmanager
 def projection_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ProjectionLockError("projection_lock_unavailable") from exc
     try:
         handle = lock_path.open("a+b")
     except OSError as exc:
-        raise ProjectionAlreadyRunning("projection_already_running") from exc
+        raise ProjectionLockError("projection_lock_unavailable") from exc
     acquired = False
     try:
         try:
@@ -32,6 +40,9 @@ def projection_lock(lock_path: Path) -> Iterator[None]:
                 handle.write(b"0")
                 handle.flush()
             handle.seek(0)
+        except OSError as exc:
+            raise ProjectionLockError("projection_lock_unavailable") from exc
+        try:
             if os.name == "nt":
                 import msvcrt
 
@@ -42,7 +53,9 @@ def projection_lock(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
         except OSError as exc:
-            raise ProjectionAlreadyRunning("projection_already_running") from exc
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise ProjectionAlreadyRunning("projection_already_running") from exc
+            raise ProjectionLockError("projection_lock_unavailable") from exc
         yield
     finally:
         if acquired:
@@ -145,11 +158,35 @@ def run_projection(
         return receipt
 
 
-def verify_projection_receipt(receipt_path: Path) -> dict[str, Any]:
+def verify_projection_receipt(
+    receipt_path: Path,
+    *,
+    max_age: timedelta = timedelta(hours=36),
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if max_age <= timedelta(0):
+        raise ValueError("max_age must be greater than zero")
     try:
         payload = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {"ok": False, "reason": "receipt_unreadable"}
     if payload.get("schema") != RECEIPT_SCHEMA or payload.get("ok") is not True:
         return {"ok": False, "reason": "receipt_not_successful"}
-    return {"ok": True, "reason": "", "recorded_at": payload.get("recorded_at", "")}
+    recorded_at_raw = payload.get("recorded_at")
+    if not isinstance(recorded_at_raw, str):
+        return {"ok": False, "reason": "receipt_timestamp_invalid"}
+    try:
+        recorded_at = datetime.fromisoformat(recorded_at_raw)
+    except ValueError:
+        return {"ok": False, "reason": "receipt_timestamp_invalid"}
+    if recorded_at.tzinfo is None:
+        return {"ok": False, "reason": "receipt_timestamp_invalid"}
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    age = checked_at - recorded_at
+    if age < timedelta(0):
+        return {"ok": False, "reason": "receipt_timestamp_invalid"}
+    if age > max_age:
+        return {"ok": False, "reason": "receipt_stale"}
+    return {"ok": True, "reason": "", "recorded_at": recorded_at_raw}
