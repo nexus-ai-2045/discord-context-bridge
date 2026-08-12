@@ -685,6 +685,47 @@ def test_direct_message_append_invalidates_full_receipt(tmp_path, capsys) -> Non
     assert store.full_capture_receipt_path(capture_id).exists() is False
 
 
+def test_attachment_seal_after_receipt_invalidates_and_reconcile_recovers(
+    tmp_path, capsys
+) -> None:
+    capture_id = _capture_with_ledger(tmp_path)
+    store = CaptureCheckpointStore(tmp_path)
+    reconcile = [
+        "capture-loop", "reconcile", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--json",
+    ]
+
+    assert main(reconcile) == 0
+    capsys.readouterr()
+    assert store.full_capture_receipt_path(capture_id).exists() is True
+
+    assert main(
+        [
+            "capture-loop", "attachment-seal", "--store-root", str(tmp_path),
+            "--capture-id", capture_id,
+            "--expected-attachment-sequence", "0", "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert store.full_capture_receipt_path(capture_id).exists() is False
+
+    assert main(reconcile) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "full"
+    assert payload["receipt_persisted"] is True
+    assert store.full_capture_receipt_path(capture_id).exists() is True
+
+    assert main(
+        [
+            "capture-loop", "attachment-seal", "--store-root", str(tmp_path),
+            "--capture-id", capture_id,
+            "--expected-attachment-sequence", "0", "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert store.full_capture_receipt_path(capture_id).exists() is True
+
+
 def test_full_receipt_source_binding_rejects_direct_coverage_change(tmp_path, capsys) -> None:
     capture_id = _capture_with_ledger(tmp_path)
     store = CaptureCheckpointStore(tmp_path)

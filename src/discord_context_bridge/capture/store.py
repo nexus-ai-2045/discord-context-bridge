@@ -237,6 +237,8 @@ class CaptureCheckpointStore:
         if len(payload.get("records", [])) < current_sequence:
             raise SequenceConflictError("attachment ledger cannot move backwards")
         _atomic_json(self.attachment_save_ledger_path(capture_id), payload)
+        if current != payload:
+            self.invalidate_full_capture_receipt(capture_id)
         return payload
 
     def full_capture_receipt_path(self, capture_id: str) -> Path:
