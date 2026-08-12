@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +28,22 @@ def main() -> int:
     parser.add_argument("--topic-registry", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--max-receipt-age-hours", type=float, default=36.0)
     args = parser.parse_args()
     if args.verify:
-        result = verify_projection_receipt(args.receipt)
+        if (
+            not math.isfinite(args.max_receipt_age_hours)
+            or args.max_receipt_age_hours <= 0
+        ):
+            parser.error("--max-receipt-age-hours must be a finite number greater than zero")
+        try:
+            max_receipt_age = timedelta(hours=args.max_receipt_age_hours)
+        except OverflowError:
+            parser.error("--max-receipt-age-hours is too large")
+        result = verify_projection_receipt(
+            args.receipt,
+            max_age=max_receipt_age,
+        )
     else:
         result = run_projection(
             snapshot_store=args.snapshot_store,
