@@ -215,7 +215,10 @@ def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) 
     descriptor: int | None = None
     original_size = 0
     try:
-        descriptor = os.open(checked, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        flags = os.O_RDWR | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        descriptor = os.open(checked, flags, 0o600)
         opened = os.fstat(descriptor)
         named = _legacy_path_stat(checked)
         if (

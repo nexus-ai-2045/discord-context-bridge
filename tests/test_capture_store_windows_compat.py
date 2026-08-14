@@ -120,6 +120,39 @@ def test_legacy_backend_round_trips_normal_capture_artifacts(tmp_path: Path) -> 
     assert list(store.root.rglob("*.tmp")) == []
 
 
+def test_legacy_event_append_opens_binary_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CaptureCheckpointStore(tmp_path / "store")
+    original_open = os.open
+    native_binary = getattr(os, "O_BINARY", None)
+    binary_flag = native_binary if native_binary is not None else 1 << 29
+    observed_flags: list[int] = []
+
+    def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
+        if str(path).endswith(".ndjson"):
+            observed_flags.append(flags)
+        forwarded = flags if native_binary is not None else flags & ~binary_flag
+        return original_open(path, forwarded, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(store_module.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(store_module.os, "open", tracked_open)
+    store.append_event(
+        {
+            "schema": "dcb-capture-event.v1",
+            "capture_id": CAPTURE_ID,
+            "event_id": "event-binary-a",
+            "sequence": 1,
+            "state": "received",
+        },
+        expected_sequence=0,
+    )
+
+    assert observed_flags
+    assert observed_flags[-1] & binary_flag
+    assert store.ledger_path(CAPTURE_ID).read_bytes().endswith(b"\n")
+
+
 def test_legacy_backend_transition_lock_remains_usable(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
 
