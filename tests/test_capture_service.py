@@ -19,6 +19,7 @@ from discord_context_bridge.capture.store import (
 )
 from discord_context_bridge.cli import main
 import discord_context_bridge.cli as cli_module
+import discord_context_bridge.capture.service as capture_service_module
 
 
 def test_start_and_advance_are_metadata_only_and_durable(tmp_path) -> None:
@@ -633,6 +634,85 @@ def test_attachment_save_rejects_symlinked_managed_parent(tmp_path, capsys) -> N
     ) == 2
     capsys.readouterr()
     assert list(outside.iterdir()) == []
+
+
+def test_attachment_save_rejects_parent_swap_after_path_check(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    if not capture_service_module._secure_dir_fd_writes_supported():
+        pytest.skip("secure directory-relative writes are unavailable")
+    capture_id = _capture_with_ledger(tmp_path, with_attachment=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"trusted")
+    managed_parent = (
+        tmp_path / "attachment-objects" / capture_id / "attachments"
+    )
+    managed_parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_matches = capture_service_module._directory_binding_matches
+    binding_checks = 0
+
+    def swap_parent_after_check(parent_fd, name, child_fd) -> bool:
+        nonlocal binding_checks
+        matches = original_matches(parent_fd, name, child_fd)
+        binding_checks += 1
+        if binding_checks != 3:
+            return matches
+        displaced = managed_parent.with_name("attachments-displaced")
+        managed_parent.rename(displaced)
+        try:
+            managed_parent.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            displaced.rename(managed_parent)
+            pytest.skip("symlink creation is unavailable")
+        return matches
+
+    monkeypatch.setattr(
+        capture_service_module,
+        "_directory_binding_matches",
+        swap_parent_after_check,
+    )
+    assert main(
+        [
+            "capture-loop", "attachment-save", "--store-root", str(tmp_path),
+            "--capture-id", capture_id, "--attachment-id", "attachment-1",
+            "--object-file", str(source), "--private-ref", "attachments/object.bin",
+            "--expected-attachment-sequence", "0", "--json",
+        ]
+    ) == 2
+    capsys.readouterr()
+    assert list(outside.iterdir()) == []
+
+
+def test_attachment_save_fails_closed_without_secure_directory_writes(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    capture_id = _capture_with_ledger(tmp_path, with_attachment=True)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"trusted")
+    monkeypatch.setattr(
+        capture_service_module,
+        "_secure_dir_fd_writes_supported",
+        lambda: False,
+    )
+
+    assert main(
+        [
+            "capture-loop", "attachment-save", "--store-root", str(tmp_path),
+            "--capture-id", capture_id, "--attachment-id", "attachment-1",
+            "--object-file", str(source), "--private-ref", "attachments/object.bin",
+            "--expected-attachment-sequence", "0", "--json",
+        ]
+    ) == 2
+    capsys.readouterr()
+    managed = (
+        tmp_path / "attachment-objects" / capture_id / "attachments" / "object.bin"
+    )
+    assert not managed.exists()
+    assert (
+        CaptureCheckpointStore(tmp_path).load_attachment_save_ledger(capture_id) is None
+    )
 
 
 def test_attachment_ledger_ref_and_tip_tamper_fail_closed(tmp_path) -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+import secrets
+import stat
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
@@ -113,6 +114,135 @@ def _read_verified_object(path: Path, *, max_bytes: int) -> tuple[bytes, str, in
     return content, sha256(content).hexdigest(), len(content)
 
 
+def _secure_dir_fd_writes_supported() -> bool:
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def _directory_binding_matches(parent_fd: int, name: str, child_fd: int) -> bool:
+    try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(child_fd)
+    return (
+        stat.S_ISDIR(named.st_mode)
+        and named.st_dev == opened.st_dev
+        and named.st_ino == opened.st_ino
+    )
+
+
+def _directory_bindings_match(
+    root: Path,
+    root_fd: int,
+    bindings: list[tuple[int, str, int]],
+) -> bool:
+    try:
+        named_root = os.stat(root, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    opened_root = os.fstat(root_fd)
+    return (
+        stat.S_ISDIR(named_root.st_mode)
+        and named_root.st_dev == opened_root.st_dev
+        and named_root.st_ino == opened_root.st_ino
+        and all(
+            _directory_binding_matches(parent_fd, name, child_fd)
+            for parent_fd, name, child_fd in bindings
+        )
+    )
+
+
+def _atomic_write_managed_object_posix(
+    root: Path, destination: Path, content: bytes
+) -> None:
+    root_absolute = root.absolute()
+    relative_parent = destination.parent.absolute().relative_to(root_absolute)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fds: list[int] = []
+    bindings: list[tuple[int, str, int]] = []
+    temporary_name = f".{destination.name}.{secrets.token_hex(16)}.tmp"
+    temporary_exists = False
+    destination_written = False
+    try:
+        directory_fds.append(os.open(root_absolute, directory_flags))
+        for part in relative_parent.parts:
+            parent_fd = directory_fds[-1]
+            try:
+                child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=parent_fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            directory_fds.append(child_fd)
+            bindings.append((parent_fd, part, child_fd))
+        parent_fd = directory_fds[-1]
+        if not _directory_bindings_match(
+            root_absolute, directory_fds[0], bindings
+        ):
+            raise ValueError("managed attachment directory changed during save")
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        temporary_exists = True
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        if not _directory_bindings_match(
+            root_absolute, directory_fds[0], bindings
+        ):
+            raise ValueError("managed attachment directory changed during save")
+        os.rename(
+            temporary_name,
+            destination.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        temporary_exists = False
+        destination_written = True
+        os.fsync(parent_fd)
+        if not _directory_bindings_match(
+            root_absolute, directory_fds[0], bindings
+        ):
+            raise ValueError("managed attachment directory changed during save")
+        destination_written = False
+    except OSError as error:
+        raise ValueError("managed attachment path changed during save") from error
+    finally:
+        parent_fd = directory_fds[-1] if directory_fds else None
+        if parent_fd is not None and (temporary_exists or destination_written):
+            cleanup_name = temporary_name if temporary_exists else destination.name
+            try:
+                os.unlink(cleanup_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+
+
+def _atomic_write_managed_object(root: Path, destination: Path, content: bytes) -> None:
+    _assert_managed_path_contained(root, destination)
+    if not _secure_dir_fd_writes_supported():
+        raise ValueError(
+            "secure managed attachment writes are unavailable on this platform"
+        )
+    _atomic_write_managed_object_posix(root, destination, content)
+
+
 def _verify_managed_record(
     store: CaptureCheckpointStore,
     capture_id: str,
@@ -185,20 +315,7 @@ def record_persisted_attachment_save(
         if ledger.get("seal") is not None or len(records) != expected_sequence:
             raise SequenceConflictError("attachment save ledger is sealed or stale")
         destination = _managed_object_path(store, capture_id, managed_ref)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _assert_managed_path_contained(store.root, destination)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _atomic_write_managed_object(store.root, destination, content)
         record = {"sequence": len(records) + 1, **comparable}
         records.append(record)
         updated = {
