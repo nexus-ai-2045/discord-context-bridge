@@ -439,6 +439,48 @@ def build_url_intake_gate(
     return payload
 
 
+def _load_acquisition_full_capture_receipt(
+    path: Path | None,
+) -> tuple[dict[str, Any] | None, str]:
+    if path is None:
+        from .acquisition_gate import load_full_capture_receipt
+
+        return load_full_capture_receipt(path)
+
+    receipt_path = path.absolute()
+    receipt_directory = receipt_path.parent
+    is_managed_receipt_path = (
+        receipt_directory.name == "full-capture"
+        and receipt_directory.parent.name == "receipts"
+    )
+    if is_managed_receipt_path:
+        from .capture.store import CaptureCheckpointStore, CheckpointCorruptError
+
+        capture_id = receipt_path.stem
+        if not capture_id:
+            return None, "full_capture_receipt_evidence_invalid"
+        store = CaptureCheckpointStore(receipt_directory.parent.parent)
+        try:
+            verified = store.load_full_capture_receipt(
+                capture_id,
+                consumer="context_acquisition",
+            )
+        except (CheckpointCorruptError, ValueError):
+            return None, "full_capture_receipt_evidence_invalid"
+        if verified is None:
+            return None, "full_capture_receipt_evidence_invalid"
+        return verified, ""
+
+    from .acquisition_gate import load_full_capture_receipt
+
+    receipt, load_error = load_full_capture_receipt(path)
+    if receipt is None:
+        return None, load_error
+    if receipt.get("schema") == "dcb-strict-full-capture-receipt.v1":
+        return None, "full_capture_receipt_evidence_invalid"
+    return receipt, load_error
+
+
 def build_coverage_report(
     *,
     url: str = "",
@@ -453,7 +495,7 @@ def build_coverage_report(
     user_confirmed: bool = False,
     full_capture_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
-    from .acquisition_gate import build_acquisition_completion_gate, load_full_capture_receipt
+    from .acquisition_gate import build_acquisition_completion_gate
 
     generated = generated_at or utc_now()
     key = target_key or (target_key_for_url(url) if url else "")
@@ -466,7 +508,9 @@ def build_coverage_report(
     exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
     selected_records = ai_matches or raw_matches
     freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
-    full_capture_receipt, receipt_load_error = load_full_capture_receipt(full_capture_receipt_path)
+    full_capture_receipt, receipt_load_error = _load_acquisition_full_capture_receipt(
+        full_capture_receipt_path
+    )
     receipt_capture_id = str((full_capture_receipt or {}).get("capture_id") or "").strip()
     # receipt がある場合は ai_log 優先で raw-cache を落とさず、capture_id 一致レコードを選ぶ。
     gate_records = selected_records

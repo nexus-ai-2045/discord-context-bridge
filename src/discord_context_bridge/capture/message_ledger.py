@@ -47,6 +47,7 @@ def new_message_ledger(
         "target_key": str(target_key),
         "upper_watermark": str(upper_watermark),
         "events": [],
+        "tip_hash": "",
         "outbound_actions": "disabled",
         "private_local_only": True,
     }
@@ -124,6 +125,7 @@ def append_message_event(
     }
     canonical["event_hash"] = _digest(canonical)
     updated["events"].append(canonical)
+    updated["tip_hash"] = canonical["event_hash"]
     return updated
 
 

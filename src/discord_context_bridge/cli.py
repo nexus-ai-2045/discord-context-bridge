@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +30,24 @@ from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .capture.loop import build_capture_status_projection
+from .capture.orchestrator import capture_watermark_digest
 from .capture.service import (
     advance_persisted_capture,
     merge_persisted_capture_window,
     read_capture_loop_status,
+    rebuild_persisted_capture_projections,
+    record_persisted_attachment_save,
+    seal_persisted_attachment_inventory,
     start_capture_loop,
+    verified_persisted_attachment_ids,
 )
-from .capture.store import CaptureCheckpointStore, CaptureStoreError
+from .capture.message_ledger import build_strict_full_capture_evidence_from_projections
+from .capture.receipts import persist_strict_full_capture_receipt
+from .capture.store import (
+    CaptureCheckpointStore,
+    CaptureStoreError,
+    canonical_capture_digest,
+)
 from .url_identity import classify_discord_url
 from .completeness_store import CompletenessStore
 
@@ -455,7 +467,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_loop.add_argument(
         "action",
-        choices=["start", "advance", "observe", "status"],
+        choices=[
+            "start", "advance", "observe", "attachment-save",
+            "attachment-seal", "reconcile", "status",
+        ],
     )
     capture_loop.add_argument(
         "--store-root",
@@ -494,6 +509,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="private DOM/cache window JSON。本文はstdoutへ返しません",
     )
     capture_loop.add_argument("--expected-window-count", type=int, default=0)
+    capture_loop.add_argument("--attachment-id", default="")
+    capture_loop.add_argument("--object-file", type=Path)
+    capture_loop.add_argument("--private-ref", default="")
+    capture_loop.add_argument("--expected-attachment-sequence", type=int, default=0)
     capture_loop.add_argument("--json", action="store_true")
     capture_loop.set_defaults(handler=_cmd_capture_loop)
 
@@ -1515,6 +1534,34 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 observation,
                 expected_window_count=args.expected_window_count,
             )
+        elif args.action == "reconcile":
+            if not args.capture_id:
+                raise CaptureStoreError("reconcileには--capture-idが必要です")
+            result = _reconcile_persisted_capture(store, args.capture_id)
+        elif args.action == "attachment-save":
+            if (
+                not args.capture_id
+                or not args.attachment_id
+                or args.object_file is None
+                or not args.private_ref
+            ):
+                raise CaptureStoreError("attachment-saveの必須引数がありません")
+            result = record_persisted_attachment_save(
+                store,
+                args.capture_id,
+                args.attachment_id,
+                args.object_file,
+                args.private_ref,
+                expected_sequence=args.expected_attachment_sequence,
+            )
+        elif args.action == "attachment-seal":
+            if not args.capture_id:
+                raise CaptureStoreError("attachment-sealには--capture-idが必要です")
+            result = seal_persisted_attachment_inventory(
+                store,
+                args.capture_id,
+                expected_sequence=args.expected_attachment_sequence,
+            )
         else:
             if not args.capture_id:
                 raise CaptureStoreError("statusには--capture-idが必要です")
@@ -1535,6 +1582,123 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
             )
         )
         return 2
+
+
+class _AlreadyLockedCaptureStore:
+    """Delegate to a store while preserving its caller-held transition lock."""
+
+    def __init__(self, store: CaptureCheckpointStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def transition_lock(self, capture_id: str):
+        return nullcontext()
+
+
+def _reconcile_persisted_capture(
+    store: CaptureCheckpointStore,
+    capture_id: str,
+) -> dict[str, Any]:
+    """Rebuild, gate, and persist one receipt under one capture lock."""
+
+    with store.transition_lock(capture_id):
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise CaptureStoreError("capture checkpoint does not exist")
+        coverage = store.load_coverage(capture_id)
+        ledger = store.load_message_ledger(capture_id)
+        if coverage is None or ledger is None:
+            raise CaptureStoreError("durable capture evidence does not exist")
+        scan_digests = [
+            str(item.get("ordered_message_digest") or "")
+            for item in list(coverage.get("scan_passes") or [])
+            if isinstance(item, dict) and item.get("ordered_message_digest")
+        ]
+        attachment_ids = {
+            str(attachment_id)
+            for event in list(ledger.get("events") or [])
+            if isinstance(event, dict)
+            for attachment_id in list(event.get("attachment_ids") or [])
+        }
+        attachment_ledger = store.load_attachment_save_ledger(capture_id)
+        attachment_records = list((attachment_ledger or {}).get("records") or [])
+        verified_attachment_ids = (
+            verified_persisted_attachment_ids(store, capture_id, attachment_ledger)
+            if attachment_ledger is not None
+            else []
+        )
+        seal = (attachment_ledger or {}).get("seal")
+        current_seal = {
+            "message_sequence": len(ledger["events"]),
+            "message_tip_hash": canonical_capture_digest(ledger["events"]),
+            "coverage_digest": canonical_capture_digest(coverage),
+            "window_count": len(coverage["windows"]),
+            "attachment_tip_hash": str((attachment_ledger or {}).get("tip_hash") or ""),
+        }
+        attachment_inventory_complete = (
+            not attachment_ids
+            or (
+                isinstance(seal, dict)
+                and seal == current_seal
+                and verified_attachment_ids is not None
+                and attachment_ids
+                == set(verified_attachment_ids)
+            )
+        )
+        no_pending_retry = (
+            run.get("state") != "retry_wait" and run.get("blocker") is None
+        )
+        upper_watermark_reached = any(
+            capture_watermark_digest(message_id)
+            == run.get("upper_watermark_digest")
+            for event in ledger["events"]
+            if (message_id := str(event.get("message_id") or ""))
+        )
+        rebuilt = rebuild_persisted_capture_projections(
+            store,
+            capture_id,
+            oldest_reached=bool(coverage.get("oldest_reached")),
+            latest_reached=bool(coverage.get("latest_reached")),
+            stable_scan_digests=scan_digests,
+            saved_attachment_ids=(verified_attachment_ids or [])
+            if attachment_inventory_complete else [],
+            upper_watermark_reached=upper_watermark_reached,
+            unresolved_gap_count=int(coverage.get("gap_count") or 0),
+            pending_retry_count=0 if no_pending_retry else 1,
+            attachment_inventory_complete=attachment_inventory_complete,
+        )
+        evidence = build_strict_full_capture_evidence_from_projections(
+            rebuilt,
+            route=str(run.get("route") or "unknown"),
+        )
+        canonical_gate = evaluate_full_capture(evidence)
+        rebuilt_gate = rebuilt.get("full_capture_gate") or {}
+        confirmed = bool(canonical_gate.get("full_capture_confirmed"))
+        if confirmed != bool(rebuilt_gate.get("full_capture_confirmed")):
+            raise CaptureStoreError("full capture gate disagreement")
+        receipt_persisted = False
+        if confirmed:
+            persist_strict_full_capture_receipt(
+                _AlreadyLockedCaptureStore(store),
+                capture_id,
+                canonical_gate,
+                consumer="context_acquisition",
+            )
+            receipt_persisted = True
+        return {
+            "schema": "dcb-capture-loop-reconcile.v1",
+            "capture_id": capture_id,
+            "status": "full" if confirmed else "partial",
+            "full_capture_confirmed": confirmed,
+            "receipt_persisted": receipt_persisted,
+            "blockers": list(canonical_gate.get("blockers") or []),
+            "raw_text_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
 
 
 def _cmd_reply_context_plan(args: argparse.Namespace) -> int:
