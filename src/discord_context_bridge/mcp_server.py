@@ -5,7 +5,7 @@ import hmac
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -39,12 +39,25 @@ MCP_DEPENDENCY_HELP = (
 )
 
 
-def _load_fastmcp() -> Any:
+class _MCPRuntime(NamedTuple):
+    server_type: Any
+    api_version: int
+
+
+def _load_mcp_runtime() -> _MCPRuntime:
     try:
-        from mcp.server.fastmcp import FastMCP
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
-    return FastMCP
+        from mcp.server.mcpserver import MCPServer
+    except ModuleNotFoundError:
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
+        return _MCPRuntime(FastMCP, 1)
+    return _MCPRuntime(MCPServer, 2)
+
+
+def _is_mcp_v2(server: Any) -> bool:
+    return getattr(server, "_dcb_mcp_api_version", None) == 2
 
 
 def build_server(
@@ -56,13 +69,18 @@ def build_server(
     port: int = 8000,
     http_path: str = "/mcp",
 ) -> Any:
-    FastMCP = _load_fastmcp()
-    server = FastMCP(
-        "discord-context-bridge",
-        host=host,
-        port=port,
-        streamable_http_path=http_path,
-    )
+    runtime = _load_mcp_runtime()
+    Server = runtime.server_type
+    if runtime.api_version == 2:
+        server = Server("discord-context-bridge")
+    else:
+        server = Server(
+            "discord-context-bridge",
+            host=host,
+            port=port,
+            streamable_http_path=http_path,
+        )
+    server._dcb_mcp_api_version = runtime.api_version
 
     @server.tool()
     def import_visible_discord_text(
@@ -495,7 +513,7 @@ DEFAULT_HTTP_AUTH_TOKEN_ENV = "DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN"
 
 def _is_loopback_host(host: str) -> bool:
     normalized = host.strip().lower().strip("[]")
-    return normalized in {"localhost", "::1"} or normalized.startswith("127.")
+    return normalized in {"127.0.0.1", "localhost", "::1"}
 
 
 class BearerAuthASGI:
@@ -544,6 +562,26 @@ def _run_http_app(app: Any, *, host: str, port: int) -> None:
     except ModuleNotFoundError as exc:
         raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
     uvicorn.run(app, host=host, port=port)
+
+
+def _streamable_http_app(server: Any, *, host: str, path: str) -> Any:
+    if _is_mcp_v2(server):
+        return server.streamable_http_app(host=host, streamable_http_path=path)
+    return server.streamable_http_app()
+
+
+def _run_streamable_http_server(
+    server: Any, *, host: str, port: int, path: str
+) -> None:
+    if _is_mcp_v2(server):
+        server.run(
+            transport="streamable-http",
+            host=host,
+            port=port,
+            streamable_http_path=path,
+        )
+        return
+    server.run(transport="streamable-http", mount_path=path)
 
 
 def build_http_parser() -> argparse.ArgumentParser:
@@ -612,7 +650,9 @@ def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | Non
         http_path=args.path,
     )
     if token:
-        app = BearerAuthASGI(server.streamable_http_app(), token)
+        app = BearerAuthASGI(
+            _streamable_http_app(server, host=args.host, path=args.path), token
+        )
         if run is not None:
             run(app)
         else:
@@ -621,7 +661,9 @@ def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | Non
     if run is not None:
         run(server)
     else:
-        server.run(transport="streamable-http", mount_path=args.path)
+        _run_streamable_http_server(
+            server, host=args.host, port=args.port, path=args.path
+        )
     return 0
 
 
