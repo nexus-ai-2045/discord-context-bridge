@@ -4,7 +4,10 @@ version = "0.11.0"
 description = "Discord の可視会話テキストを扱う local-first な文脈 bridge"
 requires-python = ">=3.11"
 readme = "README.md"
-dependencies = ["jsonschema>=4.20,<5"]
+dependencies = [
+  "jsonschema>=4.20,<5",
+  "tzdata>=2024.1; platform_system == 'Windows'",
+]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28,<3"]
