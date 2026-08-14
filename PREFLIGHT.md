@@ -2,9 +2,10 @@
 
 # 公開準備状況
 
-- HEAD: 4b6502943e21bbc600cd59d7cf0d40b8d26ee8e1 (2026-08-07 ops closeout + PUBLIC_READY tip refresh)
-- 確認日時: 2026-08-07
-- 判定: attention（secret/path 自動検査 pass。human/CI runtime/dep の機械 unknown は証跡で補完）
+- base main: 424a7da47446dc7a1e660346483c3444c7fbfe65 (PR #58 merge tip)
+- reviewed candidate: 4112ef0 (residual closeout、PREFLIGHT更新前のcode/docs tip)
+- 確認日時: 2026-08-14
+- 判定: attention（local release gate / reviewはpass。public branch push、PR CI、exact diffの人間確認は未実施）
 
 ## 確認済み
 
@@ -18,7 +19,9 @@
 - [x] dependency vulnerability の**現行監査証跡**（下記）
 - [x] remote CI の**最新証跡**（下記）
 - [x] project 登録 / GitHub owner / author identity policy 固定（下記）
-- [x] operations gate (ops_check.py --profile release --skip-http) success + host runtime skill sync applied (2026-08-07)
+- [x] operations gate (`ops_check.py --profile release --skip-http`) success（2026-08-14）
+- [x] open PR / CodeQL / Dependabot / secret-scanning alert 0（2026-08-14）
+- [ ] current candidate のpublic branch push / PR CI / merge review（別承認）
 - [ ] production monitoring / rollback live environment review (live Discord / on-call; separate decision)
 
 ## Identity policy（SSOT）
@@ -29,7 +32,7 @@
 
 許可する git author 名義は **scripts/gh_guard.py の EXPECTED_GIT_AUTHORS を SSOT** とする（複数 allowlist）。
 
-- 検証: python scripts/gh_guard.py --json --history-ref HEAD（2026-08-07: ok）
+- 検証: release gateのGitHub account確認で `nexus-ai-2045` とremote ownerの一致を確認（2026-08-14: success）
 - 実測: history に nexus_ai / nexus-ai-2045 / Dependabot / GitHub merge committer が混在
 - **採用しない**: repo-preflight の単一 --expected-identity で全 history を強制（identity rewrite が必要になるため別承認）
 - ローカル作業名義の推奨: nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>
@@ -47,47 +50,49 @@
 
 | tip / event | workflow | conclusion | URL |
 |---|---|---|---|
+| PR #58 merge tip 424a7da | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31775287301 |
+| PR #58 merge tip 424a7da | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31775287267 |
+| PR #58 merge tip 424a7da | Dependency Graph | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31775289829 |
 | PR #55 merge tip 4b65029 | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31184266910 |
 | PR #55 merge tip 4b65029 | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31184266926 |
-| PR #54 merge tip efc2f39 | CI | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31182984471 |
-| PR #53 merge tip 1898bba | CodeQL | success | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181731970 |
-| PR #53 ブランチ最終 CI | CI | success（投影再生成後） | https://github.com/nexus-ai-2045/discord-context-bridge/actions/runs/31181580830 |
 
-本 PR merge 後の main tip で CI green を再確認する。
+current candidateは未pushのためremote CI未実施。PR作成後とmerge後のmain tipで再確認する。
 
 ## 人間目視
 
-- reviewer: CEO（やす） / session operator via GO 2026-08-07
-- reviewed_at: 2026-08-07
-- exact HEAD / PR diff: 本 PR の final HEAD（merge 前に確認）
-- reviewed content: PREFLIGHT 証跡、identity policy、pip-audit 結果要約、CI URL、public-safe 文書
-- decision: approve（preflight residual evidence の main 反映）
-- 外から見える files と commit history: public repo のため全 history 可視。path rewrite 済み tip を正とする
-- review 済み: secret/path 自動、identity allowlist、project dep audit、CI URL 記録
-- 未 review: production live monitoring / rollback 実環境、GitHub Release / tag、単一 identity 強制 rewrite
+- reviewer: CEO（やす） / session operator
+- reviewed_at: 2026-08-14（残務ゼロ方針、version/tagは変更しない判断）
+- exact HEAD / PR diff: 未確認（branch未push・PR未作成）
+- reviewed content: 残務分類、local test / release gate結果、version/tagの現状
+- decision: public branch push / PR / mergeはpending
+- 外から見える files と commit history: repositoryはPUBLIC。branchをpushすると今回の10 filesとPREFLIGHT更新がweb上で可視になる
+- review 済み: secret/path自動、GitHub account、main CI、local release gate、Python / code review
+- 未 review: current final diffのpublic push、PR CI、merge、production live monitoring / rollback、GitHub Release / tag
 - 残余リスク:
   - repo-preflight CLI の dep/ci/human は設計上 unknown（証跡は本ファイル）
   - publication_decision は常に human review required
-  - v0.11.0 tag / GitHub Release は未作成（PUBLIC_READY の人間承認待ち）
-- 次に承認する正確な操作: 本 PR の merge のみ（release tag / visibility / Discord live は別承認）
+  - package versionは0.11.0、最新tagはv0.4.0。v0.11.0 tag / GitHub Releaseは未作成
+  - auto-push opt-inはdisabledで、canonical push wrapperはdeny済み
+- 次に承認する正確な操作: auto-push opt-in有効化後、`codex/dcb-residual-zero-20260814`をPUBLIC repositoryへpushしてPRを作成する。merge / release / Discord liveは別承認
 
 ## 次の PR 候補（適切なサイズ）
 
 1. release readiness: version/tag/GitHub Release（PUBLIC_READY.md / 別承認）
 2. production live monitoring / rollback 実環境目視（別判断）
-3. ISSUE_LIST 製品残（P1/P2）— 運用残務ゼロとは別次元
+3. ISSUE_LISTのparked製品候補（parser quality / cache / refactor）は次回注文ごとに独立PR
 
-## Ops gate 証跡（2026-08-07）
+## Ops gate 証跡（2026-08-14）
 
 | 項目 | 結果 |
 |---|---|
-| HEAD (ops closeout) | efc2f390a6d72815acea79524e33211b212df173 |
-| HEAD (current tip before this PR) | 4b6502943e21bbc600cd59d7cf0d40b8d26ee8e1 |
-| ops_check.py --profile release --skip-http | success (ops closeout session) |
-| host skill sync (sync_runtime_skills.py --apply) | claude-code / codex / grok applied |
-| lint_runtime_skill_sync.py (claude-code) | in_sync |
-| main CI tip #55 | success |
-| repo_goal_status.py | state=done when tree clean / open PR 0 |
-| PUBLIC_READY.md tip refresh | 2026-08-07 (this PR) |
+| base main | 424a7da47446dc7a1e660346483c3444c7fbfe65 |
+| reviewed candidate before PREFLIGHT update | 4112ef0 |
+| full pytest | 866 passed、slowest 0.93秒（P1-2 closeout run） |
+| ops_check.py --profile release --skip-http | success、15.69秒、GitHub account確認を含む |
+| Python / code review | approve、P0-P3 findingなし（指摘修正後） |
+| main CI / CodeQL / Dependency Graph | 424a7daでsuccess |
+| GitHub open PR / security alerts | 0 / 0 |
+| ISSUE_LIST active | 0。parked / later / blockedは未実装として分離 |
+| PUBLIC_READY.md | 2026-08-07の記録。release/tag承認には再確認が必要 |
 
-host skill は local 機械にだけ適用。Discord 送信・Release 作成は未実行。
+Discord送信、Release作成、tag作成、repository visibility変更は未実行。
