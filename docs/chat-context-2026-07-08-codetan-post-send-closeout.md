@@ -1,5 +1,9 @@
 # Chat Context 2026-07-08: codetan reply post-send closeout
 
+> Historical note: このファイルは 2026-07-08 時点の送信後 closeout 証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、順序正本は `ROADMAP.md` です。
+> 下記の closeout 判定は当時の対象返信に限定され、現在の repo 状態としては使わないでください。
+
 このメモは、送信済み Discord 返信の事後 closeout と、repo 側の運用保証境界を保存するための引き継ぎです。
 raw Discord text、実 Discord URL、snowflake、参加者名、token、cookie、webhook、local absolute path は含めません。
 

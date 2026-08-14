@@ -168,11 +168,24 @@ def test_process_runner_rejects_explicit_secret_like_environment(name: str):
         run_process([sys.executable, "-c", "print('not-run')"], env={name: "synthetic-value"})
 
 
-def test_process_runner_timeout_removes_grandchild(tmp_path):
+@pytest.fixture
+def short_process_tree_timing() -> dict[str, float]:
+    timeout = 1.0 if os.name == "nt" else 0.3
+    return {
+        "timeout": timeout,
+        "grandchild_write_delay": timeout + 0.3,
+        "verification_margin": 0.1,
+    }
+
+
+def test_process_runner_timeout_removes_grandchild(tmp_path, short_process_tree_timing):
+    ready = tmp_path / "grandchild-started.txt"
     marker = tmp_path / "grandchild-survived.txt"
+    write_delay = short_process_tree_timing["grandchild_write_delay"]
     child_code = (
         "import pathlib,time; "
-        "time.sleep(1.5); "
+        f"pathlib.Path({str(ready)!r}).write_text('started', encoding='utf-8'); "
+        f"time.sleep({write_delay!r}); "
         f"pathlib.Path({str(marker)!r}).write_text('survived', encoding='utf-8')"
     )
     parent_code = (
@@ -181,10 +194,15 @@ def test_process_runner_timeout_removes_grandchild(tmp_path):
         "time.sleep(10)"
     )
 
-    result = run_process([sys.executable, "-c", parent_code], timeout=0.5)
-    time.sleep(1.25)
+    result = run_process(
+        [sys.executable, "-c", parent_code],
+        timeout=short_process_tree_timing["timeout"],
+    )
 
     assert result.failure_stage == "timeout"
+    assert ready.exists()
+    verification_deadline = ready.stat().st_mtime + write_delay + short_process_tree_timing["verification_margin"]
+    time.sleep(max(0.0, verification_deadline - time.time()))
     assert not marker.exists()
 
 

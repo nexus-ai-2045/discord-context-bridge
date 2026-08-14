@@ -1,5 +1,7 @@
 import argparse
 import json
+import os
+import shlex
 import sys
 import subprocess
 from pathlib import Path
@@ -50,6 +52,15 @@ def ready_channel_dir(tmp_path: Path) -> Path:
     return channel_dir
 
 
+def configure_test_secret_command(monkeypatch, python_code: str) -> None:
+    executable = Path(sys.executable)
+    current_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", os.pathsep.join(part for part in (str(executable.parent), current_path) if part))
+    argv = [executable.name, "-c", python_code]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    monkeypatch.setenv(TOKEN_COMMAND_ENV, command)
+
+
 def test_public_safe_payload_omits_nested_store_paths():
     payload = {
         "live_smoke": {
@@ -80,7 +91,7 @@ def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Pa
 
 def test_configured_bot_token_provider_detects_secret_command_without_value(monkeypatch):
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+    configure_test_secret_command(monkeypatch, "print(12345)")
 
     status = configured_bot_token_provider()
 
@@ -93,7 +104,7 @@ def test_configured_bot_token_provider_detects_secret_command_without_value(monk
 
 def test_secret_command_loads_token_without_public_value(monkeypatch):
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+    configure_test_secret_command(monkeypatch, "print(12345)")
 
     result = load_bot_token_from_provider()
 
@@ -105,10 +116,7 @@ def test_secret_command_loads_token_without_public_value(monkeypatch):
 
 def test_secret_command_failure_omits_stdout_and_stderr(monkeypatch):
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(
-        TOKEN_COMMAND_ENV,
-        f'"{sys.executable}" -c "import sys; sys.stderr.write(\'hidden-secret\'); sys.exit(7)"',
-    )
+    configure_test_secret_command(monkeypatch, "import sys; sys.stderr.write('hidden-secret'); sys.exit(7)")
 
     result = load_bot_token_from_provider()
     status = result.public_status()
@@ -124,7 +132,7 @@ def test_bot_route_preflight_accepts_secret_command_provider(tmp_path: Path, mon
     channel_dir.mkdir()
     (channel_dir / "access.json").write_text(json.dumps({"dmPolicy": "locked", "allowFrom": ["safe"]}), encoding="utf-8")
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+    configure_test_secret_command(monkeypatch, "print(12345)")
 
     payload = discord_bot_route_preflight.build_preflight(channel_dir)
 
@@ -152,7 +160,7 @@ def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch,
         return ([{"id": "123456789012345678", "content": "secret-command private text"}], None)
 
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(TOKEN_COMMAND_ENV, f'"{sys.executable}" -c "print(12345)"')
+    configure_test_secret_command(monkeypatch, "print(12345)")
     monkeypatch.setattr(discord_rest_backfill, "fetch_discord_messages", fake_fetch_discord_messages)
     raw_output = tmp_path / "raw.ndjson"
     manifest_output = tmp_path / "manifest.json"
@@ -932,7 +940,12 @@ def test_ops_check_local_smoke_uses_run_scoped_store_paths(monkeypatch):
     assert str(context_store) != "/tmp/dcb-context-library-smoke.json"
 
 
-def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path):
+def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path, monkeypatch):
+    def fake_run(command: list[str]) -> discord_inventory_dashboard.ProcessResult:
+        stdout = "[]" if command[:3] == ["gh", "pr", "list"] else ""
+        return discord_inventory_dashboard.ProcessResult(tuple(command), 0, stdout, "", 0.0, len(stdout), 0)
+
+    monkeypatch.setattr(discord_inventory_dashboard, "run_command", fake_run)
     channel_dir = tmp_path / "discord"
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)

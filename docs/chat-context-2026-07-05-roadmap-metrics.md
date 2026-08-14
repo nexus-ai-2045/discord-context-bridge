@@ -1,5 +1,9 @@
 # Chat Context 2026-07-05: roadmap, metrics, and next development
 
+> Historical note: このファイルは 2026-07-05 時点の引き継ぎ証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、順序正本は `ROADMAP.md` です。
+> 下記の状態・次の開発項目は当時の snapshot であり、現在値としては使わないでください。
+
 このメモは、2026-07-05 のチャットで決めた `discord-context-bridge` の開発文脈を保存するための引き継ぎです。
 raw Discord text、実URL、snowflake、参加者名、token、local absolute path は含めません。
 
