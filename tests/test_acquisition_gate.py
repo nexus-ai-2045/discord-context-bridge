@@ -3,6 +3,10 @@ import json
 import pytest
 
 from discord_context_bridge.acquisition_gate import build_acquisition_completion_gate
+from discord_context_bridge.capture.message_ledger import new_message_ledger
+from discord_context_bridge.capture.receipts import persist_strict_full_capture_receipt
+from discord_context_bridge.capture.store import CaptureCheckpointStore
+from discord_context_bridge.capture.virtual_scroll import new_virtual_scroll_coverage
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.core import target_key_for_url
 
@@ -164,6 +168,67 @@ def test_cli_strict_full_receipt_matching_capture_exits_zero(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
     assert payload["acquisition_completion_gate"]["summary_ready"] is True
+
+
+def test_cli_canonical_receipt_rechecks_bound_store_evidence(tmp_path, capsys):
+    capture_id = "capture-1"
+    capture_store = CaptureCheckpointStore(tmp_path / "capture-store")
+    capture_store.save_message_ledger(
+        new_message_ledger(
+            capture_id,
+            target_key="private-target",
+            upper_watermark="message-1",
+        ),
+        expected_sequence=0,
+    )
+    capture_store.save_coverage(
+        new_virtual_scroll_coverage(capture_id),
+        expected_window_count=0,
+    )
+    persist_strict_full_capture_receipt(
+        capture_store,
+        capture_id,
+        full_receipt(capture_id),
+        consumer="context_acquisition",
+    )
+    receipt_path = capture_store.full_capture_receipt_path(capture_id)
+    url, snapshot_store, _ = _write_cli_artifacts(
+        tmp_path,
+        record_capture_id=capture_id,
+    )
+
+    assert cli_main(_strict_cli_args(url, snapshot_store, receipt_path)) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["acquisition_completion_gate"][
+            "summary_ready"
+        ]
+        is True
+    )
+
+    coverage = capture_store.load_coverage(capture_id)
+    coverage["final_pass_new_message_count"] = 1
+    capture_store.coverage_path(capture_id).write_text(
+        json.dumps(coverage),
+        encoding="utf-8",
+    )
+
+    result = cli_main(_strict_cli_args(url, snapshot_store, receipt_path))
+    gate = json.loads(capsys.readouterr().out)["acquisition_completion_gate"]
+
+    assert result == 2
+    assert gate["summary_ready"] is False
+    assert "full_capture_receipt_evidence_invalid" in gate["blockers"]
+
+    downgraded = json.loads(receipt_path.read_text(encoding="utf-8"))
+    downgraded["schema"] = "discord_full_capture_completion_gate.v1"
+    receipt_path.write_text(json.dumps(downgraded), encoding="utf-8")
+
+    assert cli_main(_strict_cli_args(url, snapshot_store, receipt_path)) == 2
+    downgraded_gate = json.loads(capsys.readouterr().out)[
+        "acquisition_completion_gate"
+    ]
+    assert downgraded_gate["summary_ready"] is False
+    assert "full_capture_receipt_evidence_invalid" in downgraded_gate["blockers"]
 
 
 def test_cli_strict_mismatch_partial_and_missing_receipt_exit_two(tmp_path, capsys):

@@ -122,6 +122,19 @@ stdoutは判定状態、blocker、receipt保存有無だけを返し、Discord U
 全IDが揃った時点でinventoryをsealする。sealはmessage ledger sequence/tip hash、coverage digest、
 window countへ結合されるため、その後の`observe`で失効し、既存full receiptも破棄される。
 
+### Windows の保証境界
+
+Windowsでは、添付がないcaptureの`start` / `advance` / `observe` / `status` /
+`reconcile`をサポートする。checkpoint、message event ledger、virtual-scroll coverage、
+full gate、receiptの通常LOOPが対象であり、CIの`windows-latest` smokeで継続確認する。
+stdoutへDiscord URL、target key、本文、source object path、store rootなどのraw pathを返さない
+契約も同じである。
+
+一方、managed attachmentの保存・読取は、親ディレクトリをnative Windows handleで固定し、
+そのhandle相対でreparse pointを拒否して操作するbackendが入るまでWindowsではfail-closedとする。
+`attachment-save` / `attachment-seal`をWindowsの一般対応範囲に含めず、path検査の繰り返しや
+ACLだけでsafe storageを主張しない。添付が発見されたrunはこの境界を迂回してfullにならない。
+
 ```powershell
 discord-context-bridge capture-loop attachment-save `
   --capture-id "<opaque capture id>" `
@@ -153,6 +166,8 @@ python scripts/capture_loop_metadata_smoke.py --json
 
 - `overall=ok` は CLI start/observe/status/reconcile + ledger rebuild + 正規full gate + receipt保存が通った証拠。
 - `live_discord=false` と `not_claimed` を必ず確認する。live 全文完了の代替にしない。
+- Windows CIのno-attachment smokeも同じくfixtureだけを検証し、managed attachment対応や
+  live Discord全文取得を主張する根拠にはしない。
 
 
 - checkpoint は atomic replace、event ledger は append-only。

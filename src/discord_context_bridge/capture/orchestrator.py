@@ -35,6 +35,12 @@ def _digest(*parts: str) -> str:
     return sha256(framed.encode("utf-8")).hexdigest()
 
 
+def capture_watermark_digest(message_id: str) -> str:
+    """Bind an observed message ID to the persisted watermark digest format."""
+
+    return _digest("watermark", str(message_id))
+
+
 def new_capture_run(
     target_key: str,
     route: str,
@@ -53,7 +59,7 @@ def new_capture_run(
         "capture_id": identity,
         "idempotency_key": _digest("idempotency", identity),
         "target_digest": _digest("target", target_key),
-        "upper_watermark_digest": _digest("watermark", upper_watermark),
+        "upper_watermark_digest": capture_watermark_digest(upper_watermark),
         "route": route,
         "state": "received",
         "resume_state": None,

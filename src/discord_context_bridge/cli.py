@@ -30,6 +30,7 @@ from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .capture.loop import build_capture_status_projection
+from .capture.orchestrator import capture_watermark_digest
 from .capture.service import (
     advance_persisted_capture,
     merge_persisted_capture_window,
@@ -1649,6 +1650,12 @@ def _reconcile_persisted_capture(
         no_pending_retry = (
             run.get("state") != "retry_wait" and run.get("blocker") is None
         )
+        upper_watermark_reached = any(
+            capture_watermark_digest(message_id)
+            == run.get("upper_watermark_digest")
+            for event in ledger["events"]
+            if (message_id := str(event.get("message_id") or ""))
+        )
         rebuilt = rebuild_persisted_capture_projections(
             store,
             capture_id,
@@ -1657,7 +1664,7 @@ def _reconcile_persisted_capture(
             stable_scan_digests=scan_digests,
             saved_attachment_ids=(verified_attachment_ids or [])
             if attachment_inventory_complete else [],
-            upper_watermark_reached=bool(coverage.get("latest_reached")),
+            upper_watermark_reached=upper_watermark_reached,
             unresolved_gap_count=int(coverage.get("gap_count") or 0),
             pending_retry_count=0 if no_pending_retry else 1,
             attachment_inventory_complete=attachment_inventory_complete,

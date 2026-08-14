@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import stat
+import sys
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,6 +18,7 @@ from .loop import (
 )
 from .store import (
     CaptureCheckpointStore,
+    CheckpointCorruptError,
     SequenceConflictError,
     canonical_capture_digest,
 )
@@ -118,10 +120,11 @@ def _secure_dir_fd_writes_supported() -> bool:
     return (
         hasattr(os, "O_DIRECTORY")
         and hasattr(os, "O_NOFOLLOW")
+        and os.link in os.supports_dir_fd
         and os.open in os.supports_dir_fd
         and os.mkdir in os.supports_dir_fd
-        and os.rename in os.supports_dir_fd
         and os.stat in os.supports_dir_fd
+        and os.link in os.supports_follow_symlinks
         and os.stat in os.supports_follow_symlinks
         and os.unlink in os.supports_dir_fd
     )
@@ -198,7 +201,15 @@ def _atomic_write_managed_object_posix(
             dir_fd=parent_fd,
         )
         temporary_exists = True
-        with os.fdopen(descriptor, "wb") as output:
+        try:
+            output = os.fdopen(descriptor, "wb")
+        except Exception:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        with output:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
@@ -206,14 +217,24 @@ def _atomic_write_managed_object_posix(
             root_absolute, directory_fds[0], bindings
         ):
             raise ValueError("managed attachment directory changed during save")
-        os.rename(
+        # A hard-link commit is atomic and fails with EEXIST. Unlike rename(),
+        # it cannot silently replace an existing object when two different
+        # refs collide on a case-insensitive filesystem.
+        os.link(
             temporary_name,
             destination.name,
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
+            follow_symlinks=False,
         )
-        temporary_exists = False
         destination_written = True
+        os.fsync(parent_fd)
+        if not _directory_bindings_match(
+            root_absolute, directory_fds[0], bindings
+        ):
+            raise ValueError("managed attachment directory changed during save")
+        os.unlink(temporary_name, dir_fd=parent_fd)
+        temporary_exists = False
         os.fsync(parent_fd)
         if not _directory_bindings_match(
             root_absolute, directory_fds[0], bindings
@@ -223,15 +244,29 @@ def _atomic_write_managed_object_posix(
     except OSError as error:
         raise ValueError("managed attachment path changed during save") from error
     finally:
+        active_error = sys.exc_info()[0] is not None
+        cleanup_error: OSError | None = None
         parent_fd = directory_fds[-1] if directory_fds else None
-        if parent_fd is not None and (temporary_exists or destination_written):
-            cleanup_name = temporary_name if temporary_exists else destination.name
-            try:
-                os.unlink(cleanup_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
+        if parent_fd is not None:
+            cleanup_names = []
+            if temporary_exists:
+                cleanup_names.append(temporary_name)
+            if destination_written:
+                cleanup_names.append(destination.name)
+            for cleanup_name in cleanup_names:
+                try:
+                    os.unlink(cleanup_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    cleanup_error = cleanup_error or error
         for directory_fd in reversed(directory_fds):
-            os.close(directory_fd)
+            try:
+                os.close(directory_fd)
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+        if cleanup_error is not None and not active_error:
+            raise ValueError("managed attachment cleanup failed") from cleanup_error
 
 
 def _atomic_write_managed_object(root: Path, destination: Path, content: bytes) -> None:
@@ -250,10 +285,16 @@ def _verify_managed_record(
     *,
     max_bytes: int = 100_000_000,
 ) -> None:
-    _, object_hash, size = _read_verified_object(
-        _managed_object_path(store, capture_id, str(record.get("managed_ref") or "")),
+    managed_ref = str(record.get("managed_ref") or "")
+    prefix = f"attachment-objects/{capture_id}/"
+    if not managed_ref.startswith(prefix):
+        raise ValueError("managed attachment ref is invalid")
+    content = store.read_managed_object(
+        managed_ref,
         max_bytes=max_bytes,
     )
+    object_hash = sha256(content).hexdigest()
+    size = len(content)
     if object_hash != record.get("sha256") or size != record.get("size"):
         raise ValueError("managed attachment object does not match ledger")
 
@@ -304,6 +345,7 @@ def record_persisted_attachment_save(
         if existing is not None:
             if {key: existing.get(key) for key in comparable} != comparable:
                 raise SequenceConflictError("attachment save record is immutable")
+            _verify_managed_record(store, capture_id, existing)
             return {
                 "capture_id": capture_id,
                 "attachment_sequence": len(records),
@@ -312,10 +354,35 @@ def record_persisted_attachment_save(
                 "path_output": "omitted",
                 "outbound_actions": "disabled",
             }
+        if any(item.get("managed_ref") == managed_ref for item in records):
+            raise SequenceConflictError("managed attachment ref is already in use")
         if ledger.get("seal") is not None or len(records) != expected_sequence:
             raise SequenceConflictError("attachment save ledger is sealed or stale")
         destination = _managed_object_path(store, capture_id, managed_ref)
-        _atomic_write_managed_object(store.root, destination, content)
+        orphan = store.read_managed_object_if_present(
+            managed_ref, max_bytes=max_bytes
+        )
+        if orphan is None:
+            _atomic_write_managed_object(store.root, destination, content)
+        else:
+            orphan_content, orphan_identity = orphan
+            for item in records:
+                existing_ref = str(item.get("managed_ref") or "")
+                existing_object = store.read_managed_object_if_present(
+                    existing_ref, max_bytes=max_bytes
+                )
+                if (
+                    existing_object is not None
+                    and existing_object[1] == orphan_identity
+                ):
+                    raise SequenceConflictError(
+                        "managed attachment ref is already in use"
+                    )
+            if (
+                len(orphan_content) != object_size
+                or sha256(orphan_content).hexdigest() != object_hash
+            ):
+                raise ValueError("managed attachment orphan does not match save")
         record = {"sequence": len(records) + 1, **comparable}
         records.append(record)
         updated = {
@@ -323,7 +390,44 @@ def record_persisted_attachment_save(
             "records": records,
             "tip_hash": canonical_capture_digest(records),
         }
-        store.save_attachment_save_ledger(updated, expected_sequence=expected_sequence)
+        try:
+            store.save_attachment_save_ledger(
+                updated, expected_sequence=expected_sequence
+            )
+        except Exception as save_error:
+            try:
+                persisted = store.load_attachment_save_ledger(capture_id)
+            except Exception as recovery_error:
+                raise CheckpointCorruptError(
+                    "attachment save recovery could not inspect ledger"
+                ) from recovery_error
+            persisted_records = list((persisted or {}).get("records", []))
+            committed = next(
+                (
+                    item
+                    for item in persisted_records
+                    if item.get("attachment_id") == attachment_id
+                ),
+                None,
+            )
+            if committed is not None:
+                if {key: committed.get(key) for key in comparable} != comparable:
+                    raise SequenceConflictError(
+                        "attachment save recovery found conflicting evidence"
+                    ) from save_error
+                _verify_managed_record(store, capture_id, committed)
+            elif any(item.get("managed_ref") == managed_ref for item in persisted_records):
+                raise SequenceConflictError(
+                    "attachment save recovery found conflicting evidence"
+                ) from save_error
+            else:
+                try:
+                    store.remove_managed_object(managed_ref)
+                except Exception as cleanup_error:
+                    raise CheckpointCorruptError(
+                        "attachment save rollback failed"
+                    ) from cleanup_error
+                raise
         return {
             "capture_id": capture_id,
             "attachment_sequence": len(records),
@@ -394,7 +498,7 @@ def verified_persisted_attachment_ids(
     try:
         for record in list(ledger.get("records") or []):
             _verify_managed_record(store, capture_id, record)
-    except (OSError, ValueError):
+    except (CheckpointCorruptError, OSError, ValueError):
         return None
     return [str(item.get("attachment_id") or "") for item in ledger.get("records") or []]
 
