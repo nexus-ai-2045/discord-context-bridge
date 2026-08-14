@@ -5367,7 +5367,7 @@ def test_mcp_dependency_error_is_japanese(monkeypatch):
     def missing_fastmcp():
         raise RuntimeError(mcp_server.MCP_DEPENDENCY_HELP)
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", missing_fastmcp)
+    monkeypatch.setattr(mcp_server, "_load_mcp_runtime", missing_fastmcp)
 
     with pytest.raises(RuntimeError, match="MCP server を使うには"):
         mcp_server.build_server()
@@ -5390,7 +5390,10 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
         def run(self):
             raise AssertionError("unit test should not start stdio server")
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
 
     server = mcp_server.build_server(
         store=tmp_path / "events.ndjson",
@@ -5505,6 +5508,18 @@ def test_mcp_server_registers_context_tools(monkeypatch, tmp_path):
     assert any("個人情報の共有は禁止" in note for note in passport["rule_notes"])
 
 
+def test_mcp_optional_dependency_builds_real_server(tmp_path):
+    pytest.importorskip("mcp")
+
+    server = mcp_server.build_server(
+        store=tmp_path / "events.ndjson",
+        context_store=tmp_path / "context.json",
+    )
+
+    assert callable(server.streamable_http_app)
+    assert callable(server.run)
+
+
 def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
     calls = []
 
@@ -5522,7 +5537,10 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
         def run(self, **kwargs):
             calls.append((self, kwargs))
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
@@ -5546,6 +5564,47 @@ def test_http_mcp_entrypoint_uses_streamable_http(monkeypatch, tmp_path):
     assert server.settings["streamable_http_path"] == "/mcp"
     assert run_kwargs == {"transport": "streamable-http", "mount_path": "/mcp"}
     assert "streamable HTTP MCP server" in mcp_server.build_http_parser().format_help()
+
+
+def test_http_mcp_v2_passes_transport_options_to_run(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeMCPServer:
+        def __init__(self, name):
+            self.name = name
+
+        def tool(self):
+            def register(func):
+                return func
+
+            return register
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeMCPServer, 2),
+    )
+    monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
+
+    result = mcp_server.main_http(
+        [
+            "--store", str(tmp_path / "events.ndjson"),
+            "--host", "127.0.0.1",
+            "--port", "8787",
+            "--path", "/custom-mcp",
+            "--allow-unauthenticated",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [{
+        "transport": "streamable-http",
+        "host": "127.0.0.1",
+        "port": 8787,
+        "streamable_http_path": "/custom-mcp",
+    }]
 
 
 def test_http_mcp_require_safe_store_blocks_unsafe_store(monkeypatch, tmp_path):
@@ -5574,7 +5633,10 @@ def test_http_mcp_require_safe_store_blocks_unsafe_store(monkeypatch, tmp_path):
 
             return register
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
 
     with pytest.raises(SystemExit, match="保存データの監査に失敗しました"):
         mcp_server.main_http(
@@ -5605,7 +5667,10 @@ def test_http_mcp_require_safe_store_allows_safe_store(monkeypatch, tmp_path):
 
             return register
 
-    monkeypatch.setattr(mcp_server, "_load_fastmcp", lambda: FakeFastMCP)
+    monkeypatch.setattr(
+        mcp_server, "_load_mcp_runtime",
+        lambda: mcp_server._MCPRuntime(FakeFastMCP, 1),
+    )
     monkeypatch.delenv(mcp_server.DEFAULT_HTTP_AUTH_TOKEN_ENV, raising=False)
 
     result = mcp_server.main_http(
