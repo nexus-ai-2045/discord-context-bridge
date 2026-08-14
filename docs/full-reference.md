@@ -83,9 +83,9 @@ flowchart LR
 
 ## 判断正本
 
-MVP の判断正本は [`references/initial-thread-ruleset.md`](references/initial-thread-ruleset.md)
+MVP の判断正本は [`references/initial-thread-ruleset.md`](../references/initial-thread-ruleset.md)
 の13工程です。レビューしやすい補助表示として
-[`references/initial-thread-ruleset.html`](references/initial-thread-ruleset.html)
+[`references/initial-thread-ruleset.html`](../references/initial-thread-ruleset.html)
 を置きます。
 
 13工程からはみ出すものは MVP 外です。CLI、MCP、plugin、ChatGPT connector、
@@ -104,7 +104,7 @@ Codex skill としての発火条件は、`https://discord.com/channels/...` の
 handoff packet / safe metadata への接続依頼です。リンクだけが貼られた場合も、
 汎用URL調査ではなく read-only の `discord-context-bridge` ingress として扱います。
 
-この入口の運用境界は [docs/codex-discord-ingress.md](docs/codex-discord-ingress.md)
+この入口の運用境界は [docs/codex-discord-ingress.md](codex-discord-ingress.md)
 にまとめています。bridge は Chrome を直接操作せず、Codex 側の Chrome 観測結果を
 safe metadata として受け取ります。Discord本文コピー、最初のURL指定、Discordアプリ操作、
 Discordへの送信は前提にしません。
@@ -212,7 +212,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ## 使い方
 
-開発と PR の境界は [PROCESS_BOUNDARY.md](PROCESS_BOUNDARY.md) を見てください。
+開発と PR の境界は [PROCESS_BOUNDARY.md](../PROCESS_BOUNDARY.md) を見てください。
 
 実装後の最短チェックを並列で実行します。
 
@@ -298,7 +298,7 @@ python3 scripts/pr_scope_guard.py --base origin/main --head HEAD --json
 ```
 
 この guard は、`extracts/`、`.local/`、local absolute path、説明のない新規 `scripts/` / `tests/` / `docs/`、
-スコープ外キーワードを検出します。詳細は [`docs/pr-scope-guardrails.md`](docs/pr-scope-guardrails.md) を参照してください。
+スコープ外キーワードを検出します。詳細は [`docs/pr-scope-guardrails.md`](pr-scope-guardrails.md) を参照してください。
 
 リポ全体を閉じられるか確認する時は、goal status を見ます。`--run-smoke` を付けると
 `ops_check.py` も実行し、残務ゼロ判定の証跡に含めます。
@@ -475,7 +475,7 @@ Chrome 拡張で Discord の入力欄へ入れる前には、送信準備 packet
 reaction、edit、delete は禁止 action として返します。reply は message URL、
 mention は Discord URL と `@safe-label` を要求し、URL は出力しません。
 Chrome 拡張でできることと停止線の棚卸しは
-[`docs/codex-chrome-extension-capability-inventory.md`](docs/codex-chrome-extension-capability-inventory.md)
+[`docs/codex-chrome-extension-capability-inventory.md`](codex-chrome-extension-capability-inventory.md)
 を見ます。
 
 Chrome 拡張 runner は、`stage-discord-send` のあとに
@@ -759,7 +759,7 @@ python3 scripts/discord_bot_route_preflight.py
 
 `@discord`、`discord:configure`、`discord:access`、Computer Use fallback、OCR fallback をまとめて見る場合は、
 route status を使います。これは本文、参加者名、token、snowflake 値を出さず、どの入口を次に使うべきかだけを返します。
-経路の考え方は [`docs/routes.md`](docs/routes.md) に分けています。
+経路の考え方は [`docs/routes.md`](routes.md) に分けています。
 
 ```bash
 python3 scripts/discord_plugin_route_status.py --json

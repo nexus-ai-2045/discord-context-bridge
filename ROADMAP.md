@@ -1,6 +1,6 @@
 # Discord Context Bridge roadmap
 
-Updated: 2026-07-09
+Updated: 2026-08-14
 
 ## North Star
 
@@ -22,7 +22,7 @@ Discord send、reaction、edit、delete、外部投稿、repository visibility �
 | ユーザー価値は message found -> bridge intake -> reply support | accepted | README / chat-context / current user request が一致 |
 | 通常開発ループは短縮された | accepted | `ops_check.py --profile fast` を追加。full はPR/closeout用に維持 |
 | live Discord rehearsal まで完了している | rejected | 実チャンネルでの human send log は未実施 |
-| すべての将来roadmapが完了している | rejected | M2/M3/M4/P3 が active |
+| すべての将来roadmapが完了している | rejected | M2/M3/M4はparked、M5はblocked、M7-M9はlaterで未完了 |
 | append-only ledger が active docs から読める | accepted | README「保存モデル」と ROADMAP が ledger / projection を明示 |
 
 ## Current State
@@ -32,11 +32,11 @@ Discord send、reaction、edit、delete、外部投稿、repository visibility �
 | M0 public-safe core | done | residual dashboard / tests / safety boundary green |
 | M1 message found -> bridge intake | done | `bridge-intake` で snapshot / coverage / passport / guide を一本化 |
 | M1b append-only ledger docs | done | README / ROADMAP で ledger=正本、report=projection を明示 |
-| M2 fast upstream loop | improved | fast/full/release profile を導入。次は個別処理時間とcache reuseの測定 |
-| M3 parser quality | active | fixture品質指標と実サンプル評価が不足 |
-| M4 maintainability | active | `core.py` と `test_core.py` が大きい |
+| M2 fast upstream loop | parked | fast/full/release profileとslow-test短縮は完了。個別処理時間とcache reuse測定は次回注文候補 |
+| M3 parser quality | parked | fixture品質指標と実サンプル評価は次回注文候補 |
+| M4 maintainability | parked | `core.py` と `test_core.py` の分割は独立refactor注文で扱う |
 | M5 send rehearsal E2E | blocked | human/live channel approval and log needed |
-| M6 operator UX | active | README / ROADMAP / ISSUE_LIST の役割を整理中 |
+| M6 operator UX | done | README / ROADMAP / ISSUE_LIST / historical docs / full-reference の役割とlink検査を固定 |
 | M7 production send runbook | later | M5後 |
 | M8 optional private adapters | later | public-safe boundaryを維持して別lane |
 | M9 release/package | later | public visibility / release approval は別gate |
@@ -142,6 +142,7 @@ M5後に進める。
 
 Active TODO は `ISSUE_LIST.md` を正本にする。
 古い closeout docs は履歴証跡であり、現在の roadmap 完了判定には使わない。
+2026-08-14時点のactiveは0。`parked` / `later` / `blocked` は次回注文候補または外部条件待ちで、doneではない。
 
 ## Stopline
 

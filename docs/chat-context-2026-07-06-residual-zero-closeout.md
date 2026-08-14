@@ -1,5 +1,9 @@
 # Chat Context 2026-07-06: residual zero closeout and repo sync
 
+> Historical note: このファイルは 2026-07-06 時点の closeout 証跡です。
+> 現在の active TODO 正本は repo root の `ISSUE_LIST.md`、順序正本は `ROADMAP.md` です。
+> 下記の「残務ゼロ」・同期状態は当時の snapshot であり、現在値としては使わないでください。
+
 このメモは、2026-07-06 の `discord-context-bridge` チャット残務確認と closeout 文脈を保存するための引き継ぎです。
 raw Discord text、実 Discord URL、snowflake、参加者名、token、cookie、webhook、local absolute path は含めません。
 
