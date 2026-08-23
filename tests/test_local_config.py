@@ -72,6 +72,41 @@ def test_shared_dcb_ledger_counts_as_shared_save(tmp_path: Path) -> None:
     assert classification["reason"] == "shared_root"
 
 
+def test_cli_omitted_snapshot_store_uses_selected_cache_root(tmp_path: Path) -> None:
+    from discord_context_bridge.cli import _promote_cwd_local_snapshot_args, build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "cache-inventory",
+            "--url",
+            "https://discord.com/channels/11111111111111111/22222222222222222",
+            "--cache-root",
+            str(tmp_path / "chosen-root"),
+            "--json",
+        ]
+    )
+    _promote_cwd_local_snapshot_args(args)
+    assert args.snapshot_store == tmp_path / "chosen-root" / ".dcb" / "text-snapshots.ndjson"
+
+
+def test_cli_keeps_explicit_cwd_local_snapshot_store() -> None:
+    from discord_context_bridge.cli import _promote_cwd_local_snapshot_args, build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "snapshot-discord-url-text",
+            "--url",
+            "https://discord.com/channels/11111111111111111/22222222222222222",
+            "--snapshot-store",
+            ".local/discord-context-bridge/text-snapshots.ndjson",
+        ]
+    )
+    _promote_cwd_local_snapshot_args(args)
+    assert args.snapshot_store.as_posix() == ".local/discord-context-bridge/text-snapshots.ndjson"
+
+
 def test_promote_default_redirects_cwd_local_to_shared_root(tmp_path: Path) -> None:
     root = tmp_path / "raw-snapshots"
     promoted, reason = promote_default_snapshot_store(
