@@ -4,6 +4,9 @@ from pathlib import Path
 
 from discord_context_bridge.local_config import (
     build_configure_local_cache,
+    classify_snapshot_store,
+    default_cross_device_snapshot_store,
+    promote_default_snapshot_store,
     resolve_shared_snapshot_root,
 )
 from discord_context_bridge.cli import main as cli_main
@@ -32,6 +35,92 @@ def test_snapshot_root_precedence_cli_env_config_default(tmp_path: Path) -> None
     assert (configured.path, configured.source) == (tmp_path / "configured", "config")
     assert defaulted.source == "os_default"
     assert defaulted.path == tmp_path / "Projects" / "Documents" / "discord" / "raw-snapshots"
+
+
+def test_cwd_local_scratch_is_not_shared_complete(tmp_path: Path) -> None:
+    root = tmp_path / "raw-snapshots"
+    classification = classify_snapshot_store(
+        Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+        explicit_root=root,
+        config_path=tmp_path / "missing.json",
+        env={},
+        home=tmp_path,
+    )
+    assert classification["cwd_local_scratch"] is True
+    assert classification["shared_working_original"] is False
+    assert classification["shared_save_complete"] is False
+    assert classification["reason"] == "cwd_local_scratch"
+
+
+def test_shared_dcb_ledger_counts_as_shared_save(tmp_path: Path) -> None:
+    root = tmp_path / "raw-snapshots"
+    store = default_cross_device_snapshot_store(
+        explicit_root=root,
+        config_path=tmp_path / "missing.json",
+        env={},
+        home=tmp_path,
+    )
+    assert store == root / ".dcb" / "text-snapshots.ndjson"
+    classification = classify_snapshot_store(
+        store,
+        explicit_root=root,
+        config_path=tmp_path / "missing.json",
+        env={},
+        home=tmp_path,
+    )
+    assert classification["shared_save_complete"] is True
+    assert classification["reason"] == "shared_root"
+
+
+def test_cli_omitted_snapshot_store_uses_selected_cache_root(tmp_path: Path) -> None:
+    from discord_context_bridge.cli import _promote_cwd_local_snapshot_args, build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "cache-inventory",
+            "--url",
+            "https://discord.com/channels/11111111111111111/22222222222222222",
+            "--cache-root",
+            str(tmp_path / "chosen-root"),
+            "--json",
+        ]
+    )
+    _promote_cwd_local_snapshot_args(args)
+    assert args.snapshot_store == tmp_path / "chosen-root" / ".dcb" / "text-snapshots.ndjson"
+
+
+def test_cli_keeps_explicit_cwd_local_snapshot_store() -> None:
+    from discord_context_bridge.cli import _promote_cwd_local_snapshot_args, build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "snapshot-discord-url-text",
+            "--url",
+            "https://discord.com/channels/11111111111111111/22222222222222222",
+            "--snapshot-store",
+            ".local/discord-context-bridge/text-snapshots.ndjson",
+        ]
+    )
+    _promote_cwd_local_snapshot_args(args)
+    assert args.snapshot_store.as_posix() == ".local/discord-context-bridge/text-snapshots.ndjson"
+
+
+def test_promote_default_redirects_cwd_local_to_shared_root(tmp_path: Path) -> None:
+    root = tmp_path / "raw-snapshots"
+    promoted, reason = promote_default_snapshot_store(
+        Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+        explicit_root=root,
+        config_path=tmp_path / "missing.json",
+        env={},
+        home=tmp_path,
+    )
+    assert reason == "shared_working_original"
+    assert promoted == root / ".dcb" / "text-snapshots.ndjson"
+    kept, kept_reason = promote_default_snapshot_store(tmp_path / "custom.ndjson")
+    assert kept == tmp_path / "custom.ndjson"
+    assert kept_reason == "explicit"
 
 
 def test_configure_local_cache_is_dry_run_by_default_and_applies_atomically(tmp_path: Path) -> None:

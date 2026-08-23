@@ -10,6 +10,8 @@ from typing import Any, Mapping
 
 CONFIG_ENV = "DISCORD_CONTEXT_BRIDGE_CONFIG"
 SHARED_SNAPSHOT_ROOT_ENV = "DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT"
+CWD_LOCAL_SNAPSHOT_STORE = Path(".local") / "discord-context-bridge" / "text-snapshots.ndjson"
+CROSS_DEVICE_LEDGER_RELATIVE = Path(".dcb") / "text-snapshots.ndjson"
 
 
 class LocalConfigError(ValueError):
@@ -69,6 +71,75 @@ def resolve_shared_snapshot_root(
 
     default_root = (home or Path.home()) / "Projects" / "Documents" / "discord" / "raw-snapshots"
     return ResolvedLocalPath(default_root, "os_default")
+
+
+def default_cross_device_snapshot_store(
+    *,
+    explicit_root: Path | None = None,
+    config_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    root = resolve_shared_snapshot_root(
+        explicit=explicit_root,
+        config_path=config_path,
+        env=env,
+        home=home,
+    ).path
+    return root / CROSS_DEVICE_LEDGER_RELATIVE
+
+
+def is_cwd_local_scratch(path: Path) -> bool:
+    posix = path.as_posix()
+    return posix == CWD_LOCAL_SNAPSHOT_STORE.as_posix() or posix.endswith(
+        "/" + CWD_LOCAL_SNAPSHOT_STORE.as_posix()
+    )
+
+
+def is_cross_device_working_store(path: Path, *, shared_root: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+        root = shared_root.expanduser().resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def classify_snapshot_store(
+    path: Path,
+    *,
+    explicit_root: Path | None = None,
+    config_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    shared_root = resolve_shared_snapshot_root(
+        explicit=explicit_root,
+        config_path=config_path,
+        env=env,
+        home=home,
+    ).path
+    scratch = is_cwd_local_scratch(path)
+    shared = is_cross_device_working_store(path, shared_root=shared_root)
+    return {
+        "schema": "discord_context_bridge_snapshot_store_class.v1",
+        "cwd_local_scratch": scratch,
+        "shared_working_original": shared,
+        "shared_save_complete": shared,
+        "reason": (
+            "shared_root"
+            if shared
+            else "cwd_local_scratch"
+            if scratch
+            else "outside_shared_root"
+        ),
+    }
+
+
+def promote_default_snapshot_store(path: Path, **kwargs: Any) -> tuple[Path, str]:
+    if is_cwd_local_scratch(path):
+        return default_cross_device_snapshot_store(**kwargs), "shared_working_original"
+    return path, "explicit"
 
 
 def configured_discord_user_data_dir(*, config_path: Path) -> Path | None:

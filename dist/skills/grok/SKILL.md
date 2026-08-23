@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 1898bbabf714b7febb7b6bc820618bddff21817c
+ssot_commit: 8d0f17f5a2b17b9fd01577bc184e03380690bd20
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 8b239ebaf9916937b9b3adb08b2330da9b5db39738cdb76c5fbab4fc858761fe
-contract_checksum: 064703f46fc50a3403fe2b5fbd7772031672c348b2592e0be435b6a4fb36acb1
-generated_at: 2026-08-07T13:14:38+00:00
+contract_checksum: 83763c09b9871a89ab4bc4e7aac4187de2e7e8618599d5a51e43c5f0e95598e1
+generated_at: 2026-08-23T12:27:20+00:00
 runtime_target: grok
 ---
 
@@ -109,7 +109,7 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 標準順序:
 
 1. `target`: URL / safe label / title evidence / read scope を確定する。
-2. `ledger`: 一度でも取得した可視テキスト観測は、重複でも append-only snapshot store に追記する。DCB の既定台帳は `.local/discord-context-bridge/text-snapshots.ndjson`。同一内容でも保存を省略せず、`changed=false` / `duplicate_content=true` のように差分状態を metadata で表す。各行には `schema`、`event_id`、`event_type`、`stream_id`、`stream_sequence`、`expected_previous_stream_sequence`、`time`、`content_hash`、`previous_content_hash`、`previous_event_hash`、`event_hash`、`acquisition_context` を持たせる。
+2. `ledger`: 一度でも取得した可視テキスト観測は、重複でも append-only snapshot store に追記する。機をまたぐ会話本文の作業正本は `resolve_shared_snapshot_root`（既定 `~/Projects/Documents/discord/raw-snapshots`）配下の `.dcb/text-snapshots.ndjson`。cwd の `.local/discord-context-bridge/text-snapshots.ndjson` は作業ログであり、ここだけへの保存を「共有完了」と言わない。CLI の `--snapshot-store` / `--ai-log` 未指定時は共有棚へリダイレクトする。同一内容でも保存を省略せず、`changed=false` / `duplicate_content=true` のように差分状態を metadata で表す。各行には `schema`、`event_id`、`event_type`、`stream_id`、`stream_sequence`、`expected_previous_stream_sequence`、`time`、`content_hash`、`previous_content_hash`、`previous_event_hash`、`event_hash`、`acquisition_context` を持たせる。
 3. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。Markdown や画像フォルダは読みやすい view / bundle であり、履歴正本は append-only ledger とする。
 4. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
 5. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。

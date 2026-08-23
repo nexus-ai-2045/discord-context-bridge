@@ -24,6 +24,7 @@ from .local_config import (
     build_configure_local_cache,
     configured_discord_user_data_dir,
     default_config_path,
+    default_cross_device_snapshot_store,
     resolve_shared_snapshot_root,
 )
 from .obsidian_projection import export_obsidian_projection
@@ -57,7 +58,6 @@ from .core import (
     DEFAULT_ATTACHMENT_LEDGER,
     DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
     DEFAULT_STORE,
-    DEFAULT_TEXT_SNAPSHOT_STORE,
     audit_context_store,
     audit_event_store,
     build_attachment_ledger,
@@ -246,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.set_defaults(handler=_cmd_status_dashboard)
 
     report_latest = sub.add_parser("report-latest", help="保存済み snapshot から metadata-only の最新 report を作る")
-    report_latest.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    report_latest.add_argument("--snapshot-store", type=Path, default=None, help="保存済み可視テキスト snapshot のローカルファイル")
     report_latest.add_argument("--target-key", default="", help="特定 target_key の最新 snapshot だけを見る")
     report_latest.add_argument("--url", default="", help="特定 URL に一致する保存済み snapshot だけを見る。出力には URL を含めません")
     report_latest.add_argument("--include-preview", action="store_true", help="本文全体ではなく短い preview だけを明示的に含める")
@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_obsidian.add_argument(
         "--snapshot-store",
         type=Path,
-        default=DEFAULT_TEXT_SNAPSHOT_STORE,
+        default=None,
         help="保存済み可視テキスト snapshot のローカルファイル",
     )
     export_obsidian.add_argument(
@@ -279,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_knowledge.add_argument(
         "--snapshot-store",
         type=Path,
-        default=DEFAULT_TEXT_SNAPSHOT_STORE,
+        default=None,
         help="保存済み可視テキスト snapshot のローカルファイル",
     )
     export_knowledge.add_argument(
@@ -311,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Discord URL intake の最短 read-only 判定を metadata-only で返す",
     )
     fast_path.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
-    fast_path.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    fast_path.add_argument("--snapshot-store", type=Path, default=None, help="保存済み可視テキスト snapshot のローカルファイル")
     fast_path.add_argument("--raw-cache", type=Path, help="突合する raw cache / local snapshot ndjson")
     fast_path.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
     fast_path.add_argument("--hook-snapshot-status", default="", help="hook が既に出した snapshot status")
@@ -333,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="message found -> snapshot / coverage / passport / guide までを一本で進める",
     )
     bridge_intake.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
-    bridge_intake.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    bridge_intake.add_argument("--snapshot-store", type=Path, default=None, help="保存済み可視テキスト snapshot のローカルファイル")
     bridge_intake.add_argument("--raw-cache", type=Path, help="突合する raw cache / local snapshot ndjson")
     bridge_intake.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
     bridge_intake.add_argument("--input", type=Path, help="取り込む可視テキストファイル")
@@ -363,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_url.add_argument("--from-clipboard", action="store_true", help="--input ではなくローカルのクリップボードから可視テキストを読む")
     snapshot_url.add_argument("--clipboard-command", default="pbpaste", help="クリップボード取得に使うローカルコマンド")
     snapshot_url.add_argument("--source-command", help="Discord 可視テキストを出力するローカルコマンド")
-    snapshot_url.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存先 snapshot store")
+    snapshot_url.add_argument("--snapshot-store", type=Path, default=None, help="保存先 snapshot store")
     snapshot_url.add_argument("--title", default="", help="任意の安全な短い label。実 channel 名や private 名は避ける")
     snapshot_url.add_argument(
         "--source",
@@ -392,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
     intake.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
     intake.add_argument("--raw-cache", type=Path, help="Discord raw cache / local snapshot ndjson")
-    intake.add_argument("--ai-log", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="AI-facing snapshot log")
+    intake.add_argument("--ai-log", type=Path, default=None, help="AI-facing snapshot log")
     intake.add_argument("--sync", action="store_true", help="raw cache exact match を AI log へ同期する")
     intake.set_defaults(handler=_cmd_verify_url_intake)
 
@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--url", default="", help="対象 Discord URL。出力には表示しません")
     coverage.add_argument("--target-key", default="", help="任意: URL 由来ではない target_key を指定する")
     coverage.add_argument("--raw-cache", type=Path, help="Discord raw cache / local snapshot ndjson")
-    coverage.add_argument("--ai-log", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="AI-facing snapshot log")
+    coverage.add_argument("--ai-log", type=Path, default=None, help="AI-facing snapshot log")
     coverage.add_argument(
         "--source-kind",
         choices=["saved_log", "visible_dom", "scroll_dom", "api_or_export"],
@@ -436,7 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する",
     )
     full_thread.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
-    full_thread.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    full_thread.add_argument("--snapshot-store", type=Path, default=None, help="保存済み可視テキスト snapshot のローカルファイル")
     full_thread.add_argument("--raw-cache", type=Path, help="Discord raw export / cache ndjson")
     full_thread.add_argument("--gateway-configured", action="store_true", help="gateway live event route が設定済み")
     full_thread.add_argument("--rest-configured", action="store_true", help="REST/backfill route が設定済み")
@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="ローカル cache / snapshot を先に見て private MD book を作る",
     )
     cache_first.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
-    cache_first.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE, help="保存済み可視テキスト snapshot のローカルファイル")
+    cache_first.add_argument("--snapshot-store", type=Path, default=None, help="保存済み可視テキスト snapshot のローカルファイル")
     cache_first.add_argument("--cache-root", type=Path, default=None, help="shared raw snapshot root。未指定時は env / user config / OS既定の順で解決します")
     cache_first.add_argument("--config-path", type=Path, default=default_config_path(), help="local cache config。出力には表示しません")
     cache_first.add_argument("--book-output", type=Path, default=None, help="生成する private Markdown book。出力には表示しません")
@@ -538,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="URL完全一致のsnapshot・Markdown件数・title evidence・鮮度判断をmetadata-onlyで返す",
     )
     cache_inventory.add_argument("--url", required=True, help="対象 Discord URL。出力には表示しません")
-    cache_inventory.add_argument("--snapshot-store", type=Path, default=DEFAULT_TEXT_SNAPSHOT_STORE)
+    cache_inventory.add_argument("--snapshot-store", type=Path, default=None)
     cache_inventory.add_argument("--cache-root", type=Path, default=None)
     cache_inventory.add_argument("--config-path", type=Path, default=default_config_path())
     cache_inventory.add_argument("--include-private-title", action="store_true", help="private consoleにtitle値を含める")
@@ -2389,10 +2389,24 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
     return 0
 
 
+def _promote_cwd_local_snapshot_args(args: argparse.Namespace) -> None:
+    shared_kwargs = {
+        "explicit_root": getattr(args, "cache_root", None),
+        "config_path": getattr(args, "config_path", None),
+    }
+    for attr in ("snapshot_store", "ai_log"):
+        if not hasattr(args, attr):
+            continue
+        current = getattr(args, attr)
+        if current is None:
+            setattr(args, attr, default_cross_device_snapshot_store(**shared_kwargs))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        _promote_cwd_local_snapshot_args(args)
         return int(args.handler(args))
     except LocalConfigError as exc:
         payload = {
