@@ -24,6 +24,7 @@ from .local_config import (
     build_configure_local_cache,
     configured_discord_user_data_dir,
     default_config_path,
+    promote_default_snapshot_store,
     resolve_shared_snapshot_root,
 )
 from .obsidian_projection import export_obsidian_projection
@@ -2389,10 +2390,20 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
     return 0
 
 
+def _promote_cwd_local_snapshot_args(args: argparse.Namespace) -> None:
+    for attr in ("snapshot_store", "ai_log"):
+        current = getattr(args, attr, None)
+        if current is None:
+            continue
+        promoted, _reason = promote_default_snapshot_store(current)
+        setattr(args, attr, promoted)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        _promote_cwd_local_snapshot_args(args)
         return int(args.handler(args))
     except LocalConfigError as exc:
         payload = {
