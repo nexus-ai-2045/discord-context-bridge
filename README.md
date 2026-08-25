@@ -142,6 +142,8 @@ localhostで明示的に使う場合だけ、`--allow-unauthenticated`で認証�
 
 ## 開発と運用
 
+基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。
+
 ```bash
 python scripts/ops_check.py --profile fast
 python scripts/ops_check.py --profile full
