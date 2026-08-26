@@ -20,7 +20,7 @@ function Quote-Arg([string]$Value) { '"' + $Value.Replace('"', '\"') + '"' }
 
 $runner = Join-Path $RepoRoot "scripts\run_knowledge_wiki_projection.py"
 $arguments = @(
-    (Quote-Arg $PythonPath), (Quote-Arg $runner),
+    (Quote-Arg $runner),
     "--snapshot-store", (Quote-Arg $SnapshotStore),
     "--output-root", (Quote-Arg $OutputRoot),
     "--receipt", (Quote-Arg $ReceiptPath),
@@ -30,7 +30,7 @@ if ($PersonRegistry) { $arguments += @("--person-registry", (Quote-Arg $PersonRe
 if ($TopicRegistry) { $arguments += @("--topic-registry", (Quote-Arg $TopicRegistry)) }
 $argumentString = $arguments -join " "
 
-$action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument ("--headless " + $argumentString) -WorkingDirectory $RepoRoot
+$action = New-ScheduledTaskAction -Execute $PythonPath -Argument $argumentString -WorkingDirectory $RepoRoot
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 $settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -54,8 +54,8 @@ if ($existing) {
         ([DateTime]$_.StartBoundary).TimeOfDay -eq $expectedTime
     })
     $matchDetails.action = (@($existing.Actions).Count -eq 1) -and
-        ($existing.Actions.Execute -eq "conhost.exe") -and
-        ($existing.Actions.Arguments -eq ("--headless " + $argumentString))
+        ($existing.Actions.Execute -eq $PythonPath) -and
+        ($existing.Actions.Arguments -eq $argumentString)
     $matchDetails.working_directory = $existing.Actions.WorkingDirectory -eq $RepoRoot
     $matchDetails.enabled = ($existing.State -ne "Disabled") -and $existing.Settings.Enabled
     $matchDetails.daily_trigger = ($enabledTriggers.Count -eq 1) -and

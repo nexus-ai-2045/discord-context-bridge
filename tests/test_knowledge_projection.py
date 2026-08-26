@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from discord_context_bridge.cli import main
 from discord_context_bridge.knowledge_projection import export_knowledge_projection
 
@@ -866,3 +868,40 @@ def test_projection_rejects_registry_ids_that_escape_output_root(tmp_path):
         raise AssertionError("unsafe registry id must be rejected")
 
     assert not (tmp_path / "escape.generated.md").exists()
+
+
+def test_topic_aliases_and_relations_keep_stable_topic_ids(tmp_path):
+    snapshots = tmp_path / "snapshots.ndjson"
+    output = tmp_path / "wiki"
+    registry = tmp_path / "topics.json"
+    _append_snapshot(snapshots, sequence=1, text="member-a: #Wiki", content_hash="one")
+    registry.write_text(json.dumps({
+        "schema": "dcb.topic_assignment_registry.v1", "private_local_only": True,
+        "topics": [
+            {"topic_id": "knowledge", "label": "知識管理"},
+            {"topic_id": "knowledge-wiki", "label": "Knowledge Wiki", "aliases": ["Wiki"],
+             "broader_topic_ids": ["knowledge"], "related_topic_ids": []}
+        ], "assignments": []
+    }, ensure_ascii=False), encoding="utf-8")
+    result = export_knowledge_projection(snapshot_store=snapshots, output_root=output, topic_registry=registry)
+    assert result["projected_topic_count"] == 2
+    assert result["reviewed_topic_alias_count"] >= 1
+    child = (output / "Topics" / "knowledge-wiki.generated.md").read_text(encoding="utf-8")
+    parent = (output / "Topics" / "knowledge.generated.md").read_text(encoding="utf-8")
+    assert "[[knowledge.generated|知識管理]]" in child
+    assert "[[knowledge-wiki.generated|Knowledge Wiki]]" in parent
+    assert "#Wiki" in child
+
+
+def test_topic_broader_cycle_fails_closed(tmp_path):
+    snapshots, registry = tmp_path / "snapshots.ndjson", tmp_path / "topics.json"
+    _append_snapshot(snapshots, sequence=1, text="member-a: 本文", content_hash="one")
+    registry.write_text(json.dumps({
+        "schema": "dcb.topic_assignment_registry.v1", "private_local_only": True,
+        "topics": [
+            {"topic_id": "a", "label": "A", "broader_topic_ids": ["b"]},
+            {"topic_id": "b", "label": "B", "broader_topic_ids": ["a"]}
+        ], "assignments": []
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="cyclic broader"):
+        export_knowledge_projection(snapshot_store=snapshots, output_root=tmp_path / "wiki", topic_registry=registry)

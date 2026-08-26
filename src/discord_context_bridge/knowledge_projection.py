@@ -83,9 +83,16 @@ def _load_person_registry(
 
 def _load_topic_registry(
     path: Path | None,
-) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]], int]:
+) -> tuple[
+    dict[str, tuple[str, str]],
+    dict[str, list[str]],
+    dict[str, str],
+    dict[str, list[str]],
+    dict[str, list[str]],
+    int,
+]:
     if path is None:
-        return {}, {}, 0
+        return {}, {}, {}, {}, {}, 0
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
         payload.get("schema") != "dcb.topic_assignment_registry.v1"
@@ -95,12 +102,57 @@ def _load_topic_registry(
     ):
         raise ValueError("invalid topic registry")
     topics: dict[str, tuple[str, str]] = {}
+    topic_aliases: dict[str, str] = {}
+    broader_topics: dict[str, list[str]] = {}
+    related_topics: dict[str, list[str]] = {}
     for topic in payload["topics"]:
         topic_id = str(topic.get("topic_id") or "").strip()
         label = str(topic.get("label") or "").strip()
         if not _REVIEW_ID_PATTERN.fullmatch(topic_id) or not label:
             raise ValueError("invalid topic definition")
+        for field in ("aliases", "broader_topic_ids", "related_topic_ids"):
+            value = topic.get(field, [])
+            if not isinstance(value, list) or len(value) != len(set(value)):
+                raise ValueError("invalid topic definition")
+        if topic_id in topics:
+            raise ValueError("duplicate topic definition")
         topics[topic_id] = (topic_id, label)
+        aliases = [label, *(topic.get("aliases") or [])]
+        for alias in aliases:
+            normalized_alias = str(alias or "").strip().casefold()
+            if not normalized_alias:
+                raise ValueError("invalid topic alias")
+            existing = topic_aliases.get(normalized_alias)
+            if existing is not None and existing != topic_id:
+                raise ValueError("conflicting topic alias")
+            topic_aliases[normalized_alias] = topic_id
+        broader_topics[topic_id] = [
+            str(value or "").strip()
+            for value in topic.get("broader_topic_ids") or []
+        ]
+        related_topics[topic_id] = [
+            str(value or "").strip()
+            for value in topic.get("related_topic_ids") or []
+        ]
+    for topic_id in topics:
+        links = [*broader_topics[topic_id], *related_topics[topic_id]]
+        if any(link == topic_id or link not in topics for link in links):
+            raise ValueError("invalid topic relation")
+
+    def visit(topic_id: str, active: set[str], visited: set[str]) -> None:
+        if topic_id in active:
+            raise ValueError("cyclic broader topic relation")
+        if topic_id in visited:
+            return
+        active.add(topic_id)
+        for parent_id in broader_topics[topic_id]:
+            visit(parent_id, active, visited)
+        active.remove(topic_id)
+        visited.add(topic_id)
+
+    visited_topics: set[str] = set()
+    for topic_id in topics:
+        visit(topic_id, set(), visited_topics)
     assignments: dict[str, list[str]] = {}
     for assignment in payload["assignments"]:
         observation_id = str(assignment.get("observation_id") or "").strip()
@@ -124,7 +176,14 @@ def _load_topic_registry(
         ):
             raise ValueError("conflicting topic assignment")
         assignments[observation_id] = normalized
-    return topics, assignments, len(assignments)
+    return (
+        topics,
+        assignments,
+        topic_aliases,
+        broader_topics,
+        related_topics,
+        len(assignments),
+    )
 
 
 def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -456,12 +515,23 @@ def _render_topic(
     label: str,
     events: list[dict[str, str]],
     people: dict[str, str],
+    topics: dict[str, str],
+    broader_topic_ids: list[str],
+    narrower_topic_ids: list[str],
+    related_topic_ids: list[str],
 ) -> str:
     recorded_at = _latest_observed_at(events)
     person_links = "\n".join(
         f"- [[../People/{person_id}.generated|{_wikilink_alias(people[person_id])}]]"
         for person_id in sorted({event["person_id"] for event in events})
     )
+
+    def topic_links(topic_ids: list[str]) -> str:
+        return "\n".join(
+            f"- [[{linked_id}.generated|{_wikilink_alias(topics[linked_id])}]]"
+            for linked_id in topic_ids
+        ) or "- まだありません"
+
     lines = [
         "---",
         f"title: {_yaml_string(label)}",
@@ -479,9 +549,21 @@ def _render_topic(
         f"# {label}",
         "",
         "> [!info] 自動投影",
-        "> 明示的なハッシュタグまたはWikiリンクだけから生成しています。",
+        "> 明示タグ、Wikiリンク、または人間レビュー済み台帳から生成しています。",
         "",
         f"- 人間メモ: [[{topic_id}.notes]]",
+        "",
+        "## 上位の題",
+        "",
+        topic_links(broader_topic_ids),
+        "",
+        "## 下位の題",
+        "",
+        topic_links(narrower_topic_ids),
+        "",
+        "## 関連する題",
+        "",
+        topic_links(related_topic_ids),
         "",
         "## 関連人物",
         "",
@@ -665,12 +747,19 @@ def export_knowledge_projection(
     person_aliases, reviewed_person_alias_count = _load_person_registry(
         person_registry
     )
-    reviewed_topics, topic_assignments, reviewed_topic_assignment_count = (
-        _load_topic_registry(topic_registry)
-    )
+    (
+        reviewed_topics,
+        topic_assignments,
+        topic_aliases,
+        broader_topics,
+        related_topics,
+        reviewed_topic_assignment_count,
+    ) = _load_topic_registry(topic_registry)
     latest_records = _projection_records(records)
     people: dict[str, str] = {}
-    topics: dict[str, str] = {}
+    topics: dict[str, str] = {
+        topic_id: label for topic_id, (_, label) in reviewed_topics.items()
+    }
     person_events: dict[str, list[dict[str, str]]] = defaultdict(list)
     topic_events: dict[str, list[dict[str, str]]] = defaultdict(list)
     statuses: list[str] = []
@@ -726,9 +815,15 @@ def export_knowledge_projection(
             topic_labels = _extract_topics(parsed.text_snippet)
             topic_pairs: list[tuple[str, str]] = []
             for topic_label in topic_labels:
-                topic_id = _stable_id("topic", topic_label.casefold())
-                topics.setdefault(topic_id, topic_label)
-                topic_pairs.append((topic_id, topic_label))
+                topic_id = topic_aliases.get(topic_label.casefold())
+                if topic_id is None:
+                    topic_id = _stable_id("topic", topic_label.casefold())
+                    canonical_label = topic_label
+                else:
+                    _, canonical_label = reviewed_topics[topic_id]
+                topics.setdefault(topic_id, canonical_label)
+                if (topic_id, canonical_label) not in topic_pairs:
+                    topic_pairs.append((topic_id, canonical_label))
             observation_parts = [target, content_hash, str(index)]
             if record.get("event_type") == "message_observation":
                 observation_parts.append(_structured_message_identity(record))
@@ -790,7 +885,18 @@ def export_knowledge_projection(
             )
         )
 
-    for topic_id, events in topic_events.items():
+    narrower_topics: dict[str, list[str]] = defaultdict(list)
+    for topic_id, parent_ids in broader_topics.items():
+        for parent_id in parent_ids:
+            narrower_topics[parent_id].append(topic_id)
+    symmetric_related: dict[str, set[str]] = defaultdict(set)
+    for topic_id, linked_ids in related_topics.items():
+        for linked_id in linked_ids:
+            symmetric_related[topic_id].add(linked_id)
+            symmetric_related[linked_id].add(topic_id)
+
+    for topic_id in topics:
+        events = topic_events.get(topic_id, [])
         statuses.append(
             _project_file(
                 output_root / "Topics" / f"{topic_id}.generated.md",
@@ -799,6 +905,10 @@ def export_knowledge_projection(
                     label=topics[topic_id],
                     events=events,
                     people=people,
+                    topics=topics,
+                    broader_topic_ids=broader_topics.get(topic_id, []),
+                    narrower_topic_ids=sorted(narrower_topics.get(topic_id, [])),
+                    related_topic_ids=sorted(symmetric_related.get(topic_id, set())),
                 ),
                 dry_run=dry_run,
             )
@@ -927,6 +1037,15 @@ def export_knowledge_projection(
         "review_item_count": unclassified_count + len(unreviewed_people),
         "reviewed_person_alias_count": reviewed_person_alias_count,
         "reviewed_topic_assignment_count": reviewed_topic_assignment_count,
+        "reviewed_topic_alias_count": max(0, len(topic_aliases) - len(reviewed_topics)),
+        "topic_relation_count": sum(len(values) for values in broader_topics.values())
+        + len(
+            {
+                tuple(sorted((left, right)))
+                for left, values in symmetric_related.items()
+                for right in values
+            }
+        ),
         "written_file_count": statuses.count("written"),
         "planned_file_count": statuses.count("planned"),
         "unchanged_file_count": statuses.count("unchanged"),
