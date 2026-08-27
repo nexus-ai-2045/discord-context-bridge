@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,81 @@ def _json_fingerprint(value: Any) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+@contextmanager
+def _exclusive_ledger_lock(ledger_path: Path):
+    """Serialize ledger validation, deduplication, and append across processes."""
+    lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        if lock_path.stat().st_size == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        if locked:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _validate_packet_integrity(packet: dict[str, Any]) -> None:
+    if (
+        packet.get("schema") != PACKET_SCHEMA
+        or packet.get("model_route") != MODEL_ROUTE
+        or packet.get("prompt_version") != PROMPT_VERSION
+        or packet.get("private_local_only") is not True
+        or packet.get("contains_raw_discord_text") is not True
+        or packet.get("external_send_approved") is not False
+        or packet.get("review_policy") != "proposal_only_human_promotion_required"
+        or not isinstance(packet.get("items"), list)
+        or not isinstance(packet.get("taxonomy"), list)
+    ):
+        raise ValueError("invalid classification packet")
+    items = packet["items"]
+    taxonomy = packet["taxonomy"]
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("invalid classification packet item")
+        text = item.get("text")
+        if not isinstance(text, str) or hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest() != item.get("content_hash"):
+            raise ValueError("classification packet content integrity mismatch")
+    source_fingerprint = _json_fingerprint(
+        [(item.get("observation_id"), item.get("content_hash")) for item in items]
+    )
+    packet_id = _stable_id(
+        "topic-packet",
+        source_fingerprint,
+        _json_fingerprint(taxonomy),
+        PROMPT_VERSION,
+    )
+    if (
+        packet.get("source_fingerprint") != source_fingerprint
+        or packet.get("packet_id") != packet_id
+    ):
+        raise ValueError("classification packet fingerprint mismatch")
 
 
 def _load_proposed_observation_ids(path: Path | None) -> set[str]:
@@ -117,9 +193,7 @@ def _candidate_events(snapshot_store: Path) -> list[dict[str, str]]:
                         parsed.text_snippet.encode("utf-8")
                     ).hexdigest(),
                     "text": parsed.text_snippet,
-                    "explicit_topics": "\0".join(
-                        _extract_topics(parsed.text_snippet)
-                    ),
+                    "explicit_topics": "\0".join(_extract_topics(parsed.text_snippet)),
                 }
             )
     return candidates
@@ -230,7 +304,9 @@ def build_topic_classification_packet(
     }
 
 
-def _validated_result(packet: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+def _validated_result(
+    packet: dict[str, Any], result: dict[str, Any]
+) -> list[dict[str, Any]]:
     if (
         result.get("schema") != RESULT_SCHEMA
         or result.get("packet_id") != packet.get("packet_id")
@@ -243,6 +319,8 @@ def _validated_result(packet: dict[str, Any], result: dict[str, Any]) -> list[di
     validated: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in result["items"]:
+        if not isinstance(item, dict):
+            raise ValueError("invalid classification result item")
         observation_id = str(item.get("observation_id") or "")
         topics = item.get("topics")
         abstain_reason = str(item.get("abstain_reason") or "").strip()
@@ -250,12 +328,14 @@ def _validated_result(packet: dict[str, Any], result: dict[str, Any]) -> list[di
             observation_id not in expected
             or observation_id in seen
             or not isinstance(topics, list)
-            or (not topics and not abstain_reason)
+            or bool(topics) == bool(abstain_reason)
         ):
             raise ValueError("invalid classification result item")
         seen.add(observation_id)
         normalized_topics: list[dict[str, Any]] = []
         for topic in topics:
+            if not isinstance(topic, dict):
+                raise ValueError("invalid topic candidate")
             existing_topic_id = str(topic.get("existing_topic_id") or "").strip()
             proposed_label = str(topic.get("proposed_label") or "").strip()
             confidence = topic.get("confidence")
@@ -295,21 +375,12 @@ def import_topic_classification_result(
 ) -> dict[str, Any]:
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    if packet.get("schema") != PACKET_SCHEMA:
-        raise ValueError("invalid classification packet")
+    if not isinstance(packet, dict) or not isinstance(result, dict):
+        raise ValueError("invalid classification document")
+    _validate_packet_integrity(packet)
     validated = _validated_result(packet, result)
-    existing_ids: set[str] = set()
-    if proposal_ledger.exists():
-        with proposal_ledger.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if line.strip():
-                    record = json.loads(line)
-                    proposal_id = str(record.get("proposal_id") or "")
-                    if record.get("schema") != PROPOSAL_SCHEMA or not proposal_id:
-                        raise ValueError("invalid proposal ledger")
-                    existing_ids.add(proposal_id)
     recorded_at = datetime.now(timezone.utc).isoformat()
-    records: list[dict[str, Any]] = []
+    candidate_records: list[dict[str, Any]] = []
     for item in validated:
         proposal_id = _stable_id(
             "topic-proposal",
@@ -317,9 +388,7 @@ def import_topic_classification_result(
             item["observation_id"],
             _json_fingerprint(item),
         )
-        if proposal_id in existing_ids:
-            continue
-        records.append(
+        candidate_records.append(
             {
                 "schema": PROPOSAL_SCHEMA,
                 "proposal_id": proposal_id,
@@ -335,34 +404,48 @@ def import_topic_classification_result(
                 "private_local_only": True,
             }
         )
-    if records:
-        proposal_ledger.parent.mkdir(parents=True, exist_ok=True)
-        payload = "".join(
-            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
-            for record in records
-        ).encode("utf-8")
-        descriptor = os.open(
-            proposal_ledger, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600
-        )
-        try:
-            view = memoryview(payload)
-            while view:
-                written = os.write(descriptor, view)
-                if written <= 0:
-                    raise OSError("proposal ledger append failed")
-                view = view[written:]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    records: list[dict[str, Any]] = []
+    with _exclusive_ledger_lock(proposal_ledger):
+        existing_ids: set[str] = set()
+        if proposal_ledger.exists():
+            with proposal_ledger.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        record = json.loads(line)
+                        proposal_id = str(record.get("proposal_id") or "")
+                        if record.get("schema") != PROPOSAL_SCHEMA or not proposal_id:
+                            raise ValueError("invalid proposal ledger")
+                        existing_ids.add(proposal_id)
+        records = [
+            record
+            for record in candidate_records
+            if record["proposal_id"] not in existing_ids
+        ]
+        if records:
+            payload = "".join(
+                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+                for record in records
+            ).encode("utf-8")
+            descriptor = os.open(
+                proposal_ledger, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600
+            )
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("proposal ledger append failed")
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     return {
         "schema": PROPOSAL_SCHEMA,
         "ok": True,
         "packet_id": packet["packet_id"],
         "validated_item_count": len(validated),
         "appended_proposal_count": len(records),
-        "pending_human_review_count": sum(
-            1 for item in validated if item["topics"]
-        ),
+        "pending_human_review_count": sum(1 for item in validated if item["topics"]),
         "abstained_count": sum(1 for item in validated if not item["topics"]),
         "reviewed_registry_changed": False,
         "wiki_changed": False,

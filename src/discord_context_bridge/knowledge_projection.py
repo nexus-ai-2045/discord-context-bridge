@@ -108,7 +108,14 @@ def _load_topic_registry(
     for topic in payload["topics"]:
         topic_id = str(topic.get("topic_id") or "").strip()
         label = str(topic.get("label") or "").strip()
-        if not _REVIEW_ID_PATTERN.fullmatch(topic_id) or not label:
+        reviewed_by = str(topic.get("reviewed_by") or "").strip()
+        reviewed_at = str(topic.get("reviewed_at") or "").strip()
+        if (
+            not _REVIEW_ID_PATTERN.fullmatch(topic_id)
+            or not label
+            or not reviewed_by
+            or not reviewed_at
+        ):
             raise ValueError("invalid topic definition")
         for field in ("aliases", "broader_topic_ids", "related_topic_ids"):
             value = topic.get(field, [])

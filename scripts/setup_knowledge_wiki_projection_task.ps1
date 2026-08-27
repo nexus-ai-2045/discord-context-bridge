@@ -24,7 +24,22 @@ function Test-OutsideRoot([string]$Candidate, [string]$Root) {
     return -not ($candidatePath -eq $rootPath -or $candidatePath.StartsWith($rootPath + '\', [StringComparison]::OrdinalIgnoreCase))
 }
 
-$runner = Join-Path $RepoRoot "scripts\run_knowledge_wiki_projection.py"
+function Resolve-AgainstRoot([string]$Candidate, [string]$Root) {
+    if ([IO.Path]::IsPathFullyQualified($Candidate)) {
+        return [IO.Path]::GetFullPath($Candidate)
+    }
+    return [IO.Path]::GetFullPath((Join-Path $Root $Candidate))
+}
+
+$RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+$SnapshotStore = Resolve-AgainstRoot $SnapshotStore $RepoRoot
+$OutputRoot = Resolve-AgainstRoot $OutputRoot $RepoRoot
+$ReceiptPath = Resolve-AgainstRoot $ReceiptPath $RepoRoot
+$LockPath = Resolve-AgainstRoot $LockPath $RepoRoot
+if ($PersonRegistry) { $PersonRegistry = Resolve-AgainstRoot $PersonRegistry $RepoRoot }
+if ($TopicRegistry) { $TopicRegistry = Resolve-AgainstRoot $TopicRegistry $RepoRoot }
+
+$runner = [IO.Path]::GetFullPath((Join-Path $RepoRoot "scripts\run_knowledge_wiki_projection.py"))
 $arguments = @(
     (Quote-Arg $runner),
     "--snapshot-store", (Quote-Arg $SnapshotStore),
@@ -49,6 +64,8 @@ $detectors = @{
     stable_checkout = Test-Path -LiteralPath (Join-Path $RepoRoot '.git') -PathType Container
     runner_present = Test-Path -LiteralPath $runner -PathType Leaf
     snapshot_store_present = Test-Path -LiteralPath $SnapshotStore -PathType Leaf
+    person_registry_present = (-not $PersonRegistry) -or (Test-Path -LiteralPath $PersonRegistry -PathType Leaf)
+    topic_registry_present = (-not $TopicRegistry) -or (Test-Path -LiteralPath $TopicRegistry -PathType Leaf)
     data_paths_outside_repo = @($dataPaths | Where-Object { -not (Test-OutsideRoot $_ $RepoRoot) }).Count -eq 0
     direct_exit_propagation = $action.Execute -eq $PythonPath
 }

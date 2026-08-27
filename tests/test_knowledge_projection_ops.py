@@ -277,6 +277,8 @@ def test_task_verifier_checks_operational_settings():
         "match_details",
         "ready_to_apply",
         "snapshot_store_present",
+        "person_registry_present",
+        "topic_registry_present",
         "stable_checkout",
         "direct_exit_propagation",
         "data_paths_outside_repo",
@@ -319,6 +321,60 @@ def test_task_setup_dry_run_reports_preflight_detectors(tmp_path):
     assert payload["changed"] is False
     assert payload["ready_to_apply"] is True
     assert all(payload["detectors"].values())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler dry-run")
+def test_task_setup_resolves_relative_data_paths_against_repo_root_and_checks_registries(tmp_path):
+    repo_root = tmp_path / "stable-repo"
+    private_root = tmp_path / "private-data"
+    invocation_root = tmp_path / "unrelated-cwd"
+    (repo_root / ".git").mkdir(parents=True)
+    (repo_root / "scripts").mkdir()
+    (repo_root / "scripts" / "run_knowledge_wiki_projection.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+    private_root.mkdir()
+    invocation_root.mkdir()
+    _snapshot(private_root / "text-snapshots.ndjson")
+    (private_root / "people.json").write_text("{}\n", encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_knowledge_wiki_projection_task.ps1"
+    command = [
+        "pwsh", "-NoProfile", "-File", str(script),
+        "-PythonPath", sys.executable,
+        "-RepoRoot", str(repo_root),
+        "-SnapshotStore", r"..\private-data\text-snapshots.ndjson",
+        "-OutputRoot", r"..\private-data\wiki",
+        "-ReceiptPath", r"..\private-data\ops\latest.json",
+        "-LockPath", r"..\private-data\ops\run.lock",
+        "-PersonRegistry", r"..\private-data\people.json",
+        "-TopicRegistry", r"..\private-data\missing-topics.json",
+        "-TaskName", "DCB-Knowledge-Wiki-Projection-Test-Relative",
+        "-Json",
+    ]
+
+    blocked = subprocess.run(command, cwd=invocation_root, capture_output=True, text=True, check=False)
+    assert blocked.returncode == 0
+    blocked_payload = json.loads(blocked.stdout)
+    assert blocked_payload["ready_to_apply"] is False
+    assert blocked_payload["detectors"]["person_registry_present"] is True
+    assert blocked_payload["detectors"]["topic_registry_present"] is False
+    assert blocked_payload["detectors"]["snapshot_store_present"] is True
+    assert blocked_payload["detectors"]["data_paths_outside_repo"] is True
+
+    apply_blocked = subprocess.run(
+        [*command, "-Apply"], cwd=invocation_root, capture_output=True, text=True, check=False
+    )
+    assert apply_blocked.returncode == 2
+    apply_blocked_payload = json.loads(apply_blocked.stdout)
+    assert apply_blocked_payload["action"] == "apply_blocked"
+    assert apply_blocked_payload["changed"] is False
+
+    (private_root / "missing-topics.json").write_text("{}\n", encoding="utf-8")
+    ready = subprocess.run(command, cwd=invocation_root, capture_output=True, text=True, check=False)
+    assert ready.returncode == 0
+    ready_payload = json.loads(ready.stdout)
+    assert ready_payload["ready_to_apply"] is True
+    assert all(ready_payload["detectors"].values())
 
 
 def test_runner_works_directly_from_source_checkout(tmp_path):

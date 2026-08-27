@@ -717,7 +717,12 @@ def test_projection_applies_human_reviewed_topic_assignment(tmp_path):
             {
                 "schema": "dcb.topic_assignment_registry.v1",
                 "topics": [
-                    {"topic_id": "topic-architecture", "label": "Architecture"}
+                    {
+                        "topic_id": "topic-architecture",
+                        "label": "Architecture",
+                        "reviewed_at": "2026-08-05T10:00:00+09:00",
+                        "reviewed_by": "human",
+                    }
                 ],
                 "assignments": [
                     {
@@ -878,9 +883,11 @@ def test_topic_aliases_and_relations_keep_stable_topic_ids(tmp_path):
     registry.write_text(json.dumps({
         "schema": "dcb.topic_assignment_registry.v1", "private_local_only": True,
         "topics": [
-            {"topic_id": "knowledge", "label": "知識管理"},
+            {"topic_id": "knowledge", "label": "知識管理",
+             "reviewed_at": "2026-08-27T12:00:00+09:00", "reviewed_by": "human"},
             {"topic_id": "knowledge-wiki", "label": "Knowledge Wiki", "aliases": ["Wiki"],
-             "broader_topic_ids": ["knowledge"], "related_topic_ids": []}
+             "broader_topic_ids": ["knowledge"], "related_topic_ids": [],
+             "reviewed_at": "2026-08-27T12:00:00+09:00", "reviewed_by": "human"}
         ], "assignments": []
     }, ensure_ascii=False), encoding="utf-8")
     result = export_knowledge_projection(snapshot_store=snapshots, output_root=output, topic_registry=registry)
@@ -899,9 +906,30 @@ def test_topic_broader_cycle_fails_closed(tmp_path):
     registry.write_text(json.dumps({
         "schema": "dcb.topic_assignment_registry.v1", "private_local_only": True,
         "topics": [
-            {"topic_id": "a", "label": "A", "broader_topic_ids": ["b"]},
-            {"topic_id": "b", "label": "B", "broader_topic_ids": ["a"]}
+            {"topic_id": "a", "label": "A", "broader_topic_ids": ["b"],
+             "reviewed_at": "2026-08-27T12:00:00+09:00", "reviewed_by": "human"},
+            {"topic_id": "b", "label": "B", "broader_topic_ids": ["a"],
+             "reviewed_at": "2026-08-27T12:00:00+09:00", "reviewed_by": "human"}
         ], "assignments": []
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="cyclic broader"):
         export_knowledge_projection(snapshot_store=snapshots, output_root=tmp_path / "wiki", topic_registry=registry)
+
+
+def test_topic_relationships_require_human_review_provenance(tmp_path):
+    snapshots, registry = tmp_path / "snapshots.ndjson", tmp_path / "topics.json"
+    _append_snapshot(snapshots, sequence=1, text="member-a: #Wiki", content_hash="one")
+    registry.write_text(json.dumps({
+        "schema": "dcb.topic_assignment_registry.v1", "private_local_only": True,
+        "topics": [{
+            "topic_id": "knowledge-wiki", "label": "Knowledge Wiki",
+            "aliases": ["Wiki"], "related_topic_ids": []
+        }],
+        "assignments": []
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid topic definition"):
+        export_knowledge_projection(
+            snapshot_store=snapshots,
+            output_root=tmp_path / "wiki",
+            topic_registry=registry,
+        )

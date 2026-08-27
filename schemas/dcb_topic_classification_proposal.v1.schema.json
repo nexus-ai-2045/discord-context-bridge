@@ -3,14 +3,24 @@
   "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_topic_classification_proposal.v1.schema.json",
   "title": "DCB append-only topic classification proposal v1",
   "type": "object",
-  "required": ["schema", "proposal_id", "packet_id", "observation_id", "topics", "review_status", "private_local_only"],
+  "additionalProperties": false,
+  "required": ["schema", "proposal_id", "packet_id", "observation_id", "content_hash", "model", "prompt_version", "topics", "abstain_reason", "review_status", "recorded_at", "private_local_only"],
+  "oneOf": [
+    {"properties": {"topics": {"minItems": 1}, "abstain_reason": {"maxLength": 0}}},
+    {"properties": {"topics": {"maxItems": 0}, "abstain_reason": {"minLength": 1}}}
+  ],
   "properties": {
     "schema": {"const": "dcb.topic_classification_proposal.v1"},
     "proposal_id": {"type": "string", "minLength": 1},
     "packet_id": {"type": "string", "minLength": 1},
     "observation_id": {"type": "string", "pattern": "^observation-[a-f0-9]{12}$"},
-    "topics": {"type": "array"},
+    "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "model": {"const": "gpt-5.3-codex-spark"},
+    "prompt_version": {"const": "dcb-topic-candidate-v1"},
+    "topics": {"type": "array", "items": {"type": "object"}},
+    "abstain_reason": {"type": "string"},
     "review_status": {"const": "pending_human_review"},
+    "recorded_at": {"type": "string", "format": "date-time"},
     "private_local_only": {"const": true}
   }
 }
