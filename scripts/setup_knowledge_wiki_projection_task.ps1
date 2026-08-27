@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [Parameter(Mandatory = $true)][string]$ReceiptPath,
     [Parameter(Mandatory = $true)][string]$LockPath,
+    [Parameter(Mandatory = $true)][string]$ExpectedCommit,
     [string]$PersonRegistry = "",
     [string]$TopicRegistry = "",
     [string]$TaskName = "DCB-Knowledge-Wiki-Projection",
@@ -29,6 +30,16 @@ function Resolve-AgainstRoot([string]$Candidate, [string]$Root) {
         return [IO.Path]::GetFullPath($Candidate)
     }
     return [IO.Path]::GetFullPath((Join-Path $Root $Candidate))
+}
+
+function Test-GitCommitPresent([string]$Root, [string]$Commit) {
+    & git -C $Root cat-file -e "$Commit`^{commit}" 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+function Test-GitCommitIncluded([string]$Root, [string]$Commit) {
+    & git -C $Root merge-base --is-ancestor $Commit HEAD 2>$null
+    return $LASTEXITCODE -eq 0
 }
 
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
@@ -58,10 +69,24 @@ $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 $dataPaths = @($SnapshotStore, $OutputRoot, $ReceiptPath, $LockPath)
 if ($PersonRegistry) { $dataPaths += $PersonRegistry }
 if ($TopicRegistry) { $dataPaths += $TopicRegistry }
+$expectedCommitFormat = $ExpectedCommit -match '^[0-9a-fA-F]{40}$'
+$gitPresent = [bool](Get-Command git -ErrorAction SilentlyContinue)
+$expectedCommitPresent = $false
+$expectedCommitIncluded = $false
+if ($gitPresent -and $expectedCommitFormat -and (Test-Path -LiteralPath (Join-Path $RepoRoot '.git') -PathType Container)) {
+    $expectedCommitPresent = Test-GitCommitPresent $RepoRoot $ExpectedCommit
+    if ($expectedCommitPresent) {
+        $expectedCommitIncluded = Test-GitCommitIncluded $RepoRoot $ExpectedCommit
+    }
+}
 $detectors = @{
     python_present = Test-Path -LiteralPath $PythonPath -PathType Leaf
     repo_root_present = Test-Path -LiteralPath $RepoRoot -PathType Container
     stable_checkout = Test-Path -LiteralPath (Join-Path $RepoRoot '.git') -PathType Container
+    git_present = $gitPresent
+    expected_commit_format = $expectedCommitFormat
+    expected_commit_present = $expectedCommitPresent
+    expected_commit_in_head_history = $expectedCommitIncluded
     runner_present = Test-Path -LiteralPath $runner -PathType Leaf
     snapshot_store_present = Test-Path -LiteralPath $SnapshotStore -PathType Leaf
     person_registry_present = (-not $PersonRegistry) -or (Test-Path -LiteralPath $PersonRegistry -PathType Leaf)

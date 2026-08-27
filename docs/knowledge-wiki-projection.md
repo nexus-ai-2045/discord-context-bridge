@@ -66,7 +66,7 @@ Sparkは分類判断の正本ではなく、候補生成器としてだけ使う
 
 `scripts/run_knowledge_wiki_projection.py` は既存projectionを呼ぶ薄い運用runnerである。同時起動をlockで停止し、本文とローカルパスを含まない最新実行receiptをatomicに保存する。`--dry-run`はWikiとreceiptを変更せず、`--verify`は成功receiptのtimestampを含めて読み取り専用で確認する。既定では36時間より古いreceiptを失敗とし、必要な場合だけ`--max-receipt-age-hours`で変更する。
 
-Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのaction、working directory、有効状態、日次trigger、時刻、同時起動、15分上限、hidden設定を照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。actionはPython runnerを直接起動し、source欠損などの終了コード`2`をTask Schedulerへ伝播する。console hostを中継すると子プロセス失敗がTask成功に見えるため使わない。
+Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`を使う。既定はdry-runで、`-Apply`を明示した場合だけ毎日実行タスクを登録する。`ExpectedCommit`には人間レビュー済みの統合commitを40桁SHAで指定し、安定checkoutの現在HEADがそのcommitを履歴に含む場合だけ適用可能とする。設定変更前にdry-runのJSONを人間レビューし、登録後は`-Verify`で実タスクのaction、working directory、有効状態、日次trigger、時刻、同時起動、15分上限、hidden設定を照合する。既定時刻は日本時間04:00で、必要なら`-At HH:mm`で変更する。actionはPython runnerを直接起動し、source欠損などの終了コード`2`をTask Schedulerへ伝播する。console hostを中継すると子プロセス失敗がTask成功に見えるため使わない。
 
 ```powershell
 .\scripts\setup_knowledge_wiki_projection_task.ps1 `
@@ -76,6 +76,7 @@ Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`�
   -OutputRoot <PRIVATE_KNOWLEDGE_WIKI_ROOT> `
   -ReceiptPath <PRIVATE_RUN_RECEIPT_JSON> `
   -LockPath <PRIVATE_RUN_LOCK> `
+  -ExpectedCommit <REVIEWED_MERGE_COMMIT_SHA> `
   -Json
 ```
 
@@ -89,6 +90,7 @@ Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`�
 |---|---|---|---|
 | private root欠損 | setup dry-runの`snapshot_store_present`と`data_paths_outside_repo` | operating contract既定のshared snapshot root配下へledger・registry・receipt・lockを配置 | `ready_to_apply=true`とrunner receipt |
 | runtime参照破損 | `repo_root_present`、`stable_checkout`、`runner_present`、Task `working_directory`照合 | worktreeではない安定checkoutを指定 | setup `-Verify`の`task_matches=true` |
+| 対象commit未包含 | `git_present`、`expected_commit_format`、`expected_commit_present`、`expected_commit_in_head_history` | Gitを利用可能にし、review済み統合commitを含むまで安定checkoutをfast-forward | dry-runと`-Verify`の`ready_to_apply=true` |
 | console hostによる偽成功 | `direct_exit_propagation`とTask action照合 | PythonをTask actionとして直接実行 | source欠損時のrunner exit code `2`と失敗receipt |
 | 題分類契約不足 | packet/result/proposal schema、topic relation検証、review status | Spark出力をappend-only候補へ限定し、人間がreviewed registryへ昇格 | 60件fixtureの再実行一致と重複追記0 |
 
