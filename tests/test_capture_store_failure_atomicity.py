@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+requires_posix_dir_fd = pytest.mark.skipif(
+    os.name == "nt", reason="directory fd failure injection is POSIX-only"
+)
+
 from discord_context_bridge.capture import store as store_module
 from discord_context_bridge.capture.store import (
     CaptureCheckpointStore,
@@ -103,6 +107,7 @@ def test_event_append_rolls_back_unexpected_concurrent_growth(
     assert store.ledger_path("capture-safe-a").read_bytes() == b""
 
 
+@requires_posix_dir_fd
 def test_atomic_json_keeps_committed_destination_when_directory_fsync_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -126,6 +131,7 @@ def test_atomic_json_keeps_committed_destination_when_directory_fsync_fails(
     assert len(json.loads(path.read_text(encoding="utf-8"))["windows"]) == 1
 
 
+@requires_posix_dir_fd
 def test_atomic_json_closes_raw_descriptor_when_fdopen_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -155,6 +161,7 @@ def test_atomic_json_closes_raw_descriptor_when_fdopen_fails(
             os.fstat(descriptor)
 
 
+@requires_posix_dir_fd
 def test_directory_chain_close_failure_does_not_mask_open_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

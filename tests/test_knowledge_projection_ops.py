@@ -275,8 +275,50 @@ def test_task_verifier_checks_operational_settings():
         "StartBoundary",
         "execution_time_limit",
         "match_details",
+        "ready_to_apply",
+        "snapshot_store_present",
+        "stable_checkout",
+        "direct_exit_propagation",
+        "data_paths_outside_repo",
     ):
         assert expected in script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler dry-run")
+def test_task_setup_dry_run_reports_preflight_detectors(tmp_path):
+    repo_root = tmp_path / "stable-repo"
+    private_root = tmp_path / "private-data"
+    (repo_root / ".git").mkdir(parents=True)
+    (repo_root / "scripts").mkdir()
+    (repo_root / "scripts" / "run_knowledge_wiki_projection.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+    private_root.mkdir()
+    snapshot = private_root / "text-snapshots.ndjson"
+    _snapshot(snapshot)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_knowledge_wiki_projection_task.ps1"
+    completed = subprocess.run(
+        [
+            "pwsh", "-NoProfile", "-File", str(script),
+            "-PythonPath", sys.executable,
+            "-RepoRoot", str(repo_root),
+            "-SnapshotStore", str(snapshot),
+            "-OutputRoot", str(private_root / "wiki"),
+            "-ReceiptPath", str(private_root / "ops" / "latest.json"),
+            "-LockPath", str(private_root / "ops" / "run.lock"),
+            "-TaskName", "DCB-Knowledge-Wiki-Projection-Test-DryRun",
+            "-Json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["action"] == "dry_run"
+    assert payload["changed"] is False
+    assert payload["ready_to_apply"] is True
+    assert all(payload["detectors"].values())
 
 
 def test_runner_works_directly_from_source_checkout(tmp_path):

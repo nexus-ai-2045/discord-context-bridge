@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+requires_symlink_privilege = pytest.mark.skipif(
+    os.name == "nt", reason="symlink integrity probe requires Windows developer mode or privilege"
+)
+
 from discord_context_bridge.capture import store as store_module
 from discord_context_bridge.capture.store import (
     CaptureCheckpointStore,
@@ -181,6 +185,7 @@ def test_legacy_backend_keeps_attachment_storage_fail_closed(tmp_path: Path) -> 
         )
 
 
+@requires_symlink_privilege
 def test_legacy_backend_rejects_symlinked_store_directory(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
     outside = tmp_path / "outside"
