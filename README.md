@@ -2,7 +2,7 @@
 
 Discordで読める会話をローカルに保存し、AIが安全に理解・確認できる文脈へ変換します。
 
-![Discord Context Bridgeの流れ](docs/assets/readme-flow.svg)
+![Discord Context Bridgeの流れ](https://raw.githubusercontent.com/nexus-ai-2045/discord-context-bridge/main/docs/assets/readme-flow.svg)
 
 | 見つける | 保存する | 理解する | 判断する |
 |---|---|---|---|
