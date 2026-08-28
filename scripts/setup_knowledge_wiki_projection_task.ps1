@@ -32,6 +32,36 @@ function Resolve-AgainstRoot([string]$Candidate, [string]$Root) {
     return [IO.Path]::GetFullPath((Join-Path $Root $Candidate))
 }
 
+function Test-PathHasReparse([string]$Candidate) {
+    $current = [IO.Path]::GetFullPath($Candidate)
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $true
+            }
+            if ($item.PSObject.Properties.Name -contains 'LinkType' -and $item.LinkType) {
+                return $true
+            }
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $current) {
+            break
+        }
+        $current = $parent
+    }
+    return $false
+}
+
+function Test-DistinctCanonicalPaths([string[]]$Paths) {
+    $normalized = @(
+        $Paths | ForEach-Object {
+            [IO.Path]::GetFullPath($_).TrimEnd('\').ToLowerInvariant()
+        }
+    )
+    return ($normalized | Select-Object -Unique).Count -eq $normalized.Count
+}
+
 function Test-GitCommitPresent([string]$Root, [string]$Commit) {
     & git -C $Root cat-file -e "$Commit`^{commit}" 2>$null
     return $LASTEXITCODE -eq 0
@@ -92,6 +122,8 @@ $detectors = @{
     person_registry_present = (-not $PersonRegistry) -or (Test-Path -LiteralPath $PersonRegistry -PathType Leaf)
     topic_registry_present = (-not $TopicRegistry) -or (Test-Path -LiteralPath $TopicRegistry -PathType Leaf)
     data_paths_outside_repo = @($dataPaths | Where-Object { -not (Test-OutsideRoot $_ $RepoRoot) }).Count -eq 0
+    data_paths_without_reparse = @($dataPaths | Where-Object { Test-PathHasReparse $_ }).Count -eq 0
+    operational_paths_distinct = Test-DistinctCanonicalPaths $dataPaths
     direct_exit_propagation = $action.Execute -eq $PythonPath
 }
 $readyToApply = @($detectors.Values | Where-Object { -not $_ }).Count -eq 0

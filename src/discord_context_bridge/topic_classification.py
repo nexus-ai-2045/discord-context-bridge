@@ -86,6 +86,20 @@ def _exclusive_ledger_lock(ledger_path: Path):
         handle.close()
 
 
+def _require_string(value: Any, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ValueError("expected string field")
+    if not allow_empty and not value.strip():
+        raise ValueError("expected non-empty string field")
+    return value
+
+
+def _optional_string(mapping: dict[str, Any], key: str) -> str:
+    if key not in mapping or mapping[key] is None:
+        return ""
+    return _require_string(mapping[key], allow_empty=True).strip()
+
+
 def _validate_packet_integrity(packet: dict[str, Any]) -> None:
     if (
         packet.get("schema") != PACKET_SCHEMA
@@ -123,6 +137,118 @@ def _validate_packet_integrity(packet: dict[str, Any]) -> None:
         or packet.get("packet_id") != packet_id
     ):
         raise ValueError("classification packet fingerprint mismatch")
+
+
+def _normalize_topic_candidates(
+    topics: list[Any], taxonomy_ids: set[str]
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            raise ValueError("invalid topic candidate")
+        existing_topic_id = _optional_string(topic, "existing_topic_id")
+        proposed_label = _optional_string(topic, "proposed_label")
+        confidence = topic.get("confidence")
+        reason = _optional_string(topic, "reason")
+        if (
+            bool(existing_topic_id) == bool(proposed_label)
+            or (existing_topic_id and existing_topic_id not in taxonomy_ids)
+            or not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or not 0 <= float(confidence) <= 1
+            or not reason
+            or len(reason) > 500
+        ):
+            raise ValueError("invalid topic candidate")
+        normalized.append(
+            {
+                "existing_topic_id": existing_topic_id or None,
+                "proposed_label": proposed_label or None,
+                "confidence": float(confidence),
+                "reason": reason,
+            }
+        )
+    return normalized
+
+
+def _proposal_item_fingerprint_payload(
+    *,
+    observation_id: str,
+    content_hash: str,
+    topics: list[dict[str, Any]],
+    abstain_reason: str,
+) -> dict[str, Any]:
+    return {
+        "observation_id": observation_id,
+        "content_hash": content_hash,
+        "topics": topics,
+        "abstain_reason": abstain_reason,
+    }
+
+
+def _validate_proposal_against_packet(
+    proposal: dict[str, Any], packet: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(proposal, dict):
+        raise ValueError("invalid proposal record")
+    item_by_id = {
+        str(item["observation_id"]): item for item in packet["items"] if isinstance(item, dict)
+    }
+    taxonomy_ids = {
+        str(item["topic_id"]) for item in packet["taxonomy"] if isinstance(item, dict)
+    }
+    observation_id = proposal.get("observation_id")
+    content_hash = proposal.get("content_hash")
+    topics = proposal.get("topics")
+    abstain_reason = proposal.get("abstain_reason")
+    if (
+        proposal.get("schema") != PROPOSAL_SCHEMA
+        or proposal.get("packet_id") != packet.get("packet_id")
+        or proposal.get("model") != MODEL_ROUTE
+        or proposal.get("prompt_version") != PROMPT_VERSION
+        or proposal.get("review_status") != "pending_human_review"
+        or proposal.get("private_local_only") is not True
+        or not isinstance(observation_id, str)
+        or observation_id not in item_by_id
+        or not isinstance(content_hash, str)
+        or content_hash != item_by_id[observation_id].get("content_hash")
+        or not isinstance(topics, list)
+        or not isinstance(abstain_reason, str)
+        or bool(topics) == bool(abstain_reason.strip())
+        or not isinstance(proposal.get("recorded_at"), str)
+        or not proposal.get("recorded_at")
+    ):
+        raise ValueError("invalid proposal record")
+    normalized_topics = _normalize_topic_candidates(topics, taxonomy_ids)
+    expected_proposal_id = _stable_id(
+        "topic-proposal",
+        str(packet["packet_id"]),
+        observation_id,
+        _json_fingerprint(
+            _proposal_item_fingerprint_payload(
+                observation_id=observation_id,
+                content_hash=content_hash,
+                topics=normalized_topics,
+                abstain_reason=abstain_reason,
+            )
+        ),
+    )
+    if proposal.get("proposal_id") != expected_proposal_id:
+        raise ValueError("proposal fingerprint mismatch")
+    return {
+        "schema": PROPOSAL_SCHEMA,
+        "proposal_id": expected_proposal_id,
+        "packet_id": packet["packet_id"],
+        "observation_id": observation_id,
+        "content_hash": content_hash,
+        "model": MODEL_ROUTE,
+        "prompt_version": PROMPT_VERSION,
+        "topics": normalized_topics,
+        "abstain_reason": abstain_reason,
+        "review_status": "pending_human_review",
+        "recorded_at": proposal["recorded_at"],
+        "private_local_only": True,
+    }
 
 
 def _load_proposed_observation_ids(path: Path | None) -> set[str]:
@@ -321,47 +447,28 @@ def _validated_result(
     for item in result["items"]:
         if not isinstance(item, dict):
             raise ValueError("invalid classification result item")
-        observation_id = str(item.get("observation_id") or "")
+        observation_id = item.get("observation_id")
         topics = item.get("topics")
-        abstain_reason = str(item.get("abstain_reason") or "").strip()
+        if "abstain_reason" in item and item["abstain_reason"] is not None:
+            abstain_reason = _require_string(
+                item["abstain_reason"], allow_empty=True
+            ).strip()
+        else:
+            abstain_reason = ""
         if (
-            observation_id not in expected
+            not isinstance(observation_id, str)
+            or observation_id not in expected
             or observation_id in seen
             or not isinstance(topics, list)
             or bool(topics) == bool(abstain_reason)
         ):
             raise ValueError("invalid classification result item")
         seen.add(observation_id)
-        normalized_topics: list[dict[str, Any]] = []
-        for topic in topics:
-            if not isinstance(topic, dict):
-                raise ValueError("invalid topic candidate")
-            existing_topic_id = str(topic.get("existing_topic_id") or "").strip()
-            proposed_label = str(topic.get("proposed_label") or "").strip()
-            confidence = topic.get("confidence")
-            reason = str(topic.get("reason") or "").strip()
-            if (
-                bool(existing_topic_id) == bool(proposed_label)
-                or (existing_topic_id and existing_topic_id not in taxonomy_ids)
-                or not isinstance(confidence, (int, float))
-                or not 0 <= float(confidence) <= 1
-                or not reason
-                or len(reason) > 500
-            ):
-                raise ValueError("invalid topic candidate")
-            normalized_topics.append(
-                {
-                    "existing_topic_id": existing_topic_id or None,
-                    "proposed_label": proposed_label or None,
-                    "confidence": float(confidence),
-                    "reason": reason,
-                }
-            )
         validated.append(
             {
                 "observation_id": observation_id,
                 "content_hash": expected[observation_id]["content_hash"],
-                "topics": normalized_topics,
+                "topics": _normalize_topic_candidates(topics, taxonomy_ids),
                 "abstain_reason": abstain_reason,
             }
         )
@@ -386,7 +493,14 @@ def import_topic_classification_result(
             "topic-proposal",
             str(packet["packet_id"]),
             item["observation_id"],
-            _json_fingerprint(item),
+            _json_fingerprint(
+                _proposal_item_fingerprint_payload(
+                    observation_id=item["observation_id"],
+                    content_hash=item["content_hash"],
+                    topics=item["topics"],
+                    abstain_reason=item["abstain_reason"],
+                )
+            ),
         )
         candidate_records.append(
             {
@@ -459,8 +573,9 @@ def build_topic_human_review_packet(
     *, packet_path: Path, proposal_ledger: Path, output_path: Path
 ) -> dict[str, Any]:
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
-    if packet.get("schema") != PACKET_SCHEMA:
+    if not isinstance(packet, dict):
         raise ValueError("invalid classification packet")
+    _validate_packet_integrity(packet)
     item_by_id = {item["observation_id"]: item for item in packet["items"]}
     proposals: list[dict[str, Any]] = []
     with proposal_ledger.open("r", encoding="utf-8") as handle:
@@ -468,11 +583,11 @@ def build_topic_human_review_packet(
             if not line.strip():
                 continue
             proposal = json.loads(line)
-            if (
-                proposal.get("schema") == PROPOSAL_SCHEMA
-                and proposal.get("packet_id") == packet["packet_id"]
-            ):
-                proposals.append(proposal)
+            if not isinstance(proposal, dict):
+                raise ValueError("invalid proposal record")
+            if proposal.get("packet_id") != packet["packet_id"]:
+                continue
+            proposals.append(_validate_proposal_against_packet(proposal, packet))
     lines = [
         "---",
         'title: "DCB 題分類 人間レビューパケット"',

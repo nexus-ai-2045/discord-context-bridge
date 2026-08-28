@@ -303,6 +303,10 @@ def test_task_verifier_checks_operational_settings():
         "expected_commit_in_head_history",
         "direct_exit_propagation",
         "data_paths_outside_repo",
+        "data_paths_without_reparse",
+        "operational_paths_distinct",
+        "Test-PathHasReparse",
+        "Test-DistinctCanonicalPaths",
     ):
         assert expected in script
 

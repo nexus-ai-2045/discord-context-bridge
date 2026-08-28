@@ -356,3 +356,110 @@ def test_concurrent_import_deduplicates_under_one_ledger_lock(tmp_path):
         results = list(executor.map(lambda _: run_import(), range(16)))
     assert sum(result["appended_proposal_count"] for result in results) == 1
     assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda topic: topic.__setitem__("proposed_label", 123),
+        lambda topic: topic.__setitem__("reason", True),
+        lambda topic: topic.__setitem__("existing_topic_id", ["knowledge-wiki"]),
+    ],
+)
+def test_result_rejects_non_string_topic_fields(tmp_path, mutate):
+    snapshots, registry = tmp_path / "s.ndjson", tmp_path / "topics.json"
+    packet_path, result_path, ledger = (
+        tmp_path / "p.json",
+        tmp_path / "r.json",
+        tmp_path / "l.ndjson",
+    )
+    _snapshot(snapshots)
+    _registry(registry)
+    build_topic_classification_packet(
+        snapshot_store=snapshots, topic_registry=registry, output_path=packet_path
+    )
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    topic = {
+        "proposed_label": "新しい題",
+        "confidence": 0.8,
+        "reason": "候補",
+    }
+    mutate(topic)
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema": RESULT_SCHEMA,
+                "packet_id": packet["packet_id"],
+                "model": MODEL_ROUTE,
+                "items": [
+                    {
+                        "observation_id": packet["items"][0]["observation_id"],
+                        "topics": [topic],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        import_topic_classification_result(
+            packet_path=packet_path, result_path=result_path, proposal_ledger=ledger
+        )
+
+
+def test_human_review_rejects_tampered_packet_or_proposal(tmp_path):
+    snapshots, registry = tmp_path / "s.ndjson", tmp_path / "topics.json"
+    packet_path, result_path, ledger, review = (
+        tmp_path / "p.json",
+        tmp_path / "r.json",
+        tmp_path / "l.ndjson",
+        tmp_path / "review.md",
+    )
+    _snapshot(snapshots)
+    _registry(registry)
+    build_topic_classification_packet(
+        snapshot_store=snapshots, topic_registry=registry, output_path=packet_path
+    )
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    result_path.write_text(
+        json.dumps(
+            {
+                "schema": RESULT_SCHEMA,
+                "packet_id": packet["packet_id"],
+                "model": MODEL_ROUTE,
+                "items": [
+                    {
+                        "observation_id": packet["items"][0]["observation_id"],
+                        "topics": [],
+                        "abstain_reason": "要人間判断",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    import_topic_classification_result(
+        packet_path=packet_path, result_path=result_path, proposal_ledger=ledger
+    )
+
+    tampered_packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    tampered_packet["items"][0]["text"] += "改ざん"
+    packet_path.write_text(
+        json.dumps(tampered_packet, ensure_ascii=False), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="content integrity"):
+        build_topic_human_review_packet(
+            packet_path=packet_path, proposal_ledger=ledger, output_path=review
+        )
+
+    packet_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+    proposal = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    proposal["abstain_reason"] = "改ざんされた棄権理由"
+    ledger.write_text(
+        json.dumps(proposal, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="proposal fingerprint"):
+        build_topic_human_review_packet(
+            packet_path=packet_path, proposal_ledger=ledger, output_path=review
+        )

@@ -89,10 +89,12 @@ Windows Task Schedulerには`scripts/setup_knowledge_wiki_projection_task.ps1`�
 | 根因 | detector | repair | evidence |
 |---|---|---|---|
 | private root欠損 | setup dry-runの`snapshot_store_present`と`data_paths_outside_repo` | operating contract既定のshared snapshot root配下へledger・registry・receipt・lockを配置 | `ready_to_apply=true`とrunner receipt |
+| junction / symlink経由のrepo侵入 | `data_paths_without_reparse` | reparse点を含むdata pathを拒否し、実体がcheckout外にある通常パスへ置き換える | dry-runで`data_paths_without_reparse=true` |
+| receiptと正本の衝突 | `operational_paths_distinct` | snapshot・registry・receipt・lock・output rootを互いに異なるcanonical pathにする | dry-runで`operational_paths_distinct=true` |
 | runtime参照破損 | `repo_root_present`、`stable_checkout`、`runner_present`、Task `working_directory`照合 | worktreeではない安定checkoutを指定 | setup `-Verify`の`task_matches=true` |
 | 対象commit未包含 | `git_present`、`expected_commit_format`、`expected_commit_present`、`expected_commit_in_head_history` | Gitを利用可能にし、review済み統合commitを含むまで安定checkoutをfast-forward | dry-runと`-Verify`の`ready_to_apply=true` |
 | console hostによる偽成功 | `direct_exit_propagation`とTask action照合 | PythonをTask actionとして直接実行 | source欠損時のrunner exit code `2`と失敗receipt |
-| 題分類契約不足 | packet/result/proposal schema、topic relation検証、review status | Spark出力をappend-only候補へ限定し、人間がreviewed registryへ昇格 | 60件fixtureの再実行一致と重複追記0 |
+| 題分類契約不足 | packet/result/proposal schema、topic relation検証、review status、packet/proposal再検証 | Spark出力をappend-only候補へ限定し、人間がreviewed registryへ昇格 | 60件fixtureの再実行一致と重複追記0 |
 
 setupのdry-runは設定を書き換えず、detectorを返す。`ready_to_apply=false`でも調査用dry-run自体は成功するが、`-Apply`は登録前にexit code `2`で停止する。
 
