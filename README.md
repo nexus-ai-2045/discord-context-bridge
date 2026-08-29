@@ -1,76 +1,38 @@
 # Discord Context Bridge
 
-Discordで読める会話をローカルに保存し、AIが安全に理解・確認できる文脈へ変換するツールです。
+Discordで読める会話をローカルに保存し、AIが安全に理解・確認できる文脈へ変換します。
 
-主な用途は次の3つです。
+![Discord Context Bridgeの流れ](https://raw.githubusercontent.com/nexus-ai-2045/discord-context-bridge/main/docs/assets/readme-flow.svg)
+
+| 見つける | 保存する | 理解する | 判断する |
+|---|---|---|---|
+| Discordで対象を選ぶ | privateな追記型台帳へ残す | 目的・前提・決定事項を整理する | 人間が返信や次の行動を決める |
+
+> [!IMPORTANT]
+> Discord Context Bridge（DCB）のpublic coreは、Discordへ投稿しません。token、cookie、webhook、実ID、参加者名、会話本文を公開出力へ含めません。
+
+## できること
 
 - 会話の目的、前提、決定事項を整理する
 - 返信案を送る前にレビューする
 - 保存済み会話の範囲と鮮度を確認する
+- CLI、runtime skill/plugin、MCPから同じ安全境界で使う
 
-> [!IMPORTANT]
-> Discord Context Bridge（DCB）のpublic coreは、Discordへ投稿しません。
-> token、cookie、webhook、実ID、参加者名、会話本文を公開出力へ含めません。
+## 最短で使う
 
-## 仕組み
+| 手順 | 操作 | 結果 |
+|---:|---|---|
+| 1 | Python 3.11以上でインストールする | CLIが利用可能になる |
+| 2 | Discordの可視テキストをprivateなファイルへ用意する | tokenやcookieを使わず入力できる |
+| 3 | `bridge-intake`へURLとファイルを渡す | 保存・取得範囲確認・文脈整理が一度に進む |
 
-```mermaid
-flowchart LR
-  discord["Discordで読める会話"] --> capture["ローカルへ保存"]
-  capture --> context["文脈を整理"]
-  context --> review["返信案を確認"]
-  review --> human["人間が送信を判断"]
-```
+インストール: `python -m pip install .`
 
-DCBは会話を追記型の台帳へ保存します。文脈パスポート、最新レポート、Markdownは、その台帳から作る閲覧用データです。
-
-## クイックスタート
-
-Python 3.11以上が必要です。
-
-### 1. インストール
-
-```bash
-python -m pip install .
-```
-
-MCPも使う場合:
-
-```bash
-python -m pip install ".[mcp]"
-```
-
-### 2. Discordの可視テキストを用意する
-
-会話本文をprivateなローカルファイルへ保存します。DCBはChrome profileからtokenやcookieを抽出しません。
-
-### 3. 取り込んで文脈を確認する
-
-`bridge-intake`は、本文の保存、取得範囲の確認、文脈パスポートの生成をまとめて行います。
-
-```bash
-discord-context-bridge bridge-intake \
-  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
-  --input /private/path/visible-discord-text.txt \
-  --understanding-confirmed \
-  --json
-```
-
-Windows PowerShell:
-
-```powershell
-discord-context-bridge bridge-intake `
-  --url "https://discord.com/channels/<guild>/<channel>/<message>" `
-  --input "C:\private\visible-discord-text.txt" `
-  --understanding-confirmed `
-  --json
-```
-
-コマンドの標準出力はmetadataのみです。会話本文はprivateな保存領域から外へ出しません。
+詳しい引数とWindows例は[詳細リファレンス](docs/full-reference.md)の「最短の使い方」を参照してください。
 
 ## やりたいことから選ぶ
 
-| やりたいこと | コマンド |
+| やりたいこと | 入口 |
 |---|---|
 | 取り込みから文脈整理まで一括実行する | `bridge-intake` |
 | 可視テキストだけ取り込む | `import-visible-text` |
@@ -79,19 +41,6 @@ discord-context-bridge bridge-intake `
 | 返信案をレビューする | `review-draft` / `guide-reply` |
 | 保存範囲と鮮度を確認する | `coverage-report` / `report-latest` |
 | ローカルcacheを確認する | `cache-inventory` |
-
-全コマンドは[詳細リファレンス](docs/full-reference.md)を参照してください。
-
-## 利用方法
-
-| 入口 | 用途 |
-|---|---|
-| `discord-context-bridge` | CLIから取り込み・確認する |
-| runtime skill/plugin | Codexなどのエージェントから呼び出す |
-| `discord-context-bridge-mcp` | MCPクライアントへstdio接続する |
-| `discord-context-bridge-mcp-http` | 認証付きHTTPで接続する |
-
-すべて同じread-only／metadata-only境界に従います。MCPにもDiscord送信toolはありません。
 
 ## 保存モデル
 
@@ -113,8 +62,6 @@ discord-context-bridge bridge-intake `
 - OCR、screenshot、headless browserを本文取得の既定経路にしない
 - 公開、外部共有、repository visibility変更には人間レビューと明示承認を求める
 
-詳しくは[運用契約](docs/operating-contract.md)と[取得経路](docs/routes.md)を参照してください。
-
 ### Discord Desktop 通知 metadata probe
 
 通知probeは本文を読まず、通知の有無だけを確認する補助経路です。
@@ -125,32 +72,20 @@ discord-context-bridge bridge-intake `
 - blocked reason: `no_notification_observed` / `insufficient_metadata`
 - safety: `text_output="omitted"`、`raw_payload_read=false`、`outbound_actions="disabled"`
 
-## MCP HTTP
+## MCP
 
-HTTP接続はBearer認証が既定で必須です。
+| 入口 | 用途 |
+|---|---|
+| `discord-context-bridge` | CLIから取り込み・確認する |
+| runtime skill/plugin | Codexなどのエージェントから呼び出す |
+| `discord-context-bridge-mcp` | MCPクライアントへstdio接続する |
+| `discord-context-bridge-mcp-http` | 認証付きHTTPで接続する |
 
-```bash
-export DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN='<bearer-token>'
-discord-context-bridge-mcp-http \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --path /mcp \
-  --store /private/path/discord-context-events.ndjson
-```
-
-localhostで明示的に使う場合だけ、`--allow-unauthenticated`で認証を無効化できます。
+すべてread-only／metadata-only境界に従います。MCPにもDiscord送信toolはありません。HTTP接続はBearer認証が既定で必須です。
 
 ## 開発と運用
 
-基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。
-
-```bash
-python scripts/ops_check.py --profile fast
-python scripts/ops_check.py --profile full
-python scripts/verify_ssot_projection.py --json
-```
-
-runtime skillは`capability/manifest.yaml`と`docs/operating-contract.md`から生成します。生成済み`SKILL.md`は直接編集しません。
+基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。runtime skillは`capability/manifest.yaml`と`docs/operating-contract.md`から生成し、生成済み`SKILL.md`は直接編集しません。
 
 | 資料 | 内容 |
 |---|---|
