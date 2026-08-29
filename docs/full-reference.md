@@ -26,6 +26,40 @@ AI アシスタントが安全に扱える文脈フィードへ変換する loca
 
 ## 最短の使い方
 
+### 一括入口: `bridge-intake`
+
+`bridge-intake` は、Discord の可視テキストを private な snapshot store へ保存し、
+取得範囲の確認と文脈整理までを一度に実行します。Discord への送信は行いません。
+
+Windows PowerShell で、repository root から合成テキストを使って試す例です。
+
+```powershell
+New-Item -ItemType Directory -Force .local/discord-context-bridge | Out-Null
+Set-Content -Encoding utf8 .local/discord-context-bridge/visible.txt "participant: 次の手順を確認します。"
+python -m pip install .
+discord-context-bridge bridge-intake `
+  --url "https://discord.com/channels/1/10/32" `
+  --input ".local/discord-context-bridge/visible.txt" `
+  --snapshot-store ".local/discord-context-bridge/text-snapshots.ndjson" `
+  --json
+```
+
+macOS / Linux では次のように実行できます。
+
+```bash
+mkdir -p .local/discord-context-bridge
+printf '%s\n' 'participant: 次の手順を確認します。' > .local/discord-context-bridge/visible.txt
+python3 -m pip install .
+discord-context-bridge bridge-intake \
+  --url "https://discord.com/channels/1/10/32" \
+  --input .local/discord-context-bridge/visible.txt \
+  --snapshot-store .local/discord-context-bridge/text-snapshots.ndjson \
+  --json
+```
+
+実データで使うときは、合成 URL とテキストを対象の Discord URL と自分が見られる
+可視テキストに置き換えます。snapshot store は `.local/` などの private 領域に置き、commit しません。
+
 ### 1. 可視テキストを取り込む
 
 ```bash
