@@ -127,6 +127,7 @@ def test_cache_inventory_allows_recent_cache_only_with_explicit_opt_in(tmp_path:
 
     assert payload["decision"] == "use_local_snapshot"
     assert payload["live_refresh"]["reason"] == "explicit_recent_cache_opt_in"
+    assert payload["live_refresh"]["cache_may_satisfy_reply"] is True
 
 
 def test_cache_inventory_cli_requires_refresh_by_default_and_opt_in_allows_cache(tmp_path: Path, capsys) -> None:

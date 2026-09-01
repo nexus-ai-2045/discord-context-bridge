@@ -206,7 +206,7 @@ def build_cache_inventory(
         "live_refresh": {
             "required": require_live_refresh,
             "reason": "discord_url_received" if require_live_refresh else "explicit_recent_cache_opt_in",
-            "cache_may_satisfy_reply": not require_live_refresh,
+            "cache_may_satisfy_reply": not require_live_refresh and bool(policy.get("usable_for_reply")),
         },
         "decision": decision,
         "scan_elapsed_ms": elapsed_ms,
