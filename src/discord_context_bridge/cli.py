@@ -51,6 +51,7 @@ from .capture.store import (
 )
 from .url_identity import classify_discord_url
 from .completeness_store import CompletenessStore
+from .grounding_gate import build_context_grounding_gate
 
 from .core import (
     DEFAULT_CONTEXT_STORE,
@@ -430,6 +431,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="正規 discord_full_capture_completion_gate.v1 JSON artifact",
     )
     coverage.set_defaults(handler=_cmd_coverage_report)
+
+    grounding = sub.add_parser(
+        "context-grounding-gate",
+        help="取得済み文脈とclaimのevidence roleを本文なしでfail-closed判定する",
+    )
+    grounding.add_argument("--input", type=Path, required=True, help="grounding contract JSON")
+    grounding.set_defaults(handler=_cmd_context_grounding_gate)
 
     full_thread = sub.add_parser(
         "thread-capture-plan",
@@ -1429,6 +1437,25 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
     if args.require_summary_ready:
         return 0 if payload["acquisition_completion_gate"]["summary_ready"] else 2
     return 0 if payload["coverage"]["exact_coverage"] else 2
+
+
+def _cmd_context_grounding_gate(args: argparse.Namespace) -> int:
+    try:
+        contract = json.loads(args.input.read_text(encoding="utf-8"))
+        if not isinstance(contract, dict):
+            raise ValueError("contract must be an object")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        payload = {
+            "schema": "discord_context_grounding_gate.v1",
+            "ready": False,
+            "reason_codes": ["partial_context"],
+            "raw_text_returned": False,
+            "outbound_actions": "disabled",
+        }
+    else:
+        payload = build_context_grounding_gate(contract)
+    print(_json(payload))
+    return 0 if payload["ready"] else 2
 
 
 def _cmd_thread_capture_plan(args: argparse.Namespace) -> int:
