@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 0b57ea72cdc5a03f67cdd8acc6f45c76af890c9e
+ssot_commit: ef28e44953c9b845479d8ac70abf1f63601a32ad
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 87b1ef1fac75b389c5c93eacf16de70654a81d70f0eeca0e4d4e590db0d0e3da
-contract_checksum: 88b5f17915c7c917c3730a31f51071b35f4a2088fbbcd0d451c3e900d54a065e
-generated_at: 2026-09-01T10:07:45+00:00
+manifest_checksum: 9abf6150445370f6c019fd4181c4af57ecf7525bc2ed05331dbfe5d3166721cb
+contract_checksum: bb260478df101851449e0bb238534b101fd657113c42797d0cca7286775fbe09
+generated_at: 2026-09-01T10:12:08+00:00
 runtime_target: grok
 ---
 
@@ -40,7 +40,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
-- 投稿先推奨、会話の間隔、媒体への感想は `context-grounding-gate --input CONTRACT.json --evidence-receipts RECEIPTS.json` を通す。投稿先推奨では `--acquisition-receipt ACQUISITION.json` も必須とする。contract内へ埋め込んだ自己申告receiptは信頼せず、別ファイルのissuer・target・hashとprivate artifactのreadbackが一致した時だけ使う。`captured_at` は取得鮮度専用、keyword / topic / temperature は探索 hint 専用とし、実メッセージ時刻や意味理解へ昇格しない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。
+- 投稿先を推奨する前に、既存Canonicalの `coverage-report --require-summary-ready` が終了コード `0` で完了していることを必須とする。`captured_at` は取得鮮度だけに使い、実メッセージ時刻や会話の間隔には使わない。keyword / topic / temperature などのheuristicは探索hintに限り、それだけで投稿先を順位付けしない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。条件を満たせない場合は推奨や感想を生成せず、`unknown` として不足情報を質問する段階へ戻す。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -64,9 +64,9 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
 6. `context-passport` で文脈カードを作る。
 7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 投稿先推奨または媒体への感想を含む文案は、contractとtrusted receiptを別入力にした `context-grounding-gate` を通し、artifact readback、`summary_ready`、実 message period、semantic anchor、channel / thread purpose、claim source roleを確認する。
+8. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
 9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` と `context-grounding-gate` が ready の時だけ、`guide-reply` または `review-draft` で確認する。
+10. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
 11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
@@ -235,6 +235,8 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `no_clipboard_without_explicit_clipboard_request`
 - `no_visible_read_route_expansion_after_blocked_need_chrome_visible_read_go`
 - `no_cross_route_webhook_or_bot_guessing`
+- `no_recommendation_without_summary_ready`
+- `no_metadata_only_personal_impression`
 
 ## Commands
 
@@ -243,13 +245,12 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
-- `context-grounding-gate --input <contract.json> --evidence-receipts <receipts.json> [--acquisition-receipt <acquisition.json>]`: contractと別ファイルのtrusted receiptをartifact readbackで照合し、投稿先推奨や文案のclaimをfail-closedで判定する。投稿先推奨ではacquisition receiptも必須
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
 - `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
 - `configure-local-cache`: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する
 - `desktop-cache-probe`: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
 - `python3 scripts/pdca_e2e_inventory.py --json`: E2E caseをbounded実行し、失敗を修正・環境・外部依存・人間レビューへ分類する
-- `coverage-report`: Discord URL / target_key の coverage と freshness を本文なしで確認する
+- `coverage-report --require-summary-ready`: Discord URL / target_key の coverage と freshness を本文なしで確認し、投稿先推奨前はsummary_ready未達を終了コード2で拒否する
 - `python3 scripts/chrome_visible_fallback_guard.py --json`: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
 - `import-visible-text`: 可視テキストをローカル event store に取り込む
 - `context-passport`: 可視テキストから文脈カードを作る
