@@ -1441,17 +1441,25 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
 
 def _cmd_context_grounding_gate(args: argparse.Namespace) -> int:
     try:
-        contract = json.loads(args.input.read_text(encoding="utf-8"))
+        if args.input.stat().st_size > MAX_INPUT_BYTES:
+            raise ValueError("contract_too_large")
+        contract = json.loads(
+            args.input.read_text(encoding="utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"non_finite:{value}")),
+        )
         if not isinstance(contract, dict):
             raise ValueError("contract must be an object")
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+    except OSError:
         payload = {
             "schema": "discord_context_grounding_gate.v1",
             "ready": False,
-            "reason_codes": ["partial_context"],
+            "intent": "unknown",
+            "reason_codes": ["input_unreadable"],
             "raw_text_returned": False,
             "outbound_actions": "disabled",
         }
+    except (UnicodeError, json.JSONDecodeError, ValueError):
+        payload = build_context_grounding_gate(None)
     else:
         payload = build_context_grounding_gate(contract)
     print(_json(payload))
