@@ -116,6 +116,7 @@ def test_fixture_cli_writes_private_inventory_mode_0600(tmp_path: Path, capsys) 
     assert report["identifiers_returned"] is False
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     private = json.loads(output.read_text(encoding="utf-8"))
+    assert private["parent_target_key"] == "2"
     assert private["scopes"]["public"]["threads"][0]["id"] == "1"
 
 

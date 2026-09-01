@@ -125,12 +125,20 @@ def build_public_report(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def write_private_inventory(path: Path, results: Sequence[Mapping[str, Any]]) -> None:
+def write_private_inventory(
+    path: Path,
+    results: Sequence[Mapping[str, Any]],
+    *,
+    parent_target_key: str,
+) -> None:
     """Atomically persist private thread metadata with mode 0600."""
 
+    if not parent_target_key.strip():
+        raise ArchiveInventoryError("inventory_binding_required")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": "dcb.archived-thread-inventory-private.v1",
+        "parent_target_key": parent_target_key,
         "scopes": {
             str(result.get("scope")): {
                 "pagination_exhausted": result.get("pagination_exhausted") is True,

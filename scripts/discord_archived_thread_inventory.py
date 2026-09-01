@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             results.append(
                 enumerate_archive_pages(scope=scope, fetch_page=fetch, max_pages=args.max_pages)
             )
-        write_private_inventory(args.output, results)
+        write_private_inventory(args.output, results, parent_target_key=channel_id)
         report = build_public_report(results)
     except (ArchiveInventoryError, OSError, UnicodeError, json.JSONDecodeError) as error:
         report = _blocked(str(error) or "archive_inventory_failed")

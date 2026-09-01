@@ -40,6 +40,155 @@ def _record_stable_inventory(store: CompletenessStore, target: str) -> None:
     )
 
 
+def _archive_inventory(
+    parent: str,
+    *,
+    public: list[dict],
+    private: list[dict] | None = None,
+    joined_private: list[dict] | None = None,
+) -> dict:
+    def scope(threads: list[dict]) -> dict:
+        return {"pagination_exhausted": True, "threads": threads}
+
+    return {
+        "schema": "dcb.archived-thread-inventory-private.v1",
+        "parent_target_key": parent,
+        "scopes": {
+            "public": scope(public),
+            "private": scope(private or []),
+            "joined_private": scope(joined_private or []),
+        },
+        "outbound_actions": "disabled",
+    }
+
+
+def _active_inventory(parent: str, threads: list[dict]) -> dict:
+    return {
+        "parent_target_key": parent,
+        "pagination_exhausted": True,
+        "threads": threads,
+    }
+
+
+def _metadata(thread_id: str, *, locked: bool = False) -> dict:
+    return {"id": thread_id, "thread_metadata": {"locked": locked}}
+
+
+def test_archive_inventory_bridge_binds_parent_counts_locked_and_stabilizes(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    active = _active_inventory(parent, [_metadata("active-a")])
+    archived = _archive_inventory(
+        parent,
+        public=[_metadata("archive-public", locked=True)],
+        joined_private=[_metadata("archive-private")],
+    )
+
+    for index in (1, 2):
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id=f"scan-{index}",
+            observed_at=f"2026-09-02T00:0{index}:00+00:00",
+            active_filtered=active,
+            archive_inventory=archived,
+        )
+
+    result = store.audit_parent(parent)
+
+    assert result["inventory"]["stable_scan_count"] == 2
+    assert result["inventory"]["required_scopes_complete"] is True
+    assert result["counts"]["inventory_threads"] == 3
+    assert result["counts"]["locked_threads"] == 1
+
+
+def test_archive_inventory_bridge_rejects_parent_binding_mismatch(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+
+    try:
+        store.record_archive_inventory_scan(
+            parent_target_key="parent-a",
+            scan_id="scan-1",
+            observed_at="2026-09-02T00:01:00+00:00",
+            active_filtered=_active_inventory("parent-b", []),
+            archive_inventory=_archive_inventory("parent-a", public=[]),
+        )
+    except ValueError as error:
+        assert str(error) == "inventory_parent_binding_mismatch"
+    else:
+        raise AssertionError("mismatched parent binding must fail closed")
+
+
+def test_archive_inventory_bridge_requires_all_terminal_source_scopes(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    archived = _archive_inventory(parent, public=[])
+    archived["scopes"].pop("joined_private")
+
+    try:
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id="scan-1",
+            observed_at="2026-09-02T00:01:00+00:00",
+            active_filtered=_active_inventory(parent, []),
+            archive_inventory=archived,
+        )
+    except ValueError as error:
+        assert str(error) == "inventory_required_scope_missing"
+    else:
+        raise AssertionError("missing archive scope must fail closed")
+
+
+def test_stability_compares_per_scope_digests_not_only_global_set(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    store.record_archive_inventory_scan(
+        parent_target_key=parent,
+        scan_id="scan-1",
+        observed_at="2026-09-02T00:01:00+00:00",
+        active_filtered=_active_inventory(parent, [_metadata("thread-a")]),
+        archive_inventory=_archive_inventory(parent, public=[_metadata("thread-b")]),
+    )
+    store.record_archive_inventory_scan(
+        parent_target_key=parent,
+        scan_id="scan-2",
+        observed_at="2026-09-02T00:02:00+00:00",
+        active_filtered=_active_inventory(parent, [_metadata("thread-b")]),
+        archive_inventory=_archive_inventory(parent, public=[_metadata("thread-a")]),
+    )
+
+    result = store.audit_parent(parent)
+
+    assert result["inventory"]["stable_scan_count"] != 2
+    assert "inventory_rescan_not_stable" in result["blockers"]
+
+
+def test_two_nonterminal_archive_scans_do_not_stabilize(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    archived = _archive_inventory(parent, public=[])
+    archived["scopes"]["public"]["pagination_exhausted"] = False
+
+    for index in (1, 2):
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id=f"scan-{index}",
+            observed_at=f"2026-09-02T00:0{index}:00+00:00",
+            active_filtered=_active_inventory(parent, []),
+            archive_inventory=archived,
+        )
+
+    result = store.audit_parent(parent)
+
+    assert result["inventory"]["stable_scan_count"] == 0
+    assert "inventory_rescan_incomplete" in result["blockers"]
+    assert "inventory_pagination_not_exhausted" in result["blockers"]
+
+
 def test_parent_audit_requires_two_stable_complete_inventory_scans(tmp_path):
     store = CompletenessStore(tmp_path / "capture.sqlite3")
     store.initialize()
