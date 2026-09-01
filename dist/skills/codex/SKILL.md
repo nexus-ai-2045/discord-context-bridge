@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 5b1204ac030b9f4747f2ed311bf8fa32d8febdfa
+ssot_commit: a10bb44fe92f7d23add6c679372c025f8c62ec79
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 3c3f48736b9d47363b72cd46a1b986a0d7b97465eda6b6d64f49bec14cfaddb8
-contract_checksum: 11856ac200e78207b046d9eac3f10edf4bde5bd30cea2f2eba55c5d54396996a
-generated_at: 2026-09-01T10:33:38+00:00
+manifest_checksum: 3fe358a9875cdf721414c2dd198a786cd9a3fb5db429ac57e264717796bc7d43
+contract_checksum: 5bae5a2649e18c2f1e938f8b357222e56589dada3ae893f25148fcee14619ef5
+generated_at: 2026-09-01T11:33:38+00:00
 runtime_target: codex
 ---
 
@@ -57,17 +57,18 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 
 ## 標準フロー
 
-1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
-2. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。
-3. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
-4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
-5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
-6. `context-passport` で文脈カードを作る。
-7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
-9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
-11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+1. runtime入力に Discord URL が含まれる場合は、明示的な追加依頼を待たず `discord_url_event_intake.py` に `prompt_url_received` eventとして渡す。同一event IDは冪等に処理し、取得本文が同時に渡された場合はその呼出内でsnapshot保存まで閉じる。本文なしのeventはdurable queueへ正常受付し、同じruntime turnで設定済みread-only sourceを使って `--drain-once` を1回実行する。Gateway通知runtimeはイベント受信ごと、常駐runnerは起動・再接続・通知時にdrainし、pendingが残る場合だけ15〜60分のreconciliationで再実行する。workerはtimeoutより長いleaseでclaimし、異常終了でleaseが切れたjobを再取得できなければならない。設定済みsourceが無い場合は自動取得完了とせず、pendingと具体的な設定blockerを返す。
+2. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
+3. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。新着eventはGatewayを主経路、RESTを再接続・欠落補完、Chrome eventを補助経路とし、Chrome eventだけで完全性を主張しない。
+4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
+5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
+6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
+7. `context-passport` で文脈カードを作る。
+8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+9. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
+10. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+11. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
+12. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
 
@@ -241,6 +242,8 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 ## Commands
 
+- `python3 scripts/discord_url_event_intake.py --url <discord-url> --event-id <runtime-event-id> --source prompt_url_received --json`: Discord URLを含むruntime入力を冪等なlive-refreshイベントとして受け、Gateway / REST / inbox / Chrome補助経路へ接続する
+- `python3 scripts/discord_url_event_intake.py --drain-once --source-command <configured-read-only-source> --json`: pending URL jobをlease付きでclaimし、設定済みread-only sourceから本文を取得してsnapshotまで閉じる
 - `python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json`: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
 - `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
