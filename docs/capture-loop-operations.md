@@ -1,5 +1,57 @@
 # Discord 全文取得 LOOP 運用カード
 
+## Legacy parallel run closeout
+
+並列取得の完了正本は、個別の `done` marker ではありません。既存の
+`discord_full_capture_completion_gate.v1`、immutable strict receipt、
+`discord_parent_completeness_certificate.v1` を順に通った証拠だけを full とします。
+
+過去の `dcb.parallel-run.v1` directory は次の metadata-only adapter で判定します。
+
+```bash
+python -m discord_context_bridge.cli closeout-parallel-run \
+  --run-dir <private-run-dir> \
+  --completeness-db <canonical-completeness.sqlite3> \
+  --parent-target-key <private-parent-target-key> \
+  --json
+```
+
+各workerとimporter自身がcreate-only `dcb.parallel-producer-drain-receipt.v1` を発行し、
+event routerが全drainを確認した後、run定義hashと
+artifact snapshot hashへ結合したcreate-only `dcb.parallel-run-stop-receipt.v1` を
+発行済みで、証拠不足のlegacy runを閉じる場合だけ `--finalize` を付けます。
+停止receiptがない、または発行後にartifactが1 byteでも変化したrunは閉じません。
+この場合は `blocked_closed` となり、`full_capture_confirmed` は false のままです。
+`workers.done` や `importer.done` を置いても判定には影響しません。将来の取得は
+legacy layoutを新設せず、通常の capture loop と parent completeness auditを使います。
+
+親監査JSONの持ち込みは受理しません。adapter自身がcanonical completeness DBを監査し、
+`run-metadata.json` の `parent_target_key_sha256` と対象を結合します。terminal receiptは
+create-onlyの正本、`run-metadata.json` はそこを指す再生成可能なprojectionです。
+停止receiptもoperatorの手書きmarkerではなく、`producer.quiesced` eventのconsumerである
+event routerだけが発行します。
+
+producerのterminal handlerは、自分自身の終了時に次を一度だけ呼びます。同じproducerの
+2回目のeventは拒否されます。
+
+```bash
+python -m discord_context_bridge.cli record-parallel-producer-drain \
+  --run-dir <private-run-dir> --producer <worker-N-or-importer> \
+  --event-id <opaque-terminal-event-id> --json
+```
+
+event routerは全producer receiptを受け取った時だけ集約します。
+
+```bash
+python -m discord_context_bridge.cli record-parallel-run-stop \
+  --run-dir <private-run-dir> --event-id <opaque-router-event-id> \
+  --stopped-reason <completed-or-failure-reason> --json
+```
+
+closeout receiptとrun metadataは運用projectionです。fullの権威は毎回再評価されるcanonical
+parent completeness DBとcontent-bound evidenceであり、receipt単体を再検証なしで読んで
+fullを主張しません。
+
 ## 目的
 
 Discord Context Bridge（DCB）の既存 Orchestrator、全文取得 gate、observed-full 検証を、再開可能な checkpoint と追記専用 event ledger で接続する。本文や Discord URL は status に返さず、外部送信は行わない。

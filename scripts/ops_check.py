@@ -377,6 +377,11 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/capture_loop_metadata_smoke.py", "--json"],
             env=env,
         ),
+        "parallel closeout metadata smoke": lambda: run_command(
+            "parallel closeout metadata smoke",
+            [sys.executable, "scripts/parallel_closeout_metadata_smoke.py", "--json"],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.profile == "fast":
