@@ -39,6 +39,7 @@ required_commands:
   - command: cache-first-intake
     purpose: ローカル cache / snapshot を先に見て private book を作る
   - command: cache-inventory
+    safety: Discord URL受領時はrecent cacheを返信判断に使わず、完全一致URLのlive refreshを既定で要求する
     purpose: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
   - command: configure-local-cache
     purpose: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する

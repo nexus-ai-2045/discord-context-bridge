@@ -79,7 +79,9 @@ discord-context-bridge bridge-intake `
 | 投稿先推奨に使える文脈か確認する | `coverage-report --require-summary-ready` |
 | 返信案をレビューする | `review-draft` / `guide-reply` |
 | 保存範囲と鮮度を確認する | `coverage-report` / `report-latest` |
-| ローカルcacheを確認する | `cache-inventory` |
+| ローカルcacheを確認し、URL受領時の最新化を要求する | `cache-inventory` |
+
+`cache-inventory` は、ユーザーからDiscord URLを受け取った通常経路では、recentな完全一致cacheがあっても最新取得を要求します。オフライン調査でrecent cacheを使う場合だけ `--allow-recent-cache` を明示します。
 
 全コマンドは[詳細リファレンス](docs/full-reference.md)を参照してください。
 

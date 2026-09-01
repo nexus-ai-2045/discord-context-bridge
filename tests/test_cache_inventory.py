@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from discord_context_bridge.cache_inventory import build_cache_inventory
@@ -26,7 +27,7 @@ def _write_record(path: Path, *, captured_at: str, title: str = "交流広場B")
     )
 
 
-def test_cache_inventory_returns_counts_title_evidence_and_recent_route(tmp_path: Path) -> None:
+def test_cache_inventory_requires_live_refresh_even_when_exact_cache_is_recent(tmp_path: Path) -> None:
     root = tmp_path / "raw-snapshots"
     target = root / "discord" / "servers" / "11111111111111111" / "channels" / "22222222222222222"
     _write_record(target / "text-snapshots.ndjson", captured_at="2026-07-15T01:00:00+00:00")
@@ -45,7 +46,14 @@ def test_cache_inventory_returns_counts_title_evidence_and_recent_route(tmp_path
     rendered = json.dumps(payload, ensure_ascii=False)
 
     assert payload["ok"] is True
-    assert payload["decision"] == "use_local_snapshot"
+    assert payload["decision"] == "refresh_exact_url_snapshot"
+    assert payload["live_refresh"] == {
+        "required": True,
+        "reason": "discord_url_received",
+        "cache_may_satisfy_reply": False,
+    }
+    assert payload["stale_policy"]["usable_for_reply"] is False
+    assert payload["stale_policy"]["reason"] == "direct_url_requires_live_refresh"
     assert payload["inventory"]["markdown_file_count"] == 2
     assert payload["inventory"]["exact_snapshot_record_count"] == 1
     assert payload["title"] == {
@@ -91,7 +99,7 @@ def test_cache_inventory_missing_target_requests_capture(tmp_path: Path) -> None
     assert payload["stale_policy"]["usable_for_reply"] is False
 
 
-def test_cache_inventory_accepts_saved_snapshot_when_raw_root_is_absent(tmp_path: Path) -> None:
+def test_cache_inventory_still_requires_live_refresh_when_saved_snapshot_exists(tmp_path: Path) -> None:
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     _write_record(snapshot_store, captured_at="2026-07-15T01:00:00+00:00")
     payload = build_cache_inventory(
@@ -102,7 +110,45 @@ def test_cache_inventory_accepts_saved_snapshot_when_raw_root_is_absent(tmp_path
     )
     assert payload["ok"] is True
     assert payload["state"] == "ready"
+    assert payload["decision"] == "refresh_exact_url_snapshot"
+
+
+def test_cache_inventory_allows_recent_cache_only_with_explicit_opt_in(tmp_path: Path) -> None:
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    _write_record(snapshot_store, captured_at="2026-07-15T01:00:00+00:00")
+
+    payload = build_cache_inventory(
+        url=URL,
+        cache_root=tmp_path / "missing-raw-root",
+        snapshot_store=snapshot_store,
+        require_live_refresh=False,
+        generated_at="2026-07-15T02:00:00+00:00",
+    )
+
     assert payload["decision"] == "use_local_snapshot"
+    assert payload["live_refresh"]["reason"] == "explicit_recent_cache_opt_in"
+
+
+def test_cache_inventory_cli_requires_refresh_by_default_and_opt_in_allows_cache(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "raw-snapshots"
+    record = root / "discord" / "target" / "text-snapshots.ndjson"
+    _write_record(record, captured_at=datetime.now(timezone.utc).isoformat())
+
+    base_args = [
+        "cache-inventory",
+        "--url",
+        URL,
+        "--cache-root",
+        str(root),
+        "--snapshot-store",
+        str(tmp_path / "missing.ndjson"),
+        "--json",
+    ]
+    assert cli_main(base_args) == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "refresh_exact_url_snapshot"
+
+    assert cli_main([*base_args[:-1], "--allow-recent-cache", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "use_local_snapshot"
 
 
 def test_cache_inventory_cli_is_metadata_only_end_to_end(tmp_path: Path, capsys) -> None:

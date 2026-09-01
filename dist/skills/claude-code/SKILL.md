@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for claude-code; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: ef28e44953c9b845479d8ac70abf1f63601a32ad
+ssot_commit: 8e2197208749c1644a4ac2ec5525e7a69ba0aac4
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 9abf6150445370f6c019fd4181c4af57ecf7525bc2ed05331dbfe5d3166721cb
-contract_checksum: bb260478df101851449e0bb238534b101fd657113c42797d0cca7286775fbe09
-generated_at: 2026-09-01T10:12:08+00:00
+manifest_checksum: 3c3f48736b9d47363b72cd46a1b986a0d7b97465eda6b6d64f49bec14cfaddb8
+contract_checksum: 11856ac200e78207b046d9eac3f10edf4bde5bd30cea2f2eba55c5d54396996a
+generated_at: 2026-09-01T10:12:25+00:00
 runtime_target: claude-code
 ---
 
@@ -74,7 +74,8 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
 - user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
 - `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
-- `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
+- ユーザーが現在ターンで Discord URL を渡した場合は、保存済みsnapshotの鮮度にかかわらず、完全一致URLの最新取得を必ず試す。`cache-inventory` は既定で `refresh_exact_url_snapshot` を返し、取得不能時は古いcacheを返信判断へ使わず blocked とする。
+- `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとする。`use_local_snapshot` は `--allow-recent-cache` を明示したオフライン調査に限定し、通常のURL intakeや返信確認では使わない。
 - Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
 - `codex_chrome_bundle_smoke.py` はbrowser bundleの通常importと、host側の保護済み`process`がある条件でのimportだけを検査する。Node REPL接続、Chrome接続、Discord DOM到達、投稿成功の保証には使わない。
 - browser bundleが`protected_process_conflict`なら、Chrome可視読取へ進まず、人間語の原因とread-only fallbackを返す。生成済みplugin cacheを直接書き換えず、修正元sourceまたは上流更新で直す。

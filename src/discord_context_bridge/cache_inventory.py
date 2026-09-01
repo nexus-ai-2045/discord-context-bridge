@@ -96,6 +96,7 @@ def build_cache_inventory(
     cache_root: Path | None = None,
     config_path: Path | None = None,
     include_private_title: bool = False,
+    require_live_refresh: bool = True,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -148,7 +149,16 @@ def build_cache_inventory(
     generated = generated_at or datetime.now(timezone.utc).isoformat()
     freshness = snapshot_freshness(records, generated_at=generated, source="local_snapshot")
     policy = stale_policy_for_freshness(freshness)
-    if freshness["status"] == "recent":
+    if records and require_live_refresh:
+        decision = "refresh_exact_url_snapshot"
+        policy = {
+            **policy,
+            "usable_for_reply": False,
+            "required_action": "refresh_exact_url_snapshot",
+            "fallback_allowed": "read_only_adapter_or_chrome_visible_only",
+            "reason": "direct_url_requires_live_refresh",
+        }
+    elif freshness["status"] == "recent":
         decision = "use_local_snapshot"
     elif freshness["status"] in {"stale", "unknown"}:
         decision = "refresh_exact_url_snapshot"
@@ -193,6 +203,11 @@ def build_cache_inventory(
         "title": title_payload,
         "freshness": freshness,
         "stale_policy": policy,
+        "live_refresh": {
+            "required": require_live_refresh,
+            "reason": "discord_url_received" if require_live_refresh else "explicit_recent_cache_opt_in",
+            "cache_may_satisfy_reply": not require_live_refresh,
+        },
         "decision": decision,
         "scan_elapsed_ms": elapsed_ms,
         "raw_text_returned": False,

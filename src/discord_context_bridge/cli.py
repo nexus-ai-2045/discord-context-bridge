@@ -542,6 +542,11 @@ def build_parser() -> argparse.ArgumentParser:
     cache_inventory.add_argument("--cache-root", type=Path, default=None)
     cache_inventory.add_argument("--config-path", type=Path, default=default_config_path())
     cache_inventory.add_argument("--include-private-title", action="store_true", help="private consoleにtitle値を含める")
+    cache_inventory.add_argument(
+        "--allow-recent-cache",
+        action="store_true",
+        help="明示的なオフライン調査時だけ、recentな完全一致cacheを返信判断へ利用可能にする",
+    )
     cache_inventory.add_argument("--json", action="store_true")
     cache_inventory.set_defaults(handler=_cmd_cache_inventory)
 
@@ -1741,6 +1746,7 @@ def _cmd_cache_inventory(args: argparse.Namespace) -> int:
         cache_root=args.cache_root,
         config_path=args.config_path,
         include_private_title=args.include_private_title,
+        require_live_refresh=not args.allow_recent_cache,
     )
     if args.json:
         print(_json(payload))
