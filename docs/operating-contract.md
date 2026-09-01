@@ -22,7 +22,7 @@
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
-- 投稿先推奨、会話の間隔、媒体への感想は `context-grounding-gate` を通す。`captured_at` は取得鮮度専用、keyword / topic / temperature は探索 hint 専用とし、実メッセージ時刻や意味理解へ昇格しない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。
+- 投稿先推奨、会話の間隔、媒体への感想は `context-grounding-gate --input CONTRACT.json --evidence-receipts RECEIPTS.json` を通す。投稿先推奨では `--acquisition-receipt ACQUISITION.json` も必須とする。contract内へ埋め込んだ自己申告receiptは信頼せず、別ファイルのissuer・target・hashとprivate artifactのreadbackが一致した時だけ使う。`captured_at` は取得鮮度専用、keyword / topic / temperature は探索 hint 専用とし、実メッセージ時刻や意味理解へ昇格しない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -46,7 +46,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
 6. `context-passport` で文脈カードを作る。
 7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 投稿先推奨または媒体への感想を含む文案は `context-grounding-gate` を通し、`summary_ready`、実 message period、semantic anchor、channel / thread purpose、claim source roleを確認する。
+8. 投稿先推奨または媒体への感想を含む文案は、contractとtrusted receiptを別入力にした `context-grounding-gate` を通し、artifact readback、`summary_ready`、実 message period、semantic anchor、channel / thread purpose、claim source roleを確認する。
 9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
 10. `reply-context-plan` と `context-grounding-gate` が ready の時だけ、`guide-reply` または `review-draft` で確認する。
 11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。

@@ -437,6 +437,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="取得済み文脈とclaimのevidence roleを本文なしでfail-closed判定する",
     )
     grounding.add_argument("--input", type=Path, required=True, help="grounding contract JSON")
+    grounding.add_argument(
+        "--evidence-receipts", type=Path, required=True,
+        help="contractとは別に保存したtrusted evidence receipt JSON配列",
+    )
+    grounding.add_argument(
+        "--acquisition-receipt", type=Path,
+        help="channel_recommendationで必須のtrusted acquisition receipt JSON",
+    )
     grounding.set_defaults(handler=_cmd_context_grounding_gate)
 
     full_thread = sub.add_parser(
@@ -1440,15 +1448,22 @@ def _cmd_coverage_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_context_grounding_gate(args: argparse.Namespace) -> int:
-    try:
-        if args.input.stat().st_size > MAX_INPUT_BYTES:
+    def load_bounded_json(path: Path) -> Any:
+        if path.stat().st_size > MAX_INPUT_BYTES:
             raise ValueError("contract_too_large")
-        contract = json.loads(
-            args.input.read_text(encoding="utf-8"),
+        return json.loads(
+            path.read_text(encoding="utf-8"),
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"non_finite:{value}")),
         )
+
+    try:
+        contract = load_bounded_json(args.input)
+        evidence_receipts = load_bounded_json(args.evidence_receipts)
         if not isinstance(contract, dict):
             raise ValueError("contract must be an object")
+        if not isinstance(evidence_receipts, list):
+            raise ValueError("evidence receipts must be an array")
+        acquisition_receipt = load_bounded_json(args.acquisition_receipt) if args.acquisition_receipt else None
     except OSError:
         payload = {
             "schema": "discord_context_grounding_gate.v1",
@@ -1461,7 +1476,16 @@ def _cmd_context_grounding_gate(args: argparse.Namespace) -> int:
     except (UnicodeError, json.JSONDecodeError, ValueError):
         payload = build_context_grounding_gate(None)
     else:
-        payload = build_context_grounding_gate(contract)
+        if contract.get("intent") == "channel_recommendation" and args.acquisition_receipt is None:
+            payload = build_context_grounding_gate(None)
+        else:
+            payload = build_context_grounding_gate(
+                contract,
+                trusted_evidence_receipts=evidence_receipts,
+                trusted_acquisition_receipt=acquisition_receipt,
+                trusted_evidence_root=args.evidence_receipts.parent,
+                trusted_acquisition_root=args.acquisition_receipt.parent if args.acquisition_receipt else None,
+            )
     print(_json(payload))
     return 0 if payload["ready"] else 2
 
