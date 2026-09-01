@@ -29,6 +29,8 @@ def test_manifest_loads_runtime_targets_and_stoplines():
     assert "no_playwright_default_for_discord_context" in manifest["stoplines"]
     assert "no_unapproved_visible_ui_automation" in manifest["stoplines"]
     assert "no_cross_route_webhook_or_bot_guessing" in manifest["stoplines"]
+    assert "no_recommendation_without_summary_ready" in manifest["stoplines"]
+    assert "no_metadata_only_personal_impression" in manifest["stoplines"]
 
 
 def test_manifest_commands_are_executable_as_written():
@@ -37,6 +39,21 @@ def test_manifest_commands_are_executable_as_written():
     manifest = module.load_manifest(ROOT / "capability" / "manifest.yaml")
 
     assert module.validate_manifest_commands(manifest) == []
+    commands = {item["command"] for item in manifest["required_commands"]}
+    assert "coverage-report --require-summary-ready" in commands
+    assert not any(command.startswith("context-grounding-gate") for command in commands)
+
+
+def test_operating_contract_requires_canonical_recommendation_gate():
+    contract = (ROOT / "docs" / "operating-contract.md").read_text(encoding="utf-8")
+
+    assert "coverage-report --require-summary-ready" in contract
+    assert "終了コード `0`" in contract
+    assert "`captured_at` は取得鮮度だけに使い" in contract
+    assert "heuristicは探索hintに限り" in contract
+    assert "`metadata_only` 情報をユーザー本人の感想として書かない" in contract
+    assert "`unknown` として不足情報を質問する段階へ戻す" in contract
+    assert "context-grounding-gate" not in contract
 
 
 def test_validate_manifest_commands_rejects_unknown_subcommand_and_missing_script():
@@ -83,6 +100,9 @@ def test_export_runtime_skills_writes_provenance_and_contract(tmp_path):
     assert "auto-send-preflight" in body
     assert "Playwright / headless browser / 新規 browser profile を既定経路にしない" in body
     assert "no_unapproved_visible_ui_automation" in body
+    assert "no_recommendation_without_summary_ready" in body
+    assert "no_metadata_only_personal_impression" in body
+    assert "coverage-report --require-summary-ready" in body
     assert "Computer Use 的な画面操作" in body
 
 

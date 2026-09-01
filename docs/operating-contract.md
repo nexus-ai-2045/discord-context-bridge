@@ -22,7 +22,7 @@
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
-- 投稿先推奨、会話の間隔、媒体への感想は `context-grounding-gate --input CONTRACT.json --evidence-receipts RECEIPTS.json` を通す。投稿先推奨では `--acquisition-receipt ACQUISITION.json` も必須とする。contract内へ埋め込んだ自己申告receiptは信頼せず、別ファイルのissuer・target・hashとprivate artifactのreadbackが一致した時だけ使う。`captured_at` は取得鮮度専用、keyword / topic / temperature は探索 hint 専用とし、実メッセージ時刻や意味理解へ昇格しない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。
+- 投稿先を推奨する前に、既存Canonicalの `coverage-report --require-summary-ready` が終了コード `0` で完了していることを必須とする。`captured_at` は取得鮮度だけに使い、実メッセージ時刻や会話の間隔には使わない。keyword / topic / temperature などのheuristicは探索hintに限り、それだけで投稿先を順位付けしない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。条件を満たせない場合は推奨や感想を生成せず、`unknown` として不足情報を質問する段階へ戻す。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -46,9 +46,9 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
 6. `context-passport` で文脈カードを作る。
 7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 投稿先推奨または媒体への感想を含む文案は、contractとtrusted receiptを別入力にした `context-grounding-gate` を通し、artifact readback、`summary_ready`、実 message period、semantic anchor、channel / thread purpose、claim source roleを確認する。
+8. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
 9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` と `context-grounding-gate` が ready の時だけ、`guide-reply` または `review-draft` で確認する。
+10. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
 11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断

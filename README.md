@@ -76,7 +76,7 @@ discord-context-bridge bridge-intake `
 | 可視テキストだけ取り込む | `import-visible-text` |
 | 会話の目的・前提・流れを確認する | `context-passport` |
 | 返信に必要な文脈を判定する | `reply-context-plan` |
-| 投稿先推奨・文案の証拠接地を判定する | `context-grounding-gate --input CONTRACT.json --evidence-receipts RECEIPTS.json`（投稿先推奨は `--acquisition-receipt ACQUISITION.json` も必須） |
+| 投稿先推奨に使える文脈か確認する | `coverage-report --require-summary-ready` |
 | 返信案をレビューする | `review-draft` / `guide-reply` |
 | 保存範囲と鮮度を確認する | `coverage-report` / `report-latest` |
 | ローカルcacheを確認する | `cache-inventory` |
