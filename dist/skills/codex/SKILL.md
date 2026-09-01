@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 8d0f17f5a2b17b9fd01577bc184e03380690bd20
+ssot_commit: bdd229bd4841575f5792ae4788a2195ae49ae4ed
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 8b239ebaf9916937b9b3adb08b2330da9b5db39738cdb76c5fbab4fc858761fe
-contract_checksum: 83763c09b9871a89ab4bc4e7aac4187de2e7e8618599d5a51e43c5f0e95598e1
-generated_at: 2026-08-23T12:27:20+00:00
+manifest_checksum: 3717ed8dcefe62822eff97aa8aeb2d42650b932d120aa3eb92257e7b21a42159
+contract_checksum: e9b670f0ac1f0ec8da275f8917298c6f4ccf73417c7172dcedf5627ebc998c57
+generated_at: 2026-09-01T01:09:56+00:00
 runtime_target: codex
 ---
 
@@ -40,6 +40,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
+- Chronica、Markdown、latest report、context reconstruction、TODO、`private-working` 配下の生成物は projection / view であり、canonical capture の代替証拠にしない。これらが存在しても、対象一致した canonical gate と freshness evidence が当日runで成立しない限り「最新」「完全」「全部理解した」と言わない。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -58,14 +59,15 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 
 1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
 2. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。
-3. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
-4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
-5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
-6. `context-passport` で文脈カードを作る。
-7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-9. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
-10. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+3. full server / forum capture では、親channelごとに `discord_archived_thread_inventory.py` を実行し、public / private / joined private archiveを `has_more=false` まで列挙する。必要scopeの権限不足、rate limit、cursor loop、page limitが1つでも残れば full としない。
+4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
+5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
+6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致や派生viewの存在だけで full としない。
+7. `context-passport` で文脈カードを作る。
+8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+10. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
+11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
 
@@ -140,12 +142,13 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
 2. `discord_route_retry_decider.py`: `gateway_live_event`、`rest_backfill`、`bot_text_event_inbox` の順に確認。
 3. `discord_rest_backfill.py`: bot token の環境変数または secret-command provider が設定済みの場合だけ Bot REST API で read-only に履歴を backfill し、stdout は metadata-only にする。provider の状態は `env` / `secret_command` / `missing` の安全ラベルだけを返し、rate limit は `rate_limited_retryable` として closeout に残す。
-4. `private_adapter_probe.py`: private adapter / private command の設定状態を確認。
-5. `read-current-visible` で 2-4 が未設定なら、ここで `blocked_need_chrome_visible_read_go` を返す。すでにユーザーが Chrome 可視読取を許可している場合だけ次へ進む。
-6. `chrome_visible_fallback_guard.py`: Chrome visible fallback の前に既存タブ棚卸しを評価し、既存対象タブ claim / 既存Discordタブ claim + target navigation / 既存Chromeウィンドウ内の新規タブ作成を決める。
-7. `read-current-visible` では Chrome 可視DOMからスレッド本文だけを抽出し、raw本文は private artifact / local store に保存する。ユーザーが「本文を出して」と求めた場合でも visible output には raw本文を貼らず、件数、coverage、保存先の safe label、未取得理由だけを返す。
-8. `full-capture` では明示された local file / source command、Discord Desktop cache、添付候補の保存まで進める。clipboard は明示時のみ。
-9. OCR / screenshot / vision は DCB 本文取得ルートから除外する。使う場合は DCB ではなく別 skill / 別 task として Type1 明示承認を取る。
+4. `discord_archived_thread_inventory.py`: full server / forum capture の親channelに対し、公式GET-only routeでpublic / private / joined private archiveをページ終端まで列挙する。stdoutは件数・scope・blockerだけにし、ID・name・URL・pathを含むinventoryはmode `0600`のprivate artifactへ保存する。
+5. `private_adapter_probe.py`: private adapter / private command の設定状態を確認。
+6. `read-current-visible` で 2-5 が未設定なら、ここで `blocked_need_chrome_visible_read_go` を返す。すでにユーザーが Chrome 可視読取を許可している場合だけ次へ進む。
+7. `chrome_visible_fallback_guard.py`: Chrome visible fallback の前に既存タブ棚卸しを評価し、既存対象タブ claim / 既存Discordタブ claim + target navigation / 既存Chromeウィンドウ内の新規タブ作成を決める。
+8. `read-current-visible` では Chrome 可視DOMからスレッド本文だけを抽出し、raw本文は private artifact / local store に保存する。ユーザーが「本文を出して」と求めた場合でも visible output には raw本文を貼らず、件数、coverage、保存先の safe label、未取得理由だけを返す。
+9. `full-capture` では明示された local file / source command、Discord Desktop cache、添付候補の保存まで進める。clipboard は明示時のみ。
+10. OCR / screenshot / vision は DCB 本文取得ルートから除外する。使う場合は DCB ではなく別 skill / 別 task として Type1 明示承認を取る。
 
 全文取得要求では、可視範囲の取得を待たせず foreground lane として即時保存し、同時に background lane を開始する。foreground lane の成功は provisional context に限り、background lane が最古端、最新watermark、添付、再走査、artifact照合を閉じるまで full を名乗らない。partial は background lane の正常終了状態ではなく、再開可能なcheckpointまたは明示的な停止理由を必ず持つ。
 
@@ -156,7 +159,7 @@ route別の既定操作は次のとおり。DOM/APIを優先し、Computer Use�
 - saved artifacts: raw、Markdown、ledger、manifestのmessage ID集合、順序digest、hashを照合する。
 - Accessibility: 明示承認済みの環境だけでscoped message listを操作し、対象外windowへkeyを送らない。
 
-`full-capture-gate` は少なくとも、対象/capture ID結合、evidence schemaと鮮度、最古端と最新watermark、2回以上の安定走査、gap/duplicate 0、raw/Markdown/ledgerのmessage ID集合と順序digest一致、artifact hash検証、添付inventoryの完了または不存在証明、添付ID集合/manifest schema一致、pending retry 0、外部action無効を要求する。本文理解・要約はfull capture成立後の別工程であり、理解未実施を取得欠落と混同しない。
+`full-capture-gate` は少なくとも、対象/capture ID結合、evidence schemaと鮮度、active・archived public・archived privateの必要scope列挙と全pagination終端、最古端と最新watermark、2回以上の安定走査、gap/duplicate 0、raw/Markdown/ledgerのmessage ID集合と順序digest一致、artifact hash検証、添付inventoryの完了または不存在証明、添付ID集合/manifest schema一致、pending retry 0、外部action無効を要求する。本文理解・要約はfull capture成立後の別工程であり、理解未実施を取得欠落と混同しない。
 
 この順序から外れて別 repository や別 Discord bot workflow へ行った場合は、作業を止めて DCB スコープに戻す。
 
@@ -238,6 +241,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 - `python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json`: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
 - `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
+- `python3 scripts/discord_archived_thread_inventory.py --url <parent-channel-url> --json`: 公式GET-only APIでpublic/private/joined private archiveを終端まで列挙し、private inventoryとmetadata-only判定を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
@@ -262,3 +266,4 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/lint_ingest_route_policy.py --json`: Discord 文脈取得で Playwright を既定経路にしない運用を確認する
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する
 - `python3 scripts/codex_chrome_bundle_smoke.py --json`: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
+- `python3 scripts/archived_thread_inventory_smoke.py --json`: archive列挙の全scope終端、private保存、metadata-only出力、page-limit時のfail-closedをfixtureで検証する
