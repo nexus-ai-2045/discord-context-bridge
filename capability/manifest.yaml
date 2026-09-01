@@ -26,6 +26,10 @@ stoplines:
   - no_recommendation_without_summary_ready
   - no_metadata_only_personal_impression
 required_commands:
+  - command: python3 scripts/discord_url_event_intake.py --url <discord-url> --event-id <runtime-event-id> --source prompt_url_received --json
+    purpose: Discord URLを含むruntime入力を冪等なlive-refreshイベントとして受け、Gateway / REST / inbox / Chrome補助経路へ接続する
+  - command: python3 scripts/discord_url_event_intake.py --drain-once --source-command <configured-read-only-source> --json
+    purpose: pending URL jobをlease付きでclaimし、設定済みread-only sourceから本文を取得してsnapshotまで閉じる
   - command: python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json
     purpose: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
   - command: python3 scripts/discord_rest_backfill.py --url <discord-url> --json

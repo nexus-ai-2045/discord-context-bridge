@@ -39,17 +39,18 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 
 ## 標準フロー
 
-1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
-2. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。
-3. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
-4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
-5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
-6. `context-passport` で文脈カードを作る。
-7. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-8. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
-9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
-11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+1. runtime入力に Discord URL が含まれる場合は、明示的な追加依頼を待たず `discord_url_event_intake.py` に `prompt_url_received` eventとして渡す。同一event IDは冪等に処理し、取得本文が同時に渡された場合はその呼出内でsnapshot保存まで閉じる。本文なしのeventはdurable queueへ正常受付し、同じruntime turnで設定済みread-only sourceを使って `--drain-once` を1回実行する。Gateway通知runtimeはイベント受信ごと、常駐runnerは起動・再接続・通知時にdrainし、pendingが残る場合だけ15〜60分のreconciliationで再実行する。workerはtimeoutより長いleaseでclaimし、異常終了でleaseが切れたjobを再取得できなければならない。設定済みsourceが無い場合は自動取得完了とせず、pendingと具体的な設定blockerを返す。
+2. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
+3. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。新着eventはGatewayを主経路、RESTを再接続・欠落補完、Chrome eventを補助経路とし、Chrome eventだけで完全性を主張しない。
+4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
+5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
+6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
+7. `context-passport` で文脈カードを作る。
+8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+9. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
+10. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+11. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
+12. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
 
