@@ -56,7 +56,9 @@ def _canonical_scopes(scopes: Mapping[str, bool]) -> dict[str, bool]:
     return normalized
 
 
-def _thread_records(scope: Mapping[str, Any]) -> tuple[list[str], dict[str, bool]]:
+def _thread_records(
+    scope: Mapping[str, Any], parent_target_key: str
+) -> tuple[list[str], dict[str, bool]]:
     threads = scope.get("threads")
     if not isinstance(threads, Sequence) or isinstance(threads, (str, bytes)):
         raise ValueError("inventory_threads_invalid")
@@ -68,15 +70,16 @@ def _thread_records(scope: Mapping[str, Any]) -> tuple[list[str], dict[str, bool
         thread_id = item.get("id")
         if not isinstance(thread_id, str) or not thread_id:
             raise ValueError("inventory_thread_id_missing")
+        parent_id = item.get("parent_id")
+        if not isinstance(parent_id, str) or parent_id != parent_target_key:
+            raise ValueError("inventory_thread_parent_binding_mismatch")
         metadata = item.get("thread_metadata")
-        locked = False
-        if metadata is not None:
-            if not isinstance(metadata, Mapping):
-                raise ValueError("inventory_thread_metadata_invalid")
-            locked_value = metadata.get("locked", False)
-            if not isinstance(locked_value, bool):
-                raise ValueError("inventory_locked_boolean_required")
-            locked = locked_value
+        if not isinstance(metadata, Mapping):
+            raise ValueError("inventory_thread_metadata_invalid")
+        locked_value = metadata.get("locked")
+        if not isinstance(locked_value, bool):
+            raise ValueError("inventory_locked_boolean_required")
+        locked = locked_value
         if thread_id in locked_by_id:
             raise ValueError("duplicate_thread_id")
         ids.append(thread_id)
@@ -142,6 +145,7 @@ class CompletenessStore:
                     thread_set_digest TEXT NOT NULL,
                     scope_set_digests_json TEXT NOT NULL DEFAULT '{}',
                     locked_count INTEGER NOT NULL DEFAULT 0 CHECK(locked_count >= 0),
+                    locked_set_digest TEXT NOT NULL DEFAULT '',
                     scopes_json TEXT NOT NULL,
                     pagination_exhausted INTEGER NOT NULL CHECK(pagination_exhausted IN (0, 1)),
                     UNIQUE(parent_target_key, scan_id)
@@ -194,6 +198,11 @@ class CompletenessStore:
                     "ALTER TABLE inventory_scans "
                     "ADD COLUMN locked_count INTEGER NOT NULL DEFAULT 0"
                 )
+            if "locked_set_digest" not in columns:
+                connection.execute(
+                    "ALTER TABLE inventory_scans "
+                    "ADD COLUMN locked_set_digest TEXT NOT NULL DEFAULT ''"
+                )
 
     def record_inventory_scan(
         self,
@@ -206,6 +215,7 @@ class CompletenessStore:
         pagination_exhausted: bool,
         scope_thread_ids: Mapping[str, Sequence[str]] | None = None,
         locked_count: int = 0,
+        locked_thread_ids: Sequence[str] | None = None,
     ) -> None:
         normalized_ids = [str(value) for value in thread_ids]
         normalized_scopes = _canonical_scopes(scopes)
@@ -224,10 +234,20 @@ class CompletenessStore:
             raise ValueError("locked_count_nonnegative_integer_required")
         if locked_count > len(normalized_ids):
             raise ValueError("locked_count_exceeds_thread_count")
+        if locked_thread_ids is None:
+            locked_set_digest = ""
+        else:
+            normalized_locked_ids = [str(value) for value in locked_thread_ids]
+            if len(normalized_locked_ids) != len(set(normalized_locked_ids)):
+                raise ValueError("duplicate_locked_thread_id")
+            if not set(normalized_locked_ids).issubset(normalized_ids):
+                raise ValueError("locked_thread_not_in_inventory")
+            if locked_count != len(normalized_locked_ids):
+                raise ValueError("locked_count_mismatch")
+            locked_set_digest = _digest_ids(normalized_locked_ids)
         if scope_thread_ids is None:
-            normalized_scope_ids = {
-                scope: list(normalized_ids) for scope in REQUIRED_INVENTORY_SCOPES
-            }
+            normalized_scope_ids = None
+            scope_set_digests: dict[str, str] = {}
         else:
             normalized_scope_ids = {}
             canonical_scope_ids = dict(scope_thread_ids)
@@ -245,9 +265,9 @@ class CompletenessStore:
                 normalized_ids
             ):
                 raise ValueError("inventory_scope_thread_set_mismatch")
-        scope_set_digests = {
-            scope: _digest_ids(values) for scope, values in normalized_scope_ids.items()
-        }
+            scope_set_digests = {
+                scope: _digest_ids(values) for scope, values in normalized_scope_ids.items()
+            }
         normalized_observed_at = _normalized_time(observed_at)
         with self._connect() as connection:
             connection.execute(
@@ -259,8 +279,8 @@ class CompletenessStore:
                 INSERT INTO inventory_scans(
                     parent_target_key, scan_id, observed_at, thread_count,
                     thread_set_digest, scope_set_digests_json, locked_count,
-                    scopes_json, pagination_exhausted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    locked_set_digest, scopes_json, pagination_exhausted
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     parent_target_key,
@@ -270,6 +290,7 @@ class CompletenessStore:
                     _digest_ids(normalized_ids),
                     json.dumps(scope_set_digests, sort_keys=True),
                     locked_count,
+                    locked_set_digest,
                     json.dumps(normalized_scopes, sort_keys=True),
                     int(pagination_exhausted),
                 ),
@@ -293,6 +314,8 @@ class CompletenessStore:
 
         if archive_inventory.get("schema") != "dcb.archived-thread-inventory-private.v1":
             raise ValueError("archive_inventory_schema_invalid")
+        if active_filtered.get("schema") != "dcb.active-filtered-inventory-private.v1":
+            raise ValueError("active_inventory_schema_invalid")
         if any(
             str(payload.get("parent_target_key") or "") != parent_target_key
             for payload in (active_filtered, archive_inventory)
@@ -319,7 +342,7 @@ class CompletenessStore:
             if not isinstance(exhausted, bool):
                 raise ValueError("pagination_exhausted_boolean_required")
             terminal[scope] = exhausted
-            ids, scope_locked = _thread_records(payload)
+            ids, scope_locked = _thread_records(payload, parent_target_key)
             ids_by_source[scope] = ids
             for thread_id, locked in scope_locked.items():
                 previous = locked_by_id.get(thread_id)
@@ -349,6 +372,9 @@ class CompletenessStore:
             pagination_exhausted=all(terminal.values()),
             scope_thread_ids=scope_thread_ids,
             locked_count=sum(1 for value in locked_by_id.values() if value),
+            locked_thread_ids=[
+                thread_id for thread_id, locked in locked_by_id.items() if locked
+            ],
         )
 
     def record_child_certificate(
@@ -519,6 +545,8 @@ class CompletenessStore:
                     and scans[0]["thread_count"] == scans[1]["thread_count"]
                     and per_scope_digests_valid
                     and parsed_scope_digests[0] == parsed_scope_digests[1]
+                    and bool(scans[0]["locked_set_digest"])
+                    and scans[0]["locked_set_digest"] == scans[1]["locked_set_digest"]
                 )
                 stable = both_complete and digest_match
                 if both_complete and not digest_match:

@@ -1,3 +1,5 @@
+import json
+
 from discord_context_bridge.completeness_store import CompletenessStore
 from discord_context_bridge.cli import main as cli_main
 
@@ -22,6 +24,11 @@ def _full_certificate(capture_id: str) -> dict:
 
 def _record_stable_inventory(store: CompletenessStore, target: str) -> None:
     scopes = {"active": True, "archived_public": True, "archived_private": True}
+    scope_thread_ids = {
+        "active_filtered": ["t1", "t2"],
+        "archived_public": [],
+        "archived_private": [],
+    }
     store.record_inventory_scan(
         parent_target_key=target,
         scan_id="scan-1",
@@ -29,6 +36,8 @@ def _record_stable_inventory(store: CompletenessStore, target: str) -> None:
         thread_ids=["t1", "t2"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=scope_thread_ids,
+        locked_thread_ids=[],
     )
     store.record_inventory_scan(
         parent_target_key=target,
@@ -37,6 +46,8 @@ def _record_stable_inventory(store: CompletenessStore, target: str) -> None:
         thread_ids=["t2", "t1"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=scope_thread_ids,
+        locked_thread_ids=[],
     )
 
 
@@ -64,14 +75,19 @@ def _archive_inventory(
 
 def _active_inventory(parent: str, threads: list[dict]) -> dict:
     return {
+        "schema": "dcb.active-filtered-inventory-private.v1",
         "parent_target_key": parent,
         "pagination_exhausted": True,
         "threads": threads,
     }
 
 
-def _metadata(thread_id: str, *, locked: bool = False) -> dict:
-    return {"id": thread_id, "thread_metadata": {"locked": locked}}
+def _metadata(thread_id: str, *, parent: str = "parent-a", locked: bool = False) -> dict:
+    return {
+        "id": thread_id,
+        "parent_id": parent,
+        "thread_metadata": {"locked": locked},
+    }
 
 
 def test_archive_inventory_bridge_binds_parent_counts_locked_and_stabilizes(tmp_path):
@@ -118,6 +134,51 @@ def test_archive_inventory_bridge_rejects_parent_binding_mismatch(tmp_path):
         assert str(error) == "inventory_parent_binding_mismatch"
     else:
         raise AssertionError("mismatched parent binding must fail closed")
+
+
+def test_archive_inventory_bridge_rejects_cross_parent_thread_record(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+
+    try:
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id="scan-1",
+            observed_at="2026-09-02T00:01:00+00:00",
+            active_filtered=_active_inventory(parent, []),
+            archive_inventory=_archive_inventory(
+                parent,
+                public=[_metadata("thread-a", parent="parent-b")],
+            ),
+        )
+    except ValueError as error:
+        assert str(error) == "inventory_thread_parent_binding_mismatch"
+    else:
+        raise AssertionError("cross-parent thread record must fail closed")
+
+
+def test_legacy_flat_scans_never_authorize_full_completeness(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    scopes = {"active": True, "archived_public": True, "archived_private": True}
+    for index in (1, 2):
+        store.record_inventory_scan(
+            parent_target_key=parent,
+            scan_id=f"legacy-{index}",
+            observed_at=f"2026-09-02T00:0{index}:00+00:00",
+            thread_ids=["thread-a"],
+            scopes=scopes,
+            pagination_exhausted=True,
+        )
+    store.record_child_certificate(parent, "thread-a", _full_certificate("capture-a"))
+
+    result = store.audit_parent(parent)
+
+    assert result["status"] != "full"
+    assert result["inventory"]["stable_scan_count"] == 0
+    assert "inventory_rescan_not_stable" in result["blockers"]
 
 
 def test_archive_inventory_bridge_requires_all_terminal_source_scopes(tmp_path):
@@ -189,6 +250,90 @@ def test_two_nonterminal_archive_scans_do_not_stabilize(tmp_path):
     assert "inventory_pagination_not_exhausted" in result["blockers"]
 
 
+def test_locked_state_change_prevents_stable_inventory(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    for index, locked in ((1, False), (2, True)):
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id=f"scan-{index}",
+            observed_at=f"2026-09-02T00:0{index}:00+00:00",
+            active_filtered=_active_inventory(
+                parent, [_metadata("thread-a", locked=locked)]
+            ),
+            archive_inventory=_archive_inventory(parent, public=[]),
+        )
+
+    result = store.audit_parent(parent)
+
+    assert result["inventory"]["stable_scan_count"] == 0
+    assert "inventory_rescan_not_stable" in result["blockers"]
+
+
+def test_missing_locked_metadata_fails_closed(tmp_path):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    parent = "parent-a"
+    thread = {"id": "thread-a", "parent_id": parent, "thread_metadata": {}}
+
+    try:
+        store.record_archive_inventory_scan(
+            parent_target_key=parent,
+            scan_id="scan-1",
+            observed_at="2026-09-02T00:01:00+00:00",
+            active_filtered=_active_inventory(parent, [thread]),
+            archive_inventory=_archive_inventory(parent, public=[]),
+        )
+    except ValueError as error:
+        assert str(error) == "inventory_locked_boolean_required"
+    else:
+        raise AssertionError("missing locked metadata must fail closed")
+
+
+def test_record_parent_inventory_cli_consumes_schema_backed_sources(
+    tmp_path, capsys
+):
+    parent = "parent-a"
+    active_path = tmp_path / "active.json"
+    archive_path = tmp_path / "archive.json"
+    database = tmp_path / "capture.sqlite3"
+    active_path.write_text(
+        json.dumps(_active_inventory(parent, [_metadata("thread-a")])),
+        encoding="utf-8",
+    )
+    archive_path.write_text(
+        json.dumps(_archive_inventory(parent, public=[])), encoding="utf-8"
+    )
+
+    exit_code = cli_main(
+        [
+            "record-parent-inventory",
+            "--db",
+            str(database),
+            "--active-evidence",
+            str(active_path),
+            "--archive-evidence",
+            str(archive_path),
+            "--parent-target-key",
+            parent,
+            "--scan-id",
+            "scan-1",
+            "--observed-at",
+            "2026-09-02T00:01:00+00:00",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    audit = CompletenessStore(database).audit_parent(parent)
+
+    assert exit_code == 0
+    assert parent not in output
+    assert "thread-a" not in output
+    assert audit["counts"]["inventory_threads"] == 1
+    assert audit["inventory"]["stable_scan_count"] == 0
+
+
 def test_parent_audit_requires_two_stable_complete_inventory_scans(tmp_path):
     store = CompletenessStore(tmp_path / "capture.sqlite3")
     store.initialize()
@@ -234,6 +379,16 @@ def test_changed_second_inventory_scan_blocks_full(tmp_path):
     store.initialize()
     target = "forum-parent"
     scopes = {"active": True, "archived_public": True, "archived_private": True}
+    initial_scope_thread_ids = {
+        "active_filtered": ["t1"],
+        "archived_public": [],
+        "archived_private": [],
+    }
+    latest_scope_thread_ids = {
+        "active_filtered": ["t1", "t2"],
+        "archived_public": [],
+        "archived_private": [],
+    }
     store.record_inventory_scan(
         parent_target_key=target,
         scan_id="scan-1",
@@ -241,6 +396,8 @@ def test_changed_second_inventory_scan_blocks_full(tmp_path):
         thread_ids=["t1"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=initial_scope_thread_ids,
+        locked_thread_ids=[],
     )
     store.record_inventory_scan(
         parent_target_key=target,
@@ -249,6 +406,8 @@ def test_changed_second_inventory_scan_blocks_full(tmp_path):
         thread_ids=["t1", "t2"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=latest_scope_thread_ids,
+        locked_thread_ids=[],
     )
 
     result = store.audit_parent(target)
@@ -379,6 +538,16 @@ def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
     store.initialize()
     target = "forum-parent"
     scopes = {"active": True, "archived_public": True, "archived_private": True}
+    initial_scope_thread_ids = {
+        "active_filtered": ["t1", "t2"],
+        "archived_public": [],
+        "archived_private": [],
+    }
+    latest_scope_thread_ids = {
+        "active_filtered": ["t1"],
+        "archived_public": [],
+        "archived_private": [],
+    }
     store.record_inventory_scan(
         parent_target_key=target,
         scan_id="scan-1",
@@ -386,6 +555,8 @@ def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
         thread_ids=["t1", "t2"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=initial_scope_thread_ids,
+        locked_thread_ids=[],
     )
     store.record_inventory_scan(
         parent_target_key=target,
@@ -394,6 +565,8 @@ def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
         thread_ids=["t1", "t2"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=initial_scope_thread_ids,
+        locked_thread_ids=[],
     )
     store.record_child_certificate(target, "t1", _full_certificate("c1"))
     store.record_child_certificate(target, "t2", _full_certificate("c2"))
@@ -405,6 +578,8 @@ def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
         thread_ids=["t1"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=latest_scope_thread_ids,
+        locked_thread_ids=[],
     )
     store.record_inventory_scan(
         parent_target_key=target,
@@ -413,6 +588,8 @@ def test_absent_certificate_is_retired_after_stable_inventory(tmp_path):
         thread_ids=["t1"],
         scopes=scopes,
         pagination_exhausted=True,
+        scope_thread_ids=latest_scope_thread_ids,
+        locked_thread_ids=[],
     )
 
     result = store.audit_parent(target)

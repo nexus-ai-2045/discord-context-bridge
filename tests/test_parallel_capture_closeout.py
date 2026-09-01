@@ -136,6 +136,11 @@ def _full_completeness_db(tmp_path: Path, target: str = PARENT_TARGET) -> Path:
     store = CompletenessStore(database)
     store.initialize()
     scopes = {"active": True, "archived_public": True, "archived_private": True}
+    scope_thread_ids = {
+        "active_filtered": ["thread-1"],
+        "archived_public": [],
+        "archived_private": [],
+    }
     for index in (1, 2):
         store.record_inventory_scan(
             parent_target_key=target,
@@ -144,6 +149,8 @@ def _full_completeness_db(tmp_path: Path, target: str = PARENT_TARGET) -> Path:
             thread_ids=["thread-1"],
             scopes=scopes,
             pagination_exhausted=True,
+            scope_thread_ids=scope_thread_ids,
+            locked_thread_ids=[],
         )
     store.record_child_certificate(target, "thread-1", _full_certificate("capture-1"))
     return database

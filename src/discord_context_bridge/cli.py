@@ -887,10 +887,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     record_inventory = sub.add_parser(
         "record-parent-inventory",
-        help="active/archivedを列挙した親スキャン証拠をlocal SQLiteへ保存する",
+        help="schema-backed active/archive親スキャン証拠をlocal SQLiteへ保存する",
     )
     record_inventory.add_argument("--db", type=Path, required=True)
-    record_inventory.add_argument("--evidence", type=Path, required=True)
+    record_inventory.add_argument("--evidence", type=Path, help="legacy flat evidence（fullには使用不可）")
+    record_inventory.add_argument("--active-evidence", type=Path)
+    record_inventory.add_argument("--archive-evidence", type=Path)
+    record_inventory.add_argument("--parent-target-key")
+    record_inventory.add_argument("--scan-id")
+    record_inventory.add_argument("--observed-at")
     record_inventory.add_argument("--json", action="store_true")
     record_inventory.set_defaults(handler=_cmd_record_parent_inventory)
 
@@ -2520,16 +2525,28 @@ def _load_private_json(path: Path) -> dict[str, Any]:
 
 def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
     try:
-        evidence = _load_private_json(args.evidence)
+        if args.evidence is not None:
+            raise ValueError("legacy_flat_inventory_non_authoritative")
+        if not all(
+            (
+                args.active_evidence,
+                args.archive_evidence,
+                args.parent_target_key,
+                args.scan_id,
+                args.observed_at,
+            )
+        ):
+            raise ValueError("schema_backed_inventory_evidence_required")
+        active_evidence = _load_private_json(args.active_evidence)
+        archive_evidence = _load_private_json(args.archive_evidence)
         store = CompletenessStore(args.db)
         store.initialize()
-        store.record_inventory_scan(
-            parent_target_key=str(evidence["parent_target_key"]),
-            scan_id=str(evidence["scan_id"]),
-            observed_at=str(evidence["observed_at"]),
-            thread_ids=[str(value) for value in evidence["thread_ids"]],
-            scopes=dict(evidence["scopes"]),
-            pagination_exhausted=evidence["pagination_exhausted"],
+        store.record_archive_inventory_scan(
+            parent_target_key=str(args.parent_target_key),
+            scan_id=str(args.scan_id),
+            observed_at=str(args.observed_at),
+            active_filtered=active_evidence,
+            archive_inventory=archive_evidence,
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         payload = {
@@ -2548,7 +2565,6 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
             "schema": "discord_completeness_store_operation.v1",
             "ok": True,
             "operation": "record_parent_inventory",
-            "thread_count": len(evidence["thread_ids"]),
             "path_output": "omitted",
             "identifiers_returned": False,
             "outbound_actions": "disabled",
