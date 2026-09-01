@@ -31,6 +31,10 @@ create-onlyの正本、`run-metadata.json` はそこを指す再生成可能なp
 停止receiptもoperatorの手書きmarkerではなく、`producer.quiesced` eventのconsumerである
 event routerだけが発行します。
 
+ここでのproducer ownershipは同一local OS user内の協調契約であり、悪意あるlocal processに
+対する認証境界ではありません。CLIはworker/routerの実terminal handlerからのみ呼ぶ運用面で、
+重複・欠落・宣言外worker・発行後変更をcontent bindingとcreate-only publicationで検知します。
+
 producerのterminal handlerは、自分自身の終了時に次を一度だけ呼びます。同じproducerの
 2回目のeventは拒否されます。
 

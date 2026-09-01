@@ -696,6 +696,37 @@ def test_cli_event_path_records_drains_then_stop(tmp_path: Path, capsys) -> None
     assert (run / "audit" / "parallel-run-stop-receipt.json").exists()
 
 
+def test_declared_shard_topology_rejects_merged_missing_worker(tmp_path: Path) -> None:
+    run = _run_fixture(tmp_path, item_count=2)
+    metadata_path = run / "run-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["shard_counts"] = [1, 1]
+    _write_json(metadata_path, metadata)
+
+    result = evaluate_legacy_parallel_run(run)
+
+    assert "canonical_shard_topology_mismatch" in result["blockers"]
+    assert "canonical_shard_item_count_mismatch" in result["blockers"]
+    try:
+        persist_parallel_run_stop_receipt(
+            run, event_id="invalid-topology", stopped_reason="producer_failed"
+        )
+    except ValueError as exc:
+        assert "valid terminal producer evidence required" in str(exc)
+    else:
+        raise AssertionError("missing declared worker drain must reject stop receipt")
+
+
+def test_declared_shard_topology_rejects_extra_worker(tmp_path: Path) -> None:
+    run = _run_fixture(tmp_path, item_count=1)
+    _write_json(run / "shards" / "worker-1.json", [])
+
+    result = evaluate_legacy_parallel_run(run)
+
+    assert "canonical_shard_topology_mismatch" in result["blockers"]
+    assert "canonical_shard_item_count_mismatch" in result["blockers"]
+
+
 def test_late_write_after_full_is_detected_by_canonical_revalidation(
     tmp_path: Path,
 ) -> None:
