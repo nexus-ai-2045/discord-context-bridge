@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: a10bb44fe92f7d23add6c679372c025f8c62ec79
+ssot_commit: 41070bc5d01295260471eaefa8d5bcac23848a30
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 3fe358a9875cdf721414c2dd198a786cd9a3fb5db429ac57e264717796bc7d43
-contract_checksum: 5bae5a2649e18c2f1e938f8b357222e56589dada3ae893f25148fcee14619ef5
-generated_at: 2026-09-01T11:33:38+00:00
+contract_checksum: 91dd105884840006c2b0a0f0d5fde05ff2a94e891f675d94f1888b90175539c0
+generated_at: 2026-09-01T11:41:42+00:00
 runtime_target: antigravity
 ---
 
@@ -18,209 +18,82 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 
 # Discord Context Bridge operating contract
 
-この文書は `nexus-ai-2045/discord-context-bridge` の runtime 横断 SSOT です。Codex / Claude Code / Grok / AntiGravity などの skill は、この contract と `capability/manifest.yaml` から生成される派生物として扱います。
+この文書は `nexus-ai-2045/discord-context-bridge` の runtime 横断 SSOT です。runtime skill はこの契約と `capability/manifest.yaml` から生成し、詳細手順は末尾の参照先を使います。
 
 ## 不変条件
 
-- この public core は Discord への send / 自動返信 / reaction / delete / edit を直接実行しない。
-- 自動送信は private adapter 境界の任意機能としてのみ扱う。`auto-send-preflight` が `ready_for_auto_send_adapter` を返し、現在会話の明示承認、対象 route 一致、ready な staging packet、ready な fill dry-run、transport 設定、operator label、idempotency key、rollback plan、metadata-only audit log が揃う場合だけ、private adapter が一回送信してよい。
-- `auto-send-preflight` が `blocked` の場合、または `send_message()` public API しかない場合は送信しない。
-- 外部共有、公開投稿、GitHub への raw Discord text の追加はしない。
-- raw Discord 本文、実 guild/channel/message ID、handle、token、cookie、local absolute path を visible output に出さない。
-- 取得経路は local-first / read-only とし、可視テキスト・clipboard・private adapter のいずれも outbound action を持たない。
-- `no_ocr_for_dcb_text_intake`: OCR / screenshot / vision を Discord 本文取得ルートにしない。
-- `no_clipboard_without_explicit_clipboard_request`: clipboard はユーザーが「clipboard から」と明示した場合だけ読む。
-- `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、`SendKeys`、`AppActivate`、クリック、スクロール、スクショ取得、Chromeを勝手に開く・遷移する操作は、ユーザーの明示許可なしに実行しない。DCB の Chrome visible fallback は、正規 adapter / DOM取得口 / clipboard / local file が使える場合だけ進め、Windows UI 自動操作へ迂回しない。
-- `no_browser_before_dcb_preflight`: Discord URL、Discord画面、チャンネル用途、投稿先、投稿本文、返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache-first、coverage、route判定を通す。ブラウザ操作前は `--preflight-only` の `ready_for_browser_preflight`、対象タブ到達後は `ready_for_bridge` を別段階で確認し、visible fallbackが次の正規経路であることを確認するまで本文読取へ進まない。ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
-- `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
-- Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
-- Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
-- Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。
-- Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
-- `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
-- 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
-- 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
-- 投稿先を推奨する前に、既存Canonicalの `coverage-report --require-summary-ready` が終了コード `0` で完了していることを必須とする。`captured_at` は取得鮮度だけに使い、実メッセージ時刻や会話の間隔には使わない。keyword / topic / temperature などのheuristicは探索hintに限り、それだけで投稿先を順位付けしない。媒体の `metadata_only` 情報をユーザー本人の感想として書かない。条件を満たせない場合は推奨や感想を生成せず、`unknown` として不足情報を質問する段階へ戻す。
-- 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
+- この public core は Discord への send / 自動返信 / reaction / delete / edit を直接実行しない。自動送信は、現在会話の明示承認と `auto-send-preflight=ready_for_auto_send_adapter` を含む全証跡が揃った private adapter の一回実行に限る。
+- 外部共有、公開投稿、GitHub への raw Discord text 追加をしない。raw本文、実ID、handle、token、cookie、local absolute pathをvisible outputへ出さない。
+- 取得は local-first / read-only とする。Bot REST tokenは環境変数またはsecret-command境界だけに置き、DCB本体、stdout、manifest、tracked file、runtime skillへ保存しない。
+- Chrome profileからuser token、cookie、localStorage、profile directoryを抽出・転用しない。selfbot、browser console token抽出、MITM captureを採用しない。
+- `no_ocr_for_dcb_text_intake`: OCR / screenshot / visionを本文取得経路にしない。
+- `no_clipboard_without_explicit_clipboard_request`: clipboardはユーザーが明示した場合だけ読む。
+- `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、SendKeys、AppActivate、クリック、スクロール、スクショ取得、Chromeを勝手に開く操作は、ユーザーの明示許可なしに実行しない。
+- `no_browser_before_dcb_preflight`: Discord URLや返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache、coverage、route判定を通す。対象到達後の `ready_for_bridge` を別に確認し、ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
+- `no_visible_read_without_snapshot_closeout`: 可視DOMを読んだ場合は同じturnで `bridge-intake` へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約・判断・返信案・完了報告を返さない。raw本文は private artifact / local store に保存する。visible output には raw本文を貼らず、安全な件数と状態だけを返す。
+- Discord文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。正規adapter、Bot REST、private inbox、cic可視DOM、Discord Desktop cache、承認済みmacOS Accessibilityの順に使う。
+- DCB workflowから別projectのbot、ai-party、connector、外部 MCPを自動探索しない。範囲を広げる時はユーザー承認を取る。
+- 判断を `[事実: source]` / `[推測]` / `[不明]` に分け、未確認文脈を断定しない。
+- 投稿先推奨は `coverage-report --require-summary-ready` が終了コード `0` の時だけ行う。`captured_at` は取得鮮度だけに使い、keyword / topic / temperatureなどのheuristicは探索hintに限り、`metadata_only` 情報をユーザー本人の感想として書かない。条件不足は `unknown` として不足情報を質問する段階へ戻す。
+- 外部action状態は `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` で表し、入力・添付試行・宛先確認を送信完了としない。
 
-## Discord OSS 参照境界
+## URLイベントと最新化
 
-Discord 関連の外部 OSS を参照する場合は、DCB の read-only / metadata-only 境界を先に固定し、実装パターンは次の順に照合する。
+1. runtime入力にDiscord URLがあれば、追加依頼を待たず `discord_url_event_intake.py` へ `prompt_url_received` eventとして渡す。
+2. 本文付きeventは同一呼出しでsnapshot保存まで閉じる。本文なしeventはdurable queueへ入れ、同じruntime turnで設定済みread-only sourceを使い `--drain-once` を一回実行する。
+3. Gateway runtimeは通知時、常駐runnerは起動・再接続・通知時にdrainする。pendingだけを15〜60分のREST reconciliationで補完する。
+4. workerはtimeoutより長いleaseでjobをclaimし、期限切れjobを再取得する。同一event IDを冪等に扱い、leaseを失ったworkerは成功を返さない。
+5. 新着はGateway、欠落補完はREST、Chrome eventは補助経路とする。Chrome eventだけで完全性を主張しない。
+6. source未設定、認証不可、rate limit、取得失敗はpendingまたはblockedとし、古いcacheを返信判断へ昇格しない。
 
-1. API 仕様の根拠は `discord/discord-api-docs` を優先する。
-2. bot route を明示的に扱う時だけ、SDK 挙動の比較として `discordjs/discord.js` または `Rapptz/discord.py` を見る。
-3. bot 構成や command lifecycle は、`sapphiredev/framework` や `KevinNovak/Discord-Bot-TypeScript-Template` などの成熟した bot template を比較材料にする。
-4. export / archive 系は `Tyrrrz/DiscordChatExporter` を比較材料にする。ただし user account automation / selfbot 的な使い方は DCB の通常経路にしない。
-5. Discord MCP 実装は比較材料に限る。read、send、reaction、role、channel、moderation tool が同一面に露出している実装を取り込む場合は、read-only ingress と write/mutation を分離し、現在会話の人間承認 gate を追加するまで採用しない。
+## 取得・保存・完了
 
-DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 非表示、token/cookie/profile 抽出禁止、外部送信なし、生成 skill への安全境界反映を満たすものだけに限定する。selfbot、user token automation、browser console token extraction、MITM capture は実装パターンとして採用しない。
+- intentを `read-current-visible` / `full-capture` / `reply-review` / `posted-record` に分け、依頼より広い取得へ自動拡張しない。
+- 取得順は Gateway live event → Bot REST → private inbox/adapter → 承認済みChrome visible fallback。Chrome前にタブ棚卸しを行い、既存対象タブを優先する。
+- recent cacheでも、現在turnでURLを受けた場合は完全一致URLのlive refreshを試す。`use_local_snapshot` は明示的なoffline調査だけに使う。
+- 観測本文はlocal-private append-only ledgerへ保存する。Markdown、report、context reconstruction、TODOはprojectionであり履歴正本ではない。
+- fullを名乗るには、対象結合、最古端、最新watermark、2回以上の安定走査、gap/duplicate 0、raw/Markdown/ledgerの集合・順序・hash一致、添付inventory、pending retry 0、外部action無効を `full-capture-gate` で確認する。
+- 条件不足は `partial` または `blocked` とし、取得済み範囲、未取得理由、次の安全な一手をmanifest / closeoutへ残す。0件cacheは本文不存在や完全保存の証明にしない。
+- snapshot保存とcloseoutを分ける。可視本文を読めても、ledger、capture、manifest保存前に取得完了と言わない。
 
-## 標準フロー
+## 返信と送信境界
 
-1. runtime入力に Discord URL が含まれる場合は、明示的な追加依頼を待たず `discord_url_event_intake.py` に `prompt_url_received` eventとして渡す。同一event IDは冪等に処理し、取得本文が同時に渡された場合はその呼出内でsnapshot保存まで閉じる。本文なしのeventはdurable queueへ正常受付し、同じruntime turnで設定済みread-only sourceを使って `--drain-once` を1回実行する。Gateway通知runtimeはイベント受信ごと、常駐runnerは起動・再接続・通知時にdrainし、pendingが残る場合だけ15〜60分のreconciliationで再実行する。workerはtimeoutより長いleaseでclaimし、異常終了でleaseが切れたjobを再取得できなければならない。設定済みsourceが無い場合は自動取得完了とせず、pendingと具体的な設定blockerを返す。
-2. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
-3. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。新着eventはGatewayを主経路、RESTを再接続・欠落補完、Chrome eventを補助経路とし、Chrome eventだけで完全性を主張しない。
-4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
-5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
-6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。
-7. `context-passport` で文脈カードを作る。
-8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-9. 投稿先推奨の前に `coverage-report --require-summary-ready` を実行し、終了コード `0` を確認する。失敗時は `unknown` として不足情報を質問し、推奨を作らない。媒体への感想は、ユーザー自身の観察または検証済み媒体内容だけを根拠にし、`metadata_only` を本人の感想へ変換しない。
-10. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-11. `reply-context-plan` が ready で、投稿先推奨を伴う場合は `coverage-report --require-summary-ready` も終了コード `0` の時だけ、`guide-reply` または `review-draft` で確認する。
-12. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+- 返信案には、スレッド起点、返信対象、対象までの直前10件（全履歴が10件未満なら終端確認済み全件）、未解決参照0件を要求する。
+- 不足時は `reply_context_expand_required`、上限到達は `reply_context_limit_reached`、認証・権限・rate limitは取得層のreason codeを保持して停止する。
+- `guide-reply` / `review-draft` は文脈gateと `summary_ready` を迂回しない。出力はraw JSONではなく、安全ラベル、件数、reason code、短い日本語要約にする。
+- 自動送信要求でも `stage-discord-send` → `verify-chrome-fill-dry-run` → `auto-send-preflight` の順を守る。public coreは送信しない。
+- `human_sent` のcloseoutにはmetadata-only receiptと `learning_handoff` を付ける。`not_sent` の下書きを本人の返信スタイルとして学習しない。
 
-## ローカルcache解決と鮮度判断
+## Chrome境界
 
-- 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
-- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
-- `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
-- ユーザーが現在ターンで Discord URL を渡した場合は、保存済みsnapshotの鮮度にかかわらず、完全一致URLの最新取得を必ず試す。`cache-inventory` は既定で `refresh_exact_url_snapshot` を返し、取得不能時は古いcacheを返信判断へ使わず blocked とする。
-- `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとする。`use_local_snapshot` は `--allow-recent-cache` を明示したオフライン調査に限定し、通常のURL intakeや返信確認では使わない。
-- Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
-- `codex_chrome_bundle_smoke.py` はbrowser bundleの通常importと、host側の保護済み`process`がある条件でのimportだけを検査する。Node REPL接続、Chrome接続、Discord DOM到達、投稿成功の保証には使わない。
-- browser bundleが`protected_process_conflict`なら、Chrome可視読取へ進まず、人間語の原因とread-only fallbackを返す。生成済みplugin cacheを直接書き換えず、修正元sourceまたは上流更新で直す。
-- `pdca_e2e_inventory.py` はE2E caseを一度ずつbounded実行し、成功、証拠不足、コード修正、環境、外部依存、人間レビューへ分類する。同じ失敗経路を無制限に再試行せず、timeout等の一時失敗だけ最大1回再試行する。
-- PDCA runnerは別orchestratorである`ops_check.py`を既定で入れ子実行しない。`--include-ops-fast`が明示された場合だけ含める。コード自動修正、設定変更、Discord writeは行わない。
-- 前回reportを指定した場合、case単位で`resolved`、`persisting`、`new_issues`を返し、既に解消したfailureを再調査対象にしない。
+- Chrome visible fallbackは正規取得口が使えない時だけ選び、明示承認前は `blocked_need_chrome_visible_read_go` で止める。
+- `browser.user.openTabs()` 相当で棚卸しし、対象タブclaim → 既存Discordタブclaimと対象遷移 → 既存Chrome内の新規タブ、の順にする。新規windowは既定で開かない。
+- DOM/APIを優先し、Computer Use、wheel、key入力を自動fallbackにしない。DOMが使えなければ `paused_human_approval` とする。
+- send / reaction / edit / delete、token表示・copy、permission変更は別の人間承認境界とする。
 
-## 返信前最低文脈 gate
+## OSS参照境界
 
-返信支援の生成入口は fail-closed とする。本文が1件以上あることや、人間が理解確認を押したことだけでは返信候補を生成しない。
+- API仕様は `discord/discord-api-docs` を優先し、SDK、bot template、exporter、MCP実装は比較材料に限る。
+- readとmutationが同一面にある実装は分離し、人間承認gateを追加するまで採用しない。
 
-- スレッド起点を取得済み。
-- 返信対象を取得済み。
-- 返信対象までの直前10件を取得済み。ただしスレッド全履歴が10件未満で、履歴終端を確認した場合は取得可能な全件でよい。
-- 未解決参照が0件。
+## Codex chat title
 
-不足時は `reply_context_expand_required` と次の取得件数を返す。取得上限に達した場合は `reply_context_limit_reached`、認証・権限・rate limit の場合は取得層の reason code を保持して停止する。いずれも raw本文、参加者名、実IDをstdoutへ返さず、Discord writeは無効のままにする。
-8. 出力は JSON をそのまま貼らず、安全ラベル、件数、reason code、短い日本語要約にする。
+- Discord URLの内容確認ではCodex task titleを対象にし、認証済みlive title → 同一対象のsaved evidence → safe route labelの順で根拠を選ぶ。
+- 状態suffixは `｜Ingress確認済み・本文未取得` / `｜本文未完了・要追加読取` / `｜Review待ち・送信なし` を使い、raw本文、参加者名、実ID、private pathを入れない。
 
-## 更新・保存・完了保証
+## Runtime projectionと検証
 
-Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後追跡を行う時は、作業完了より先にローカル保存を閉じる。
+- 生成物は `dist/skills/<runtime>/SKILL.md`。直接編集せず、`capability/manifest.yaml` またはこの契約を変更して `scripts/export_runtime_skills.py` で再生成する。
+- PR前とcloseoutで `verify_ssot_projection.py`、`lint_ingest_route_policy.py`、必要範囲のtestsを実行する。local runtimeへの反映は `lint_runtime_skill_sync.py` で差分確認後、対象を明示して同期する。
 
-この skill を Discord URL / スレッド保存に使った場合、「スレ本文・全メッセージ・添付を完全保存」を完了条件にする。
-取得経路の未設定、認証、可視範囲不足、rate limit、キャッシュ欠落などで完全保存できない場合でも、完了とは言わない。
-その場合は `blocked` として、人間語の原因、未取得範囲、次に必要な操作、保存済み partial artifact を manifest / checklist / closeout に残す。
-ただし、依頼種別を先に分ける。ユーザーが「いま見えている本文」「スレッド本文」「本文を出せ」「Chrome可視読取GO」など、可視範囲の読取を求めている場合は `read-current-visible` とし、完全保存ラダーへ拡張しない。
-`read-current-visible` では、REST / private adapter / exact local cache が未設定または不足なら、即 `blocked_need_chrome_visible_read_go` または承認済みなら Chrome 既存タブ可視DOM読取へ進む。clipboard、Discord Desktop cache、OCR、古い snapshot 探索へ横道に入らない。
-保存要求である場合だけ、最初の API / adapter 不足だけで止めず、DCB 内の取得ラダーを順に実行し、可視テキスト、明示された local file、Discord Desktop cache、Chrome 既存タブ visible fallback、添付候補の保存まで試す。clipboard はユーザーが「クリップボードから」と明示した場合だけ使う。
-止まってよいのは、認証不可、ブラウザ制御不能、対象画面未到達、ユーザー操作待ち、対象本文が実測 0 件、または安全境界上これ以上進めないことを確認した後だけにする。
+## 詳細SSOT
 
-この領域は event sourcing / structured logging の考え方に寄せる。append-only store を system of record とし、Markdown、latest report、context reconstruction、TODO は projection / view として扱う。
-
-標準順序:
-
-1. `target`: URL / safe label / title evidence / read scope を確定する。
-2. `ledger`: 一度でも取得した可視テキスト観測は、重複でも append-only snapshot store に追記する。機をまたぐ会話本文の作業正本は `resolve_shared_snapshot_root`（既定 `~/Projects/Documents/discord/raw-snapshots`）配下の `.dcb/text-snapshots.ndjson`。cwd の `.local/discord-context-bridge/text-snapshots.ndjson` は作業ログであり、ここだけへの保存を「共有完了」と言わない。CLI の `--snapshot-store` / `--ai-log` 未指定時は共有棚へリダイレクトする。同一内容でも保存を省略せず、`changed=false` / `duplicate_content=true` のように差分状態を metadata で表す。各行には `schema`、`event_id`、`event_type`、`stream_id`、`stream_sequence`、`expected_previous_stream_sequence`、`time`、`content_hash`、`previous_content_hash`、`previous_event_hash`、`event_hash`、`acquisition_context` を持たせる。
-3. `capture`: 可視テキスト、添付候補、画像、Drive等の取得結果を、生データまたは抽出済みデータとして保存する。Markdown や画像フォルダは読みやすい view / bundle であり、履歴正本は append-only ledger とする。
-4. `manifest`: 取得時刻、取得方法、full / partial / blocked、対象一致、未取得理由を manifest または front matter に書く。
-5. `digest`: 読解メモ、reply-check、FDEメモ、context reconstruction など、人間が読むための派生artifactを作る。
-6. `todo`: active TODO / checklist / handoff に、新規artifact path、現状態、次の安全な一手、未取得点を追記する。
-7. `closeout`: 最後に、Discord writeなし / human sent / blocked reason / next action を報告する。
-
-保証:
-
-- Discord URL / スレッド保存では、スレ本文、全メッセージ、添付の3点が local private artifact として保存され、raw JSONL parse、normalized Markdown coverage、attachment ledger / manifest の整合が確認できるまで「全部保存」「完全保存」「取得完了」「運用保証」と言わない。
-- 3点のどれかが欠ける場合は `blocked` または `partial` として扱い、保存できた証跡だけを完成物と呼ぶ。0件の cache extract は「ローカルキャッシュに対象本文が存在しない証跡」であり、「スレ本文なし」や「完全保存」とは扱わない。
-- `blocked` と言う前に、どの取得ラダーを実行し、どの hard blocker で止まったかを manifest / closeout に列挙する。未実行ルートが残っている場合は「未完了・次に実行」と言い、blocked closeout にしない。
-- 可視本文を読めた場合、append-only ledger、`capture`、`manifest` を保存する前に「取得完了」と言わない。
-- 同一内容の再取得でも、観測した事実は ledger に追記する。重複排除は保存停止ではなく `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
-- 追記 ledger の 1 行は immutable event として扱う。訂正が必要な場合は既存行を書き換えず、補正・再取得・metadata 補足を新しい observation として追記する。
-- `stream_id` は target 単位の履歴を再生するキー、`stream_sequence` は target 内の順序、`event_id` は観測行そのものの一意識別子として使う。
-- `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
-- 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
-- ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
-- `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
-- 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
-- ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
-- full read でない場合は `本文全文: 未完了`、`partial`、`blocked` のどれかを残し、理由を人間語で書く。
-- snapshot 保存と closeout は混ぜない。本文保存は private snapshot / capture bundle、完了確認は metadata-only closeout として扱う。
-
-本文取得の既定順序:
-
-0. `intent_router`: `read-current-visible` / `full-capture` / `reply-review` / `posted-record` を先に切る。
-1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
-2. `discord_route_retry_decider.py`: `gateway_live_event`、`rest_backfill`、`bot_text_event_inbox` の順に確認。
-3. `discord_rest_backfill.py`: bot token の環境変数または secret-command provider が設定済みの場合だけ Bot REST API で read-only に履歴を backfill し、stdout は metadata-only にする。provider の状態は `env` / `secret_command` / `missing` の安全ラベルだけを返し、rate limit は `rate_limited_retryable` として closeout に残す。
-4. `private_adapter_probe.py`: private adapter / private command の設定状態を確認。
-5. `read-current-visible` で 2-4 が未設定なら、ここで `blocked_need_chrome_visible_read_go` を返す。すでにユーザーが Chrome 可視読取を許可している場合だけ次へ進む。
-6. `chrome_visible_fallback_guard.py`: Chrome visible fallback の前に既存タブ棚卸しを評価し、既存対象タブ claim / 既存Discordタブ claim + target navigation / 既存Chromeウィンドウ内の新規タブ作成を決める。
-7. `read-current-visible` では Chrome 可視DOMからスレッド本文だけを抽出し、raw本文は private artifact / local store に保存する。ユーザーが「本文を出して」と求めた場合でも visible output には raw本文を貼らず、件数、coverage、保存先の safe label、未取得理由だけを返す。
-8. `full-capture` では明示された local file / source command、Discord Desktop cache、添付候補の保存まで進める。clipboard は明示時のみ。
-9. OCR / screenshot / vision は DCB 本文取得ルートから除外する。使う場合は DCB ではなく別 skill / 別 task として Type1 明示承認を取る。
-
-全文取得要求では、可視範囲の取得を待たせず foreground lane として即時保存し、同時に background lane を開始する。foreground lane の成功は provisional context に限り、background lane が最古端、最新watermark、添付、再走査、artifact照合を閉じるまで full を名乗らない。partial は background lane の正常終了状態ではなく、再開可能なcheckpointまたは明示的な停止理由を必ず持つ。
-
-route別の既定操作は次のとおり。DOM/APIを優先し、Computer Use、wheel、key入力は自動fallbackにしない。
-
-- in-app browser / Chrome extension: scoped message list のDOM読取とelement scrollを第一経路にする。DOM経路が使えない時は `paused_human_approval` とし、現在会話でのComputer Use承認後だけ scoped CUA scroll、wheel、PageUp/Home/Endへ進む。
-- REST: read-only paginationを履歴終端まで行い、開始時に固定した最新watermarkまで再取得する。
-- saved artifacts: raw、Markdown、ledger、manifestのmessage ID集合、順序digest、hashを照合する。
-- Accessibility: 明示承認済みの環境だけでscoped message listを操作し、対象外windowへkeyを送らない。
-
-`full-capture-gate` は少なくとも、対象/capture ID結合、evidence schemaと鮮度、最古端と最新watermark、2回以上の安定走査、gap/duplicate 0、raw/Markdown/ledgerのmessage ID集合と順序digest一致、artifact hash検証、添付inventoryの完了または不存在証明、添付ID集合/manifest schema一致、pending retry 0、外部action無効を要求する。本文理解・要約はfull capture成立後の別工程であり、理解未実施を取得欠落と混同しない。
-
-この順序から外れて別 repository や別 Discord bot workflow へ行った場合は、作業を止めて DCB スコープに戻す。
-
-## Codex chat title reflection
-
-Discord URL の内容確認、スレッド名確認、または「スレタイをチャットタイトルに反映」の依頼では、
-Codex chat/thread title 自体を更新対象にする。ファイル名、Discord 側タイトル、投稿タイトルではない。
-
-title evidence は次の順で扱う。
-
-1. 認証済み browser / trusted local capture から現在読める Discord visible title。
-2. 同一 URL / thread / channel と明確に対応する saved snapshot、posted-record、extract manifest、prior rollout record。
-3. 実 title が未取得の場合だけ `Discord channel ...` のような safe route label。
-
-実 title が分かっている場合は generic fallback label を残さない。title には verified-state suffix を付ける。
-
-- `｜Ingress確認済み・本文未取得`
-- `｜本文未完了・要追加読取`
-- `｜Review待ち・送信なし`
-
-suffix は intent ではなく確認済み状態を表す。title が fresh live read ではなく prior local record 由来の場合は、
-final status でその根拠を明示する。title に raw message text、participant names、token、webhook URL、
-browser profile path、private local path を入れない。
-
-## Runtime skill projection
-
-各 runtime 用 skill は `scripts/export_runtime_skills.py` で生成する。生成物は `dist/skills/<runtime>/SKILL.md` に置き、先頭に次の provenance を含める。
-
-- `ssot_repo`
-- `ssot_commit`
-- `manifest_version`
-- `manifest_checksum`
-- `contract_checksum`
-- `generated_at`
-
-生成物は手編集しない。変更は `capability/manifest.yaml` またはこの contract に入れ、再生成する。
-
-## Verification
-
-PR 前と運用 closeout では次を確認する。
-
-```bash
-python3 scripts/verify_ssot_projection.py --json
-python3 scripts/lint_ingest_route_policy.py --json
-python3 scripts/ops_check.py --gh
-```
-
-`verify_ssot_projection.py` は runtime skill の欠落、stale、provenance 不一致、private / raw data 混入を検出する。
-
-`lint_ingest_route_policy.py` は contract / runtime skill / local Claude skill に Playwright fallback 禁止の運用文が残っているかを検出する。
-
-各 runtime の local skill directory は、勝手に書き換えず read-only lint で同期状態を確認する。
-
-```bash
-python3 scripts/lint_runtime_skill_sync.py \
-  --target codex=/path/to/discord-context-bridge/SKILL.md \
-  --json
-```
-
-`lint_runtime_skill_sync.py` は target file を読み、`dist/skills/<runtime>/SKILL.md` と完全一致するか、`ssot_commit` / checksum / privacy pattern を確認する。更新が必要な場合でも、この script は書き込みを行わない。
+- route選択と状態: [`routes.md`](./routes.md)
+- 全文取得、ledger、lease、full receipt: [`capture-loop-operations.md`](./capture-loop-operations.md)
+- 返信前文脈gate: [`reply-context-routing.md`](./reply-context-routing.md)
+- Chrome能力、fill-only、送信停止: [`codex-chrome-extension-capability-inventory.md`](./codex-chrome-extension-capability-inventory.md)
+- snapshot / closeout分離: [`architecture-context-closeout.md`](./architecture-context-closeout.md)
+- CLI・schema・MCPの全参照: [`full-reference.md`](./full-reference.md)
 
 ## Stoplines
 
