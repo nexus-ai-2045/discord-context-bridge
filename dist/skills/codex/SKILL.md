@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 12001260c552e404a74077326823c50c287c2b22
+ssot_commit: ee7874e0b15d3d8613c34167475b1d8213886d01
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 971c0ae096a7c46450f6dc3340819e4caaa4057ded9ff17d732dd2e4589f3d0f
-contract_checksum: 06651abdbed0aa7e05392ef5ab0b22d094d56eee0bfae7e120d0e92c6de77e06
-generated_at: 2026-09-02T03:52:04+00:00
+manifest_checksum: f3b0a74a3c6948cf3e2f30489ec832dedb2f530e0afa3b71d8b4134b91dd2fcc
+contract_checksum: 784129c8128b55556fec5dd3ea4e95f37fee0ee38a260e9f6d3c64ad8034ebfb
+generated_at: 2026-09-02T04:13:02+00:00
 runtime_target: codex
 ---
 
@@ -33,7 +33,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、`SendKeys`、`AppActivate`、クリック、スクロール、スクショ取得、Chromeを勝手に開く・遷移する操作は、ユーザーの明示許可なしに実行しない。DCB の Chrome visible fallback は、正規 adapter / DOM取得口 / clipboard / local file が使える場合だけ進め、Windows UI 自動操作へ迂回しない。
 - `no_browser_before_dcb_preflight`: Discord URL、Discord画面、チャンネル用途、投稿先、投稿本文、返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache-first、coverage、route判定を通す。ブラウザ操作前は `--preflight-only` の `ready_for_browser_preflight`、対象タブ到達後は `ready_for_bridge` を別段階で確認し、visible fallbackが次の正規経路であることを確認するまで本文読取へ進まない。ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
 - `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
-- `no_human_sent_closeout_without_fresh_exact_snapshot_receipt`: `human_sent` closeout は、送信後に保存したexact message URLのsnapshot receiptを同じpacketへ結合する。receiptは保存済み、capture IDあり、対象key一致、観測時刻あり、15分以内のfreshnessを満たす場合だけ有効とし、欠落・別対象・未来時刻・staleはfail-closedで停止する。`not_sent`には適用しない。
+- `no_human_sent_closeout_without_fresh_exact_snapshot_receipt`: `human_sent` closeout は、送信後に保存したexact message URLのsnapshot receiptを同じpacketへ結合する。receiptの`capture_id`はcanonical snapshot ledgerで実在する一意なrecordへ解決し、caller申告値ではなくrecord本体のtarget key、`observed_at`、event hash、content hash、安全属性を照合する。`human_send_observed_at`を必須の送信観測下限とし、snapshotがそれより前、未来、15分超、別対象、改変済み、または未保存ならfail-closedで停止する。staging packetまたはdry-run reportを渡す正式フローでは両方を必須とし、同一correlation IDと同一route fingerprintを照合する。事後closeoutは`retrospective_snapshot_only`としてpre-send gate通過を主張しない。`not_sent`にはsnapshot・時刻・correlation条件を適用しない。
 - Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
 - Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。
@@ -256,7 +256,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `guide-reply`: 可視テキストと下書きから返信前ガイドを作る
 - `review-draft`: 下書きの文脈適合・トーン・不足前提を確認する
 - `auto-send-preflight`: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
-- `closeout-discord-send`: 人間送信後の保存済みexact-target fresh snapshot receiptを照合してmetadata-only記録を閉じ、learning_handoffを返す
+- `closeout-discord-send`: 人間送信後のreceipt capture IDをcanonical snapshot ledgerの実recordへ解決し、exact target・送信観測下限・freshness・operation bindingを照合してmetadata-only記録を閉じ、learning_handoffを返す
 
 ## Verification
 
