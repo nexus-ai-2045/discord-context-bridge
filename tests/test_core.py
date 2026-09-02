@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tomllib
@@ -75,6 +76,30 @@ SERVER_CONTEXT_FIXTURE = Path(__file__).parent / "fixtures" / "server_context.tx
 CHANNEL_CONTEXT_FIXTURE = Path(__file__).parent / "fixtures" / "channel_context.txt"
 THREAD_CONTEXT_FIXTURE = Path(__file__).parent / "fixtures" / "thread_context_rules.txt"
 ROOT = Path(__file__).resolve().parents[1]
+POST_SEND_URL = "https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678"
+
+
+def saved_snapshot_receipt(
+    url: str = POST_SEND_URL,
+    *,
+    observed_at: str | None = None,
+    capture_id: str = "a" * 16,
+) -> dict[str, object]:
+    observed = observed_at or datetime.now(timezone.utc).isoformat()
+    return {
+        "schema": "discord_saved_snapshot_receipt.v1",
+        "saved": True,
+        "capture_id": capture_id,
+        "target_key": target_key_for_url(url),
+        "observed_at": observed,
+        "freshness": {
+            "status": "recent",
+            "observed_at": observed,
+            "age_seconds": 0,
+            "max_age_seconds": 900,
+        },
+        "outbound_actions": "disabled",
+    }
 
 
 def load_bump_version_module():
@@ -1297,12 +1322,13 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="human_edited_and_reviewed",
         unread_check_status="none_unread",
         observed_message_id="423456789012345678",
-        observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+        observed_url=POST_SEND_URL,
     )
     serialized = json.dumps(closeout, ensure_ascii=False)
 
@@ -1336,15 +1362,94 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     completed = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="human_edited_and_reviewed",
         unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
         learning_handoff_status="completed",
     )
     assert completed["closeout_status"] == "closed"
     assert completed["recommended_next_state"] == "done"
     assert completed["learning_handoff"]["status"] == "completed"
+
+
+def test_human_sent_closeout_requires_saved_exact_target_fresh_snapshot_receipt(tmp_path):
+    saved = snapshot_visible_text(
+        text="member-a: post-send visible text stays private",
+        url=POST_SEND_URL,
+        path=tmp_path / "text-snapshots.ndjson",
+    )
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+        learning_handoff_status="completed",
+    )
+
+    assert closeout["closeout_status"] == "closed"
+    assert closeout["snapshot_receipt"]["verified"] is True
+    assert closeout["snapshot_receipt"]["target_binding"] == "exact_match"
+    assert closeout["snapshot_receipt"]["freshness"]["status"] == "recent"
+    assert closeout["snapshot_receipt"]["capture_id_output"] == "omitted"
+    assert "post-send visible text" not in json.dumps(closeout, ensure_ascii=False)
+
+
+def test_human_sent_closeout_blocks_without_saved_snapshot_receipt():
+    closeout = build_discord_post_send_closeout_packet(
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_receipt_missing" in closeout["blockers"]
+    assert closeout["recommended_next_state"] == "capture_fresh_post_send_snapshot"
+
+
+def test_human_sent_closeout_blocks_snapshot_receipt_for_different_target():
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved_snapshot_receipt(
+            "https://discord.com/channels/123456789012345678/223456789012345678/523456789012345678"
+        ),
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_target_mismatch" in closeout["blockers"]
+    assert closeout["snapshot_receipt"]["target_binding"] == "mismatch"
+
+
+def test_human_sent_closeout_recomputes_snapshot_freshness_and_blocks_stale_receipt():
+    observed_at = "2026-09-02T00:00:00+00:00"
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved_snapshot_receipt(observed_at=observed_at),
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+        closeout_observed_at="2026-09-02T00:15:01+00:00",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_stale" in closeout["blockers"]
+    assert closeout["snapshot_receipt"]["freshness"] == {
+        "status": "stale",
+        "age_seconds": 901,
+        "max_age_seconds": 900,
+    }
 
 
 def test_build_discord_post_send_closeout_packet_blocks_missing_human_observation():
@@ -1377,6 +1482,9 @@ def test_build_discord_post_send_closeout_packet_closes_not_sent_without_send_ob
     assert closeout["learning_handoff"]["required"] is False
     assert closeout["learning_handoff"]["status"] == "not_applicable"
     assert closeout["learning_handoff"]["route"] == "none"
+    assert closeout["snapshot_receipt"]["required"] is False
+    assert closeout["snapshot_receipt"]["target_binding"] == "not_applicable"
+    assert closeout["snapshot_receipt"]["freshness"]["status"] == "not_applicable"
 
 
 def test_build_discord_post_send_closeout_packet_blocks_not_sent_with_send_observation():
@@ -1439,12 +1547,13 @@ def test_build_discord_send_operation_status_summarizes_existing_logs():
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
         observed_message_id="423456789012345678",
-        observed_url="https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+        observed_url=POST_SEND_URL,
         learning_handoff_status="completed",
     )
 
@@ -3561,10 +3670,14 @@ def test_cli_auto_send_preflight_outputs_private_adapter_gate(tmp_path, capsys):
     assert "discord.com/channels" not in output
 
 
-def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
+def test_cli_closeout_discord_send_outputs_metadata_only_packet(tmp_path, capsys):
+    receipt_path = tmp_path / "snapshot-receipt.json"
+    receipt_path.write_text(json.dumps({"snapshot_receipt": saved_snapshot_receipt()}), encoding="utf-8")
     result = cli_main(
         [
             "closeout-discord-send",
+            "--snapshot-receipt",
+            str(receipt_path),
             "--human-sent-observed",
             "--human-reviewed",
             "--observed-text-status",
@@ -3574,7 +3687,7 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(capsys):
             "--observed-message-id",
             "423456789012345678",
             "--observed-url",
-            "https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+            POST_SEND_URL,
             "--json",
         ]
     )
@@ -3610,6 +3723,29 @@ def test_cli_closeout_discord_send_outputs_not_sent_packet(capsys):
     assert '"external_action_state": "not_sent"' in output
     assert '"recommended_next_state": "done"' in output
     assert '"human_send_not_observed"' not in output
+
+
+def test_cli_closeout_discord_send_blocks_human_sent_without_snapshot_receipt(capsys):
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--human-sent-observed",
+            "--human-reviewed",
+            "--observed-text-status",
+            "matches-copy-block",
+            "--unread-check-status",
+            "none-unread",
+            "--observed-url",
+            POST_SEND_URL,
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"closeout_status": "blocked"' in output
+    assert '"post_send_snapshot_receipt_missing"' in output
+    assert '"recommended_next_state": "capture_fresh_post_send_snapshot"' in output
 
 
 def test_cli_closeout_discord_send_blocks_unchecked_text(capsys):
@@ -3675,10 +3811,12 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
         learning_handoff_status="completed",
     )
     staging_path = tmp_path / "staging.json"
@@ -3715,10 +3853,12 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
 
 def test_cli_send_operation_status_closes_post_send_retrospective_without_claiming_pre_gates(tmp_path, capsys):
     closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
         learning_handoff_status="completed",
     )
     closeout_path = tmp_path / "closeout.json"
@@ -3777,10 +3917,12 @@ def test_cli_send_operation_status_closes_post_send_retrospective_even_with_vali
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
+        snapshot_receipt=saved_snapshot_receipt(),
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
         learning_handoff_status="completed",
     )
     staging_path = tmp_path / "staging.json"

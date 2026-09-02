@@ -146,15 +146,20 @@ reply UI / message box が一意に取れない時は `blocked` で停止しま�
 reply UI が 0 件または複数件の場合、通常 message box へ fallback しません。
 
 人間が最後の Discord 送信操作をした後は `closeout-discord-send` で
-metadata-only に閉じます。この closeout は `human_sent_observed`、
+metadata-only に閉じます。`human_sent` では、先にexact message URLを
+`snapshot-discord-url-text` または `bridge-intake` へ保存し、その出力の
+`discord_saved_snapshot_receipt.v1` をcloseoutへ渡します。この closeout はreceiptの
+capture ID、target key、観測時刻、15分以内のfreshnessを再計算して照合し、
+`human_sent_observed`、
 `human_reviewed`、`observed_text_status`、`unread_check_status`、
 `unread_signal_count` だけを状態として返し、本文、URL、snowflake は出力しません。
 本文または未読確認が `not-checked` のままでは `blocked` です。未読が残っている場合も
 `blocked` とし、先に未読を確認します。
 
-送信後本文を保存する必要がある場合は、先に `snapshot-discord-url-text` で
-private snapshot store へ保存し、その後に `closeout-discord-send` で
+送信後本文は先に `snapshot-discord-url-text` でprivate snapshot store へ保存し、
+そのreceiptを渡した後に `closeout-discord-send` で
 metadata-only の完了状態だけを閉じます。snapshot 保存と closeout を同じ操作に混ぜません。
+`not_sent` は従来どおりsnapshot receipt不要です。
 
 ## やらないこと
 

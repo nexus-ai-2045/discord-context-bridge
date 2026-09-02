@@ -265,6 +265,7 @@ def build_server(
     def closeout_discord_send_after_human_action(
         staging_packet: dict[str, Any] | None = None,
         dry_run_report: dict[str, Any] | None = None,
+        snapshot_receipt: dict[str, Any] | None = None,
         external_action_state: str = "human_sent",
         human_sent_observed: bool = False,
         human_reviewed: bool = False,
@@ -279,6 +280,7 @@ def build_server(
         return build_discord_post_send_closeout_packet(
             staging_packet=staging_packet,
             dry_run_report=dry_run_report,
+            snapshot_receipt=snapshot_receipt,
             external_action_state=external_action_state,
             human_sent_observed=human_sent_observed,
             human_reviewed=human_reviewed,

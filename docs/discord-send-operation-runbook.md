@@ -14,13 +14,14 @@ flowchart TD
   fill --> pdca["send-pdca-preflightで対象/本文/添付/route_failureを確認"]
   pdca --> stop["送信ボタン手前で停止"]
   stop --> human["人間がテスト用チャンネルで送信判断"]
-  human --> closeout["closeout-discord-sendで送信後metadata確認"]
+  human --> snapshot["exact message URLをsnapshot-discord-url-textで保存"]
+  snapshot --> closeout["receipt付きcloseout-discord-sendで送信後metadata確認"]
   closeout --> status["send-operation-statusでチェック表を吸い上げ"]
   status --> prod["本番送信手順へ進むか判断"]
 
   pdca --> auto_preflight["任意: auto-send-preflight"]
   auto_preflight --> adapter["private adapter が一回送信"]
-  adapter --> closeout
+  adapter --> snapshot
 
   stage -. "public coreでは禁止" .-> auto_send["自動送信 / Enter送信 / 送信ボタンclick"]
   dry -. "禁止" .-> reaction["reaction / edit / delete"]
@@ -64,6 +65,8 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 ### closeout 出力
 
 - closeout は DCB の metadata-only 状態として残す。
+- `human_sent` は、送信後のexact message URLを保存した `discord_saved_snapshot_receipt.v1` が必須。capture ID、target key、観測時刻、15分以内のfreshnessが一致しない場合はblockedにする。
+- `not_sent` はsnapshot receipt不要で、従来どおり送信なしとして閉じる。
 - 外部 action 状態は `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` のどれかに分ける。
 - evidence がない場合は `not_sent` / `blocked` / `unknown` のどれかで閉じる。
 
@@ -170,13 +173,27 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/auto-send-preflight.json
 ```
 
-7. 送信後closeoutを取る
+7. 送信後のexact target snapshotを保存する
+
+送信済みmessageのpermalinkを対象URLにし、可視本文をprivate snapshotへ保存します。
+JSON出力は本文やURLを返さず、closeout用のcapture ID・target key・観測時刻・freshness receiptを含みます。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  snapshot-discord-url-text \
+  --url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --input <post-send-visible-text-file> \
+  --json > .local/discord-context-bridge/post-send-snapshot.json
+```
+
+8. receipt付き送信後closeoutを取る
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
   closeout-discord-send \
   --staging-packet .local/discord-context-bridge/staging-packet.json \
   --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --snapshot-receipt .local/discord-context-bridge/post-send-snapshot.json \
   --human-sent-observed \
   --human-reviewed \
   --observed-text-status human-edited-and-reviewed \
@@ -185,7 +202,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/send-closeout.json
 ```
 
-8. 既存ログから運転表を吸い上げる
+9. 既存ログから運転表を吸い上げる
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -230,7 +247,7 @@ closeout を順に通します。
 | 送信本文のレビュー | `stage-discord-send` が `ready_to_fill` | review-draft / understanding gateを通す |
 | dry-run / preview | `verify-chrome-fill-dry-run` が `ready_to_fill` | URL、UI候補数、snapshot、copy block一致を直す |
 | 送信直前PDCA | `send-pdca-preflight` が `ok_to_send=true` | 対象、本文、添付プレビュー、route_failureを直す |
-| テスト用チャンネルで実送信 | 人間送信後のcloseoutが `closed` | テストチャンネルで人間が送信し、観測する |
+| テスト用チャンネルで実送信 | 人間送信後のexact-target fresh snapshot receipt付きcloseoutが `closed` | テストチャンネルで人間が送信し、message permalinkを保存してcloseoutする |
 | 送信ログ/失敗時回復確認 | closeout、未読0、回復手順レビュー済み | 修正投稿、停止、人間確認の手順を確認する |
 | 本番送信手順の固定化 | runbookをレビュー済みにする | 本番前チェックリストを更新する |
 
@@ -247,7 +264,7 @@ stateDiagram-v2
   DryRunReady --> PdcaBlocked: 対象/本文/添付/route_failure未解決
   DryRunReady --> PdcaReady: send-pdca-preflight ok_to_send
   PdcaReady --> HumanSend: 下書き入力後に人間が送信判断
-  HumanSend --> CloseoutBlocked: 未観測 / 未レビュー / 未読あり
+  HumanSend --> CloseoutBlocked: snapshot receipt欠落・別対象・stale / 未観測 / 未レビュー / 未読あり
   HumanSend --> CloseoutClosed: closeout closed
   CloseoutClosed --> OperationReady: rollback-plan + production-runbook確認済み
   OperationReady --> [*]

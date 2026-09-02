@@ -21,6 +21,8 @@ DEFAULT_SHARED_RAW_SNAPSHOT_ROOT = Path.home() / "Projects/Documents/discord/raw
 DEFAULT_REST_BACKFILL_RAW_OUTPUT = Path(".local/discord-context-bridge/inbox/raw/rest-backfill.ndjson")
 DEFAULT_REST_BACKFILL_MANIFEST = Path(".local/discord-context-bridge/inbox/manifests/rest-backfill.manifest.json")
 DEFAULT_LANGUAGE = "ja"
+POST_SEND_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
+SAVED_SNAPSHOT_CAPTURE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
 TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
 COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
 # Discord UI が出す日時区切りの表記。英語 UI と日本語 UI (DEFAULT_LANGUAGE = "ja") の両方を持つ。
@@ -714,6 +716,7 @@ def build_bridge_intake(
         "raw_text_returned": False,
         "path_output": "omitted",
         "outbound_actions": "disabled",
+        "snapshot_receipt": {},
     }
 
     if content:
@@ -734,6 +737,7 @@ def build_bridge_intake(
             "raw_text_returned": False,
             "path_output": "omitted",
             "outbound_actions": "disabled",
+            "snapshot_receipt": dict(snapshot_payload.get("snapshot_receipt") or {}),
         }
         key = str(snapshot_payload.get("target_key") or key)
 
@@ -2206,6 +2210,22 @@ def snapshot_visible_text(
     snapshot["event_hash"] = canonical_event_hash(snapshot)
     append_text_snapshot(snapshot, path)
     snapshot_count = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
+    snapshot_receipt = {
+        "schema": "discord_saved_snapshot_receipt.v1",
+        "saved": True,
+        "capture_id": snapshot["event_id"],
+        "target_key": target_key,
+        "observed_at": captured_at,
+        "freshness": {
+            "status": "recent",
+            "observed_at": captured_at,
+            "age_seconds": 0,
+            "max_age_seconds": POST_SEND_SNAPSHOT_MAX_AGE_SECONDS,
+        },
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
     return {
         "language": DEFAULT_LANGUAGE,
         "message": "Discord 可視テキスト snapshot observation を追記しました。",
@@ -2225,6 +2245,7 @@ def snapshot_visible_text(
         "message_count": len(message_list),
         "context_ready": True,
         "visible_text_saved": True,
+        "snapshot_receipt": snapshot_receipt,
     }
 
 
@@ -4039,6 +4060,7 @@ def build_discord_post_send_closeout_packet(
     *,
     staging_packet: dict[str, Any] | None = None,
     dry_run_report: dict[str, Any] | None = None,
+    snapshot_receipt: dict[str, Any] | None = None,
     external_action_state: str = "human_sent",
     human_sent_observed: bool = False,
     human_reviewed: bool = False,
@@ -4049,6 +4071,7 @@ def build_discord_post_send_closeout_packet(
     observed_url: str = "",
     note_label: str = "",
     learning_handoff_status: str = "",
+    closeout_observed_at: str = "",
 ) -> dict[str, Any]:
     """Build a metadata-only closeout for sent or intentionally not-sent flows.
 
@@ -4078,6 +4101,34 @@ def build_discord_post_send_closeout_packet(
     }
     safe_unread_signal_count = max(0, int(unread_signal_count))
     blockers: list[str] = []
+    snapshot_receipt_container = snapshot_receipt or {}
+    snapshot_section = snapshot_receipt_container.get("snapshot")
+    nested_snapshot_receipt = (
+        snapshot_section.get("snapshot_receipt") if isinstance(snapshot_section, dict) else None
+    )
+    receipt_candidate = (
+        snapshot_receipt_container.get("snapshot_receipt")
+        or nested_snapshot_receipt
+        or snapshot_receipt_container
+    )
+    normalized_snapshot_receipt = dict(receipt_candidate) if isinstance(receipt_candidate, dict) else {}
+    snapshot_capture_id = str(normalized_snapshot_receipt.get("capture_id") or "").strip()
+    snapshot_target_key = str(normalized_snapshot_receipt.get("target_key") or "").strip()
+    snapshot_observed_at = str(normalized_snapshot_receipt.get("observed_at") or "").strip()
+    snapshot_observed_time = parse_snapshot_timestamp(snapshot_observed_at)
+    closeout_time = parse_snapshot_timestamp(closeout_observed_at) or datetime.now(timezone.utc)
+    snapshot_age_seconds: int | None = None
+    if snapshot_observed_time is not None:
+        snapshot_age_seconds = int((closeout_time - snapshot_observed_time).total_seconds())
+    observed_target_valid = bool(DISCORD_MESSAGE_URL_RE.fullmatch(observed_url.strip()))
+    snapshot_target_match = bool(
+        observed_target_valid
+        and snapshot_target_key
+        and snapshot_target_key == target_key_for_url(observed_url)
+    )
+    claimed_freshness_payload = normalized_snapshot_receipt.get("freshness")
+    claimed_freshness = dict(claimed_freshness_payload) if isinstance(claimed_freshness_payload, dict) else {}
+    snapshot_receipt_blockers: list[str] = []
     if normalized_external_action_state not in allowed_external_action_states:
         blockers.append("invalid_external_action_state")
     if staging_packet is not None:
@@ -4094,6 +4145,36 @@ def build_discord_post_send_closeout_packet(
         ):
             blockers.append("dry_run_not_ready")
     if normalized_external_action_state == "human_sent":
+        if not normalized_snapshot_receipt:
+            snapshot_receipt_blockers.append("post_send_snapshot_receipt_missing")
+        else:
+            if normalized_snapshot_receipt.get("schema") != "discord_saved_snapshot_receipt.v1":
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_invalid")
+            if normalized_snapshot_receipt.get("saved") is not True:
+                snapshot_receipt_blockers.append("post_send_snapshot_not_saved")
+            if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(snapshot_capture_id):
+                snapshot_receipt_blockers.append("post_send_snapshot_capture_id_missing")
+            if not observed_url.strip() or not snapshot_target_key:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_missing")
+            elif not observed_target_valid:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_invalid")
+            elif not snapshot_target_match:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_mismatch")
+            if snapshot_observed_time is None:
+                snapshot_receipt_blockers.append("post_send_snapshot_observed_at_invalid")
+            elif snapshot_age_seconds is not None and snapshot_age_seconds < 0:
+                snapshot_receipt_blockers.append("post_send_snapshot_observed_in_future")
+            elif snapshot_age_seconds is not None and snapshot_age_seconds > POST_SEND_SNAPSHOT_MAX_AGE_SECONDS:
+                snapshot_receipt_blockers.append("post_send_snapshot_stale")
+            if (
+                claimed_freshness.get("status") != "recent"
+                or claimed_freshness.get("observed_at") != snapshot_observed_at
+                or claimed_freshness.get("max_age_seconds") != POST_SEND_SNAPSHOT_MAX_AGE_SECONDS
+            ):
+                snapshot_receipt_blockers.append("post_send_snapshot_freshness_receipt_invalid")
+            if normalized_snapshot_receipt.get("outbound_actions") != "disabled":
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_unsafe")
+        blockers.extend(snapshot_receipt_blockers)
         if not human_sent_observed:
             blockers.append("human_send_not_observed")
         if not human_reviewed:
@@ -4133,6 +4214,8 @@ def build_discord_post_send_closeout_packet(
         recommended_next_state = "check_unread_items"
     elif "unread_items_remaining" in blockers:
         recommended_next_state = "review_unread_items"
+    elif snapshot_receipt_blockers:
+        recommended_next_state = "capture_fresh_post_send_snapshot"
     else:
         recommended_next_state = "fix_blockers"
     learning_handoff_required = closeout_status == "closed"
@@ -4188,6 +4271,43 @@ def build_discord_post_send_closeout_packet(
         "unread_signal_count": safe_unread_signal_count,
         "observed_message_id_output": "omitted" if observed_message_id else "not_provided",
         "observed_url_output": "omitted" if observed_url else "not_provided",
+        "snapshot_receipt": {
+            "schema": "discord_post_send_snapshot_binding.v1",
+            "required": normalized_external_action_state == "human_sent",
+            "verified": normalized_external_action_state == "human_sent" and not snapshot_receipt_blockers,
+            "saved": normalized_snapshot_receipt.get("saved") is True
+            if normalized_external_action_state == "human_sent"
+            else False,
+            "capture_id_output": "omitted" if snapshot_capture_id else "not_provided",
+            "target_binding": (
+                "exact_match"
+                if snapshot_target_match
+                else "mismatch"
+                if observed_url.strip() and snapshot_target_key
+                else "not_applicable"
+                if normalized_external_action_state == "not_sent"
+                else "missing"
+            ),
+            "observed_at": snapshot_observed_at if snapshot_observed_time is not None else "",
+            "freshness": {
+                "status": (
+                    "not_applicable"
+                    if normalized_external_action_state == "not_sent"
+                    else "invalid"
+                    if snapshot_observed_time is None or snapshot_age_seconds is None or snapshot_age_seconds < 0
+                    else "recent"
+                    if snapshot_age_seconds <= POST_SEND_SNAPSHOT_MAX_AGE_SECONDS
+                    else "stale"
+                ),
+                "age_seconds": snapshot_age_seconds
+                if snapshot_age_seconds is not None and snapshot_age_seconds >= 0
+                else None,
+                "max_age_seconds": POST_SEND_SNAPSHOT_MAX_AGE_SECONDS,
+            },
+            "raw_text_output": "omitted",
+            "target_url_output": "omitted",
+            "outbound_actions": "disabled",
+        },
         "note_label_output": redact_artifact_text(note_label) if note_label else "",
         "staging_packet_status": str(staging_packet.get("staging_status") or "provided")
         if staging_packet is not None
