@@ -515,7 +515,8 @@ metadata-only closeout を返せます。`observed-text-status` は、copy block
 `human-edited-and-reviewed` を指定します。送信後に未読が残っていないことを確認した時だけ
 `--unread-check-status none-unread` を指定します。`human_sent`では、送信済みmessageの
 exact URLを先にcanonical snapshot ledgerへ保存し、返されたreceiptと同じledgerを
-`--snapshot-receipt` / `--snapshot-store`でcloseoutへ渡します。
+`--snapshot-receipt`でcloseoutへ渡します。closeoutのledgerは設定済みshared snapshot
+root配下へ内部固定され、per-call pathでは差し替えられません。
 `--human-send-observed-at`は人間が送信済みを観測したtimezone付きISO 8601時刻で、
 snapshotの`observed_at`はこの下限以後である必要があります。
 
@@ -523,7 +524,6 @@ snapshotの`observed_at`はこの下限以後である必要があります。
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
   closeout-discord-send \
   --snapshot-receipt .local/discord-context-bridge/post-send-snapshot.json \
-  --snapshot-store "<canonical-snapshot-ledger>" \
   --human-sent-observed \
   --human-send-observed-at "<timezone付きISO-8601送信観測時刻>" \
   --human-reviewed \
@@ -1072,7 +1072,7 @@ MCP tool は 18個です。
 - `review_reply_before_send`: 送信前の返信 draft を直近文脈と照合します。
 - `stage_discord_send_before_human_action`: reply / mention の下書き入力準備 packet を返します。実送信はしません。
 - `verify_chrome_extension_fill_only_before_action`: Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。
-- `closeout_discord_send_after_human_action`: 人間送信後の状態と未読確認を metadata-only で閉じます。`snapshot_store`のcanonical ledgerでreceiptの`capture_id`を実recordへ解決し、`human_send_observed_at`以後のexact-target fresh snapshotだけを受理します。本文、URL、snowflake は返しません。
+- `closeout_discord_send_after_human_action`: 人間送信後の状態と未読確認を metadata-only で閉じます。server startup時に固定したtrusted `snapshot_store`のcanonical ledgerでreceiptの`capture_id`を実recordへ解決し、timezone付き`human_send_observed_at`以後のexact-target fresh snapshotだけを受理します。tool callごとのledger pathは受け取りません。本文、URL、snowflake は返しません。
 - `guide_reply_from_visible_text`: Discord の可視テキストと返信 draft から会話ガイドを返します。
 - `get_context_passport_from_visible_text`: Discord の可視テキストからスレッド文脈パスポートを返します。
 - `chew_discord_context_from_visible_text`: Discord の可視テキストを咀嚼し、raw 本文なしの理解メモを返します。
@@ -1093,7 +1093,9 @@ public core が直接実送信する tool はありません。`stage_discord_se
 `human_send_observed_at`、`human_reviewed`、`observed_text_status`、
 `unread_check_status`を閉じます。receiptのcaller申告値だけを信用せず、`capture_id`から
 canonical `snapshot_store`のactual recordを引き、target key、`observed_at`、event hash、
-content hash、安全属性を再検証します。staging / dry-runを渡す場合は両方の同一operation
+content hash、安全属性を再検証します。CLIは設定済みshared snapshot root、MCPはserver
+startup時のtrusted `snapshot_store`へ固定し、per-callの任意pathを信頼元にしません。
+staging / dry-runを渡す場合は両方の同一operation
 correlationと送信先routeも一致が必要です。両方を省く事後closeoutは
 `retrospective_snapshot_only`であり、pre-send gate通過を主張しません。本文、URL、
 snowflake は返しません。`not_sent`にはこれらのsnapshot・時刻・correlation条件を適用しません。

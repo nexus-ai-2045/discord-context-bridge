@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
+from .local_config import default_cross_device_snapshot_store
 from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_STORE,
@@ -69,6 +70,8 @@ def build_server(
     port: int = 8000,
     http_path: str = "/mcp",
 ) -> Any:
+    # This is trusted server-startup configuration, never a per-tool-call argument.
+    trusted_snapshot_store = snapshot_store or default_cross_device_snapshot_store()
     runtime = _load_mcp_runtime()
     Server = runtime.server_type
     if runtime.api_version == 2:
@@ -282,7 +285,7 @@ def build_server(
             staging_packet=staging_packet,
             dry_run_report=dry_run_report,
             snapshot_receipt=snapshot_receipt,
-            snapshot_store=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            _trusted_snapshot_store_override=trusted_snapshot_store,
             external_action_state=external_action_state,
             human_sent_observed=human_sent_observed,
             human_send_observed_at=human_send_observed_at,
@@ -431,7 +434,7 @@ def build_server(
             url=url,
             title=title,
             source="discord_url_visible_text",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
 
     @server.tool()
@@ -449,7 +452,7 @@ def build_server(
             url=url,
             title=title,
             source="chrome_extension_dom",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
         return {
             **snapshot,
@@ -480,7 +483,7 @@ def build_server(
             url=url,
             title=title,
             source="discord_url_visible_text",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
         passport = context_passport_from_text(
             content,

@@ -154,7 +154,7 @@ blocked reason は次を含みます。
 
 `closeout_status=closed` になる条件:
 
-- receiptの`capture_id`が`snapshot_store`のcanonical snapshot ledgerで一意なactual recordへ解決できる
+- receiptの`capture_id`が設定済みtrusted `snapshot_store`のcanonical snapshot ledgerで一意なactual recordへ解決できる。CLI/MCP tool callごとの任意pathでは差し替えられない
 - actual recordのexact target、`observed_at`、event hash、content hash、安全属性が整合する
 - `human_send_observed_at`がtimezone付きISO 8601で、snapshot `observed_at`がその時刻以後かつcloseoutから15分以内
 - staging packetまたはdry-run reportを渡す正式フローでは両方がreadyで、複写された同じcorrelation IDとroute fingerprintが送信済みmessage routeへ一致する
@@ -195,6 +195,9 @@ stageからdry-runへ複写されたcorrelation IDとroute fingerprintを検証�
 exact message URLのactual recordへ結合します。stage / dry-runを両方省く事後closeoutは
 `operation_binding.status=retrospective_snapshot_only`で、pre-send gate通過を主張しません。
 `not_sent`はsnapshot receipt、`human_send_observed_at`、operation correlationを要求しません。
+closeout CLIは設定済みshared snapshot root、MCPはserver startup時のtrusted
+`snapshot_store`だけを参照します。per-call arbitrary storeを自己整合receiptと一緒に渡しても
+信頼を確立できません。
 
 ## Socket checks
 

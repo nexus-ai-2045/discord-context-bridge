@@ -111,11 +111,12 @@ def persist_post_send_snapshot(
     *,
     observed_at: str | None = None,
     text: str = "member-a: post-send visible text stays private",
+    store: Path | None = None,
 ) -> tuple[dict[str, object], Path, str]:
-    store = tmp_path / "text-snapshots.ndjson"
-    saved = snapshot_visible_text(text=text, url=url, path=store)
+    snapshot_store = store or tmp_path / "text-snapshots.ndjson"
+    saved = snapshot_visible_text(text=text, url=url, path=snapshot_store)
     if observed_at is not None:
-        record = load_text_snapshots(store)[-1]
+        record = load_text_snapshots(snapshot_store)[-1]
         record["captured_at"] = observed_at
         record["observed_at"] = observed_at
         record["ingested_at"] = observed_at
@@ -128,7 +129,7 @@ def persist_post_send_snapshot(
             stream_sequence=int(record["stream_sequence"]),
         )
         record["event_hash"] = core_module.canonical_event_hash(record)
-        store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        snapshot_store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
         receipt = dict(saved["snapshot_receipt"])
         receipt.update(
             {
@@ -146,7 +147,7 @@ def persist_post_send_snapshot(
         )
         saved["snapshot_receipt"] = receipt
     observed = str(saved["snapshot_receipt"]["observed_at"])
-    return saved, store, observed
+    return saved, snapshot_store, observed
 
 
 def timestamp_before(value: str, seconds: int = 1) -> str:
@@ -1377,7 +1378,7 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
         staging_packet=packet,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=human_send_observed_at,
         human_reviewed=True,
@@ -1419,7 +1420,7 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
         staging_packet=packet,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=human_send_observed_at,
         human_reviewed=True,
@@ -1438,7 +1439,7 @@ def test_human_sent_closeout_requires_saved_exact_target_fresh_snapshot_receipt(
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1475,7 +1476,7 @@ def test_human_sent_closeout_blocks_snapshot_receipt_for_different_target(tmp_pa
     saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, other_url)
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1494,7 +1495,7 @@ def test_human_sent_closeout_recomputes_snapshot_freshness_and_blocks_stale_rece
     saved, snapshot_store, _ = persist_post_send_snapshot(tmp_path, observed_at=observed_at)
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at="2026-09-01T23:59:59+00:00",
         human_reviewed=True,
@@ -1517,7 +1518,7 @@ def test_human_sent_closeout_rejects_forged_nonexistent_capture_receipt(tmp_path
     observed_at = datetime.now(timezone.utc).isoformat()
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=forged_saved_snapshot_receipt(observed_at=observed_at),
-        snapshot_store=tmp_path / "missing-ledger.ndjson",
+        _trusted_snapshot_store_override=tmp_path / "missing-ledger.ndjson",
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(observed_at),
         human_reviewed=True,
@@ -1537,7 +1538,7 @@ def test_human_sent_closeout_rejects_forged_fields_for_existing_capture(tmp_path
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1558,7 +1559,7 @@ def test_human_sent_closeout_rejects_tampered_saved_record_hashes(tmp_path):
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1583,7 +1584,7 @@ def test_human_sent_closeout_rejects_forged_saved_capture_identity(tmp_path):
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1601,7 +1602,7 @@ def test_human_sent_closeout_requires_send_observation_time(tmp_path):
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_reviewed=True,
         observed_text_status="matches_copy_block",
@@ -1613,6 +1614,29 @@ def test_human_sent_closeout_requires_send_observation_time(tmp_path):
     assert "human_send_observed_at_missing_or_invalid" in closeout["blockers"]
 
 
+def test_human_sent_closeout_rejects_timezone_naive_send_observation_time(tmp_path):
+    saved, snapshot_store, _ = persist_post_send_snapshot(
+        tmp_path,
+        observed_at="2026-09-02T00:00:01+00:00",
+    )
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        _trusted_snapshot_store_override=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at="2026-09-02T00:00:00",
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+        closeout_observed_at="2026-09-02T00:00:02+00:00",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "human_send_observed_at_missing_or_invalid" in closeout["blockers"]
+    assert closeout["human_send_observed_at"] == ""
+
+
 def test_human_sent_closeout_rejects_snapshot_observed_before_send(tmp_path):
     saved, snapshot_store, _ = persist_post_send_snapshot(
         tmp_path,
@@ -1620,7 +1644,7 @@ def test_human_sent_closeout_rejects_snapshot_observed_before_send(tmp_path):
     )
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at="2026-09-02T00:00:01+00:00",
         human_reviewed=True,
@@ -1641,7 +1665,7 @@ def test_human_sent_closeout_rejects_future_snapshot(tmp_path):
     )
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at="2026-09-02T00:00:01+00:00",
         human_reviewed=True,
@@ -1665,7 +1689,7 @@ def test_human_sent_closeout_rejects_unsafe_saved_record(tmp_path):
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1703,7 +1727,7 @@ def test_human_sent_closeout_rejects_mismatched_pre_send_correlation(tmp_path):
         staging_packet=staging,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1743,7 +1767,7 @@ def test_human_sent_closeout_rejects_jointly_forged_pre_send_correlation(tmp_pat
         staging_packet=staging,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1780,7 +1804,7 @@ def test_human_sent_closeout_rejects_pre_send_target_route_mismatch(tmp_path):
         staging_packet=staging,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -1892,7 +1916,7 @@ def test_build_discord_send_operation_status_summarizes_existing_logs(tmp_path):
         staging_packet=packet,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -4016,8 +4040,11 @@ def test_cli_auto_send_preflight_outputs_private_adapter_gate(tmp_path, capsys):
     assert "discord.com/channels" not in output
 
 
-def test_cli_closeout_discord_send_outputs_metadata_only_packet(tmp_path, capsys):
-    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+def test_cli_closeout_discord_send_outputs_metadata_only_packet(monkeypatch, tmp_path, capsys):
+    shared_root = tmp_path / "trusted-shared-root"
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+    canonical_store = shared_root / ".dcb" / "text-snapshots.ndjson"
+    saved, _, snapshot_observed_at = persist_post_send_snapshot(tmp_path, store=canonical_store)
     receipt_path = tmp_path / "snapshot-receipt.json"
     receipt_path.write_text(json.dumps(saved), encoding="utf-8")
     result = cli_main(
@@ -4025,8 +4052,6 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(tmp_path, capsys
             "closeout-discord-send",
             "--snapshot-receipt",
             str(receipt_path),
-            "--snapshot-store",
-            str(snapshot_store),
             "--human-sent-observed",
             "--human-send-observed-at",
             timestamp_before(snapshot_observed_at),
@@ -4053,6 +4078,46 @@ def test_cli_closeout_discord_send_outputs_metadata_only_packet(tmp_path, capsys
     assert '"text_returned": false' in output
     assert "423456789012345678" not in output
     assert "discord.com/channels" not in output
+
+
+def test_cli_closeout_rejects_arbitrary_self_consistent_snapshot_store(monkeypatch, tmp_path, capsys):
+    shared_root = tmp_path / "trusted-shared-root"
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+    saved, arbitrary_store, snapshot_observed_at = persist_post_send_snapshot(
+        tmp_path,
+        store=tmp_path / "caller-selected" / "text-snapshots.ndjson",
+    )
+    receipt_path = tmp_path / "forged-receipt.json"
+    receipt_path.write_text(json.dumps(saved), encoding="utf-8")
+
+    result = cli_main(
+        [
+            "closeout-discord-send",
+            "--snapshot-receipt",
+            str(receipt_path),
+            "--human-sent-observed",
+            "--human-send-observed-at",
+            timestamp_before(snapshot_observed_at),
+            "--human-reviewed",
+            "--observed-text-status",
+            "matches-copy-block",
+            "--unread-check-status",
+            "none-unread",
+            "--observed-url",
+            POST_SEND_URL,
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 2
+    assert '"post_send_snapshot_capture_not_found"' in output
+    assert str(arbitrary_store) not in output
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(
+            ["closeout-discord-send", "--snapshot-store", str(arbitrary_store)]
+        )
+    assert exc_info.value.code == 2
 
 
 def test_cli_closeout_discord_send_outputs_not_sent_packet(capsys):
@@ -4164,7 +4229,7 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
         staging_packet=packet,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -4209,7 +4274,7 @@ def test_cli_send_operation_status_closes_post_send_retrospective_without_claimi
     saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
@@ -4276,7 +4341,7 @@ def test_cli_send_operation_status_closes_post_send_retrospective_even_with_vali
         staging_packet=packet,
         dry_run_report=dry_run,
         snapshot_receipt=saved,
-        snapshot_store=snapshot_store,
+        _trusted_snapshot_store_override=snapshot_store,
         human_sent_observed=True,
         human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,

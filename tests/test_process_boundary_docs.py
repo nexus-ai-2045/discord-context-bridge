@@ -135,12 +135,13 @@ def test_post_send_closeout_docs_require_canonical_freshness_binding():
             "human_send_observed_at",
             "event hash",
             "content hash",
+            "per-call path",
             "retrospective_snapshot_only",
         ],
         "docs/discord-send-operation-runbook.md": [
-            "--snapshot-store",
             "--human-send-observed-at",
-            "canonical snapshot ledger",
+            "trusted canonical ledger",
+            "per-call ledger path",
             "correlation ID",
             "retrospective_snapshot_only",
         ],
@@ -149,6 +150,7 @@ def test_post_send_closeout_docs_require_canonical_freshness_binding():
             "human_send_observed_at",
             "capture_id",
             "actual record",
+            "per-call path",
             "retrospective_snapshot_only",
         ],
         "docs/codex-chrome-extension-capability-inventory.md": [
@@ -156,6 +158,7 @@ def test_post_send_closeout_docs_require_canonical_freshness_binding():
             "human_send_observed_at",
             "capture_id",
             "actual record",
+            "per-call arbitrary store",
             "retrospective_snapshot_only",
         ],
     }

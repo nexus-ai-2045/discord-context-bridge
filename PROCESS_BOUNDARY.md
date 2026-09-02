@@ -151,6 +151,8 @@ metadata-only に閉じます。`human_sent` では、先にexact message URLを
 `discord_saved_snapshot_receipt.v1` をcloseoutへ渡します。この closeout はreceiptの
 capture IDをcanonical snapshot ledgerで解決し、caller申告値ではなく実recordの
 target key、観測時刻、event hash、content hash、安全属性を照合します。
+closeoutが信頼するledgerは設定済みshared snapshot root配下へ固定し、CLI/MCP toolの
+per-call pathで差し替えません。MCPのpath設定はserver startup時だけです。
 `human_send_observed_at`を送信観測の下限として、snapshotがそれより前、未来、15分超、
 別対象、改変済み、または未保存ならfail-closedで停止します。正式フローでstaging packetか
 dry-run reportを渡す場合は両方を必須とし、同じcorrelation IDとroute fingerprintを照合します。

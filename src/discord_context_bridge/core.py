@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .full_capture import build_capture_route_policy
+from .local_config import default_cross_device_snapshot_store
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
@@ -169,6 +170,25 @@ def parse_snapshot_timestamp(value: Any) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_timezone_aware_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO timestamp only when the caller supplied an explicit timezone."""
+
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
     return parsed.astimezone(timezone.utc)
 
 
@@ -4188,7 +4208,7 @@ def build_discord_post_send_closeout_packet(
     staging_packet: dict[str, Any] | None = None,
     dry_run_report: dict[str, Any] | None = None,
     snapshot_receipt: dict[str, Any] | None = None,
-    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    _trusted_snapshot_store_override: Path | None = None,
     external_action_state: str = "human_sent",
     human_sent_observed: bool = False,
     human_send_observed_at: str = "",
@@ -4242,14 +4262,17 @@ def build_discord_post_send_closeout_packet(
     )
     normalized_snapshot_receipt = dict(receipt_candidate) if isinstance(receipt_candidate, dict) else {}
     snapshot_capture_id = str(normalized_snapshot_receipt.get("capture_id") or "").strip()
+    # Operational CLI/MCP callers resolve this from the configured shared store.
+    # The override is intentionally private and exists only for internal/test isolation.
+    trusted_snapshot_store = _trusted_snapshot_store_override or default_cross_device_snapshot_store()
     snapshot_record, snapshot_record_blockers = _resolve_saved_post_send_snapshot(
-        snapshot_store,
+        trusted_snapshot_store,
         snapshot_capture_id,
     ) if normalized_external_action_state == "human_sent" else ({}, [])
     snapshot_target_key = str(snapshot_record.get("target_key") or "").strip()
     snapshot_observed_at = str(snapshot_record.get("observed_at") or "").strip()
     snapshot_observed_time = parse_snapshot_timestamp(snapshot_observed_at)
-    human_send_observed_time = parse_snapshot_timestamp(human_send_observed_at)
+    human_send_observed_time = _parse_timezone_aware_timestamp(human_send_observed_at)
     closeout_time = parse_snapshot_timestamp(closeout_observed_at) or datetime.now(timezone.utc)
     snapshot_age_seconds: int | None = None
     if snapshot_observed_time is not None:

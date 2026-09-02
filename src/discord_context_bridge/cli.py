@@ -687,12 +687,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="human-sent時に必須: snapshot-discord-url-text / bridge-intake が保存後に返した JSON receipt",
     )
     closeout_send.add_argument(
-        "--snapshot-store",
-        type=Path,
-        default=None,
-        help="receiptのcapture IDを照合するcanonical snapshot ledger",
-    )
-    closeout_send.add_argument(
         "--external-action-state",
         choices=["human-sent", "not-sent"],
         default="human-sent",
@@ -2038,7 +2032,6 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         staging_packet=staging_packet,
         dry_run_report=dry_run_report,
         snapshot_receipt=snapshot_receipt,
-        snapshot_store=args.snapshot_store,
         external_action_state=args.external_action_state,
         human_sent_observed=args.human_sent_observed,
         human_send_observed_at=args.human_send_observed_at,

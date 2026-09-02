@@ -66,7 +66,7 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 - closeout は DCB の metadata-only 状態として残す。
 - `human_sent` は、送信後のexact message URLを保存した `discord_saved_snapshot_receipt.v1` と、送信済みを観測したtimezone付き`human_send_observed_at`が必須。
-- receiptの`capture_id`を`--snapshot-store`で指定したcanonical snapshot ledgerへ解決し、実recordのtarget key、`observed_at`、event hash、content hash、安全属性を検証する。caller側のreceipt値だけではclosedにしない。
+- receiptの`capture_id`を設定済みshared snapshot root配下のtrusted canonical ledgerへ解決し、実recordのtarget key、`observed_at`、event hash、content hash、安全属性を検証する。closeout CLIにper-call ledger pathはなく、caller側のreceipt値や任意pathだけではclosedにしない。MCPの明示pathはserver startup時のtrusted設定だけに限定する。
 - snapshotは`human_send_observed_at`以後かつcloseout時点から15分以内でなければならない。送信観測前、未来、stale、別対象、改変、未保存はblockedにする。
 - staging packetまたはdry-run reportを渡す正式フローでは両方を必須とし、stageからdry-runへ複写されたcorrelation IDとroute fingerprintをexact message URLのrouteへ照合する。片方だけ、correlation不一致、route不一致はblockedにする。
 - staging / dry-runを持たない事後closeoutは`retrospective_snapshot_only`として閉じられるが、pre-send gate通過は主張しない。generic snapshot ledgerはoperation correlation IDを保存しないため、正式フローの結合はstage / dry-runの同一correlationとsnapshot exact-targetのroute照合までを境界とする。
@@ -181,13 +181,14 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 送信済みmessageのpermalinkを対象URLにし、可視本文をprivate snapshotへ保存します。
 JSON出力は本文やURLを返さず、closeout用のcapture ID・target key・観測時刻・freshness receiptを含みます。
+closeoutに使うsnapshotは、`configure-local-cache`または環境変数で設定したshared snapshot rootへ
+保存します。任意の作業ledgerに保存した自己整合receiptはcloseoutの信頼根拠になりません。
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
   snapshot-discord-url-text \
   --url "https://discord.com/channels/<guild>/<channel>/<message>" \
   --input <post-send-visible-text-file> \
-  --snapshot-store "<canonical-snapshot-ledger>" \
   --json > .local/discord-context-bridge/post-send-snapshot.json
 ```
 
@@ -199,7 +200,6 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --staging-packet .local/discord-context-bridge/staging-packet.json \
   --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
   --snapshot-receipt .local/discord-context-bridge/post-send-snapshot.json \
-  --snapshot-store "<canonical-snapshot-ledger>" \
   --human-sent-observed \
   --human-send-observed-at "<timezone付きISO-8601送信観測時刻>" \
   --human-reviewed \
