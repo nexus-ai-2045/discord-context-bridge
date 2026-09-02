@@ -1,7 +1,7 @@
 import importlib.util
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tomllib
@@ -64,6 +64,7 @@ from discord_context_bridge import (
     target_key_for_url,
 )
 from discord_context_bridge import cli as cli_module
+from discord_context_bridge import core as core_module
 from discord_context_bridge.cli import build_parser
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.core import resolve_context_bindings
@@ -79,7 +80,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POST_SEND_URL = "https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678"
 
 
-def saved_snapshot_receipt(
+def forged_saved_snapshot_receipt(
     url: str = POST_SEND_URL,
     *,
     observed_at: str | None = None,
@@ -92,6 +93,8 @@ def saved_snapshot_receipt(
         "capture_id": capture_id,
         "target_key": target_key_for_url(url),
         "observed_at": observed,
+        "event_hash": "b" * 64,
+        "content_hash": "c" * 16,
         "freshness": {
             "status": "recent",
             "observed_at": observed,
@@ -100,6 +103,55 @@ def saved_snapshot_receipt(
         },
         "outbound_actions": "disabled",
     }
+
+
+def persist_post_send_snapshot(
+    tmp_path: Path,
+    url: str = POST_SEND_URL,
+    *,
+    observed_at: str | None = None,
+    text: str = "member-a: post-send visible text stays private",
+) -> tuple[dict[str, object], Path, str]:
+    store = tmp_path / "text-snapshots.ndjson"
+    saved = snapshot_visible_text(text=text, url=url, path=store)
+    if observed_at is not None:
+        record = load_text_snapshots(store)[-1]
+        record["captured_at"] = observed_at
+        record["observed_at"] = observed_at
+        record["ingested_at"] = observed_at
+        record["time"] = observed_at
+        record["event_id"] = core_module.snapshot_observation_event_id(
+            captured_at=observed_at,
+            target_key=str(record["target_key"]),
+            content_hash=str(record["content_hash"]),
+            source=str(record["source"]),
+            stream_sequence=int(record["stream_sequence"]),
+        )
+        record["event_hash"] = core_module.canonical_event_hash(record)
+        store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        receipt = dict(saved["snapshot_receipt"])
+        receipt.update(
+            {
+                "capture_id": record["event_id"],
+                "observed_at": observed_at,
+                "event_hash": record["event_hash"],
+                "content_hash": record["content_hash"],
+                "freshness": {
+                    "status": "recent",
+                    "observed_at": observed_at,
+                    "age_seconds": 0,
+                    "max_age_seconds": 900,
+                },
+            }
+        )
+        saved["snapshot_receipt"] = receipt
+    observed = str(saved["snapshot_receipt"]["observed_at"])
+    return saved, store, observed
+
+
+def timestamp_before(value: str, seconds: int = 1) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (parsed - timedelta(seconds=seconds)).isoformat()
 
 
 def load_bump_version_module():
@@ -1299,7 +1351,7 @@ def test_build_discord_send_pdca_preflight_allows_confirmed_text_only_send():
     assert packet["next_action"] == "human_send_or_closeout"
 
 
-def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_values():
+def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_values(tmp_path):
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
     packet = build_discord_send_staging_packet(
         "公開時期の前提を確認して返信します。",
@@ -1318,12 +1370,16 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
         draft_matches_copy_block=True,
         socket_pre_send=True,
     )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+    human_send_observed_at = timestamp_before(snapshot_observed_at)
 
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=human_send_observed_at,
         human_reviewed=True,
         observed_text_status="human_edited_and_reviewed",
         unread_check_status="none_unread",
@@ -1362,8 +1418,10 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
     completed = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=human_send_observed_at,
         human_reviewed=True,
         observed_text_status="human_edited_and_reviewed",
         unread_check_status="none_unread",
@@ -1376,15 +1434,13 @@ def test_build_discord_post_send_closeout_packet_closes_without_raw_discord_valu
 
 
 def test_human_sent_closeout_requires_saved_exact_target_fresh_snapshot_receipt(tmp_path):
-    saved = snapshot_visible_text(
-        text="member-a: post-send visible text stays private",
-        url=POST_SEND_URL,
-        path=tmp_path / "text-snapshots.ndjson",
-    )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
 
     closeout = build_discord_post_send_closeout_packet(
         snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -1414,12 +1470,14 @@ def test_human_sent_closeout_blocks_without_saved_snapshot_receipt():
     assert closeout["recommended_next_state"] == "capture_fresh_post_send_snapshot"
 
 
-def test_human_sent_closeout_blocks_snapshot_receipt_for_different_target():
+def test_human_sent_closeout_blocks_snapshot_receipt_for_different_target(tmp_path):
+    other_url = "https://discord.com/channels/123456789012345678/223456789012345678/523456789012345678"
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, other_url)
     closeout = build_discord_post_send_closeout_packet(
-        snapshot_receipt=saved_snapshot_receipt(
-            "https://discord.com/channels/123456789012345678/223456789012345678/523456789012345678"
-        ),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -1431,11 +1489,14 @@ def test_human_sent_closeout_blocks_snapshot_receipt_for_different_target():
     assert closeout["snapshot_receipt"]["target_binding"] == "mismatch"
 
 
-def test_human_sent_closeout_recomputes_snapshot_freshness_and_blocks_stale_receipt():
+def test_human_sent_closeout_recomputes_snapshot_freshness_and_blocks_stale_receipt(tmp_path):
     observed_at = "2026-09-02T00:00:00+00:00"
+    saved, snapshot_store, _ = persist_post_send_snapshot(tmp_path, observed_at=observed_at)
     closeout = build_discord_post_send_closeout_packet(
-        snapshot_receipt=saved_snapshot_receipt(observed_at=observed_at),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at="2026-09-01T23:59:59+00:00",
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -1450,6 +1511,286 @@ def test_human_sent_closeout_recomputes_snapshot_freshness_and_blocks_stale_rece
         "age_seconds": 901,
         "max_age_seconds": 900,
     }
+
+
+def test_human_sent_closeout_rejects_forged_nonexistent_capture_receipt(tmp_path):
+    observed_at = datetime.now(timezone.utc).isoformat()
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=forged_saved_snapshot_receipt(observed_at=observed_at),
+        snapshot_store=tmp_path / "missing-ledger.ndjson",
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_capture_not_found" in closeout["blockers"]
+    assert closeout["snapshot_receipt"]["verified"] is False
+
+
+def test_human_sent_closeout_rejects_forged_fields_for_existing_capture(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+    saved["snapshot_receipt"]["content_hash"] = "f" * 64
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_receipt_record_mismatch" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_tampered_saved_record_hashes(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+    record = load_text_snapshots(snapshot_store)[0]
+    record["text"] = "tampered after receipt"
+    snapshot_store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_record_content_hash_invalid" in closeout["blockers"]
+    assert "post_send_snapshot_record_event_hash_invalid" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_forged_saved_capture_identity(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+    record = load_text_snapshots(snapshot_store)[0]
+    record["event_id"] = "e" * 16
+    record["event_hash"] = core_module.canonical_event_hash(record)
+    snapshot_store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    saved["snapshot_receipt"]["capture_id"] = record["event_id"]
+    saved["snapshot_receipt"]["event_hash"] = record["event_hash"]
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_record_capture_identity_invalid" in closeout["blockers"]
+
+
+def test_human_sent_closeout_requires_send_observation_time(tmp_path):
+    saved, snapshot_store, _ = persist_post_send_snapshot(tmp_path)
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "human_send_observed_at_missing_or_invalid" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_snapshot_observed_before_send(tmp_path):
+    saved, snapshot_store, _ = persist_post_send_snapshot(
+        tmp_path,
+        observed_at="2026-09-02T00:00:00+00:00",
+    )
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at="2026-09-02T00:00:01+00:00",
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+        closeout_observed_at="2026-09-02T00:00:02+00:00",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_precedes_human_send_observation" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_future_snapshot(tmp_path):
+    saved, snapshot_store, _ = persist_post_send_snapshot(
+        tmp_path,
+        observed_at="2026-09-02T00:00:02+00:00",
+    )
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at="2026-09-02T00:00:01+00:00",
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+        closeout_observed_at="2026-09-02T00:00:01+00:00",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_observed_in_future" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_unsafe_saved_record(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+    record = load_text_snapshots(snapshot_store)[0]
+    record["outbound_actions"] = "enabled"
+    record["event_hash"] = core_module.canonical_event_hash(record)
+    snapshot_store.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    saved["snapshot_receipt"]["event_hash"] = record["event_hash"]
+
+    closeout = build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_record_unsafe" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_mismatched_pre_send_correlation(tmp_path):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    staging = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        staging,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    dry_run["operation_binding"]["correlation_id"] = "f" * 16
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=staging,
+        dry_run_report=dry_run,
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_operation_correlation_mismatch" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_jointly_forged_pre_send_correlation(tmp_path):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    staging = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        target_url="https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        staging,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    forged_correlation = "f" * 16
+    staging["operation_binding"]["correlation_id"] = forged_correlation
+    dry_run["operation_binding"]["correlation_id"] = forged_correlation
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=staging,
+        dry_run_report=dry_run,
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_operation_correlation_mismatch" in closeout["blockers"]
+
+
+def test_human_sent_closeout_rejects_pre_send_target_route_mismatch(tmp_path):
+    events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
+    staging = build_discord_send_staging_packet(
+        "公開時期の前提を確認して返信します。",
+        events,
+        target_url="https://discord.com/channels/123456789012345678/923456789012345678/323456789012345678",
+        understanding_confirmed=True,
+    )
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        staging,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
+
+    closeout = build_discord_post_send_closeout_packet(
+        staging_packet=staging,
+        dry_run_report=dry_run,
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_operation_target_mismatch" in closeout["blockers"]
 
 
 def test_build_discord_post_send_closeout_packet_blocks_missing_human_observation():
@@ -1485,6 +1826,8 @@ def test_build_discord_post_send_closeout_packet_closes_not_sent_without_send_ob
     assert closeout["snapshot_receipt"]["required"] is False
     assert closeout["snapshot_receipt"]["target_binding"] == "not_applicable"
     assert closeout["snapshot_receipt"]["freshness"]["status"] == "not_applicable"
+    assert closeout["human_send_observed_at"] == ""
+    assert closeout["operation_binding"]["status"] == "not_applicable"
 
 
 def test_build_discord_post_send_closeout_packet_blocks_not_sent_with_send_observation():
@@ -1525,7 +1868,7 @@ def test_build_discord_post_send_closeout_packet_blocks_missing_unread_check():
     assert closeout["recommended_next_state"] == "check_unread_items"
 
 
-def test_build_discord_send_operation_status_summarizes_existing_logs():
+def test_build_discord_send_operation_status_summarizes_existing_logs(tmp_path):
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
     packet = build_discord_send_staging_packet(
         "公開時期の前提を確認して返信します。",
@@ -1544,11 +1887,14 @@ def test_build_discord_send_operation_status_summarizes_existing_logs():
         draft_matches_copy_block=True,
         socket_pre_send=True,
     )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -3671,14 +4017,19 @@ def test_cli_auto_send_preflight_outputs_private_adapter_gate(tmp_path, capsys):
 
 
 def test_cli_closeout_discord_send_outputs_metadata_only_packet(tmp_path, capsys):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     receipt_path = tmp_path / "snapshot-receipt.json"
-    receipt_path.write_text(json.dumps({"snapshot_receipt": saved_snapshot_receipt()}), encoding="utf-8")
+    receipt_path.write_text(json.dumps(saved), encoding="utf-8")
     result = cli_main(
         [
             "closeout-discord-send",
             "--snapshot-receipt",
             str(receipt_path),
+            "--snapshot-store",
+            str(snapshot_store),
             "--human-sent-observed",
+            "--human-send-observed-at",
+            timestamp_before(snapshot_observed_at),
             "--human-reviewed",
             "--observed-text-status",
             "human-edited-and-reviewed",
@@ -3808,11 +4159,14 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
         draft_matches_copy_block=True,
         socket_pre_send=True,
     )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -3852,9 +4206,12 @@ def test_cli_send_operation_status_reads_existing_gate_logs(tmp_path, capsys):
 
 
 def test_cli_send_operation_status_closes_post_send_retrospective_without_claiming_pre_gates(tmp_path, capsys):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     closeout = build_discord_post_send_closeout_packet(
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",
@@ -3914,11 +4271,14 @@ def test_cli_send_operation_status_closes_post_send_retrospective_even_with_vali
         draft_matches_copy_block=True,
         socket_pre_send=True,
     )
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path)
     closeout = build_discord_post_send_closeout_packet(
         staging_packet=packet,
         dry_run_report=dry_run,
-        snapshot_receipt=saved_snapshot_receipt(),
+        snapshot_receipt=saved,
+        snapshot_store=snapshot_store,
         human_sent_observed=True,
+        human_send_observed_at=timestamp_before(snapshot_observed_at),
         human_reviewed=True,
         observed_text_status="matches_copy_block",
         unread_check_status="none_unread",

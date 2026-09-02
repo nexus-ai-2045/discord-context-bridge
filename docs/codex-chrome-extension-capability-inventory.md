@@ -20,7 +20,7 @@ Discord では `read -> stage -> fill -> stop -> human send -> closeout` を標�
 | `stage-discord-send` blockers | 自動化を止める理由を機械判定するため | blocker 名、status、safe label |
 | socket evidence | 誤タブ、誤入力欄、二重送信を検知するため | preflight / after navigation / pre-send の結果 |
 | human final boundary | 最後の Discord 通知発生を人間責務に固定するため | `outbound_actions=disabled`、human gate |
-| post-send closeout | 送信後の残務を本文なしで閉じるため | `human_sent_observed`、`human_reviewed`、text status |
+| post-send closeout | 送信後の残務を本文なしで閉じるため | canonical snapshot ledgerの`capture_id`、`human_send_observed_at`、operation binding、review status |
 
 残さないものは raw Discord 本文、実参加者名、実 ID、token、cookie、local profile、
 local absolute path です。これらは public package の architecture context ではなく、
@@ -90,7 +90,9 @@ human:
 
 closeout:
   - closeout-discord-send
-  - human_sent_observed と human_reviewed を確認
+  - canonical snapshot ledgerでreceipt capture_idを実recordへ解決
+  - human_sent_observed、human_send_observed_at、human_reviewedを確認
+  - stage / dry-runを渡す正式フローは同じoperation correlationとrouteを確認
   - 本文、URL、snowflake は出力しない
 ```
 
@@ -123,6 +125,7 @@ blocked reason は、少なくとも次のように分けます。
 `dry_run_status=ready_to_fill` になる条件:
 
 - staging packet が `discord_send_staging_packet.v1` で `ready_to_fill`
+- staging packet の`operation_binding`にcorrelation ID、target fingerprint、route fingerprintがある
 - `socket_preflight=true`
 - `target_url_verified=true`
 - `socket_after_navigation=true`
@@ -151,8 +154,10 @@ blocked reason は次を含みます。
 
 `closeout_status=closed` になる条件:
 
-- 任意で渡した staging packet が `discord_send_staging_packet.v1` で `ready_to_fill`
-- 任意で渡した dry-run report が `chrome_extension_fill_only_dry_run.v1` で `ready_to_fill`
+- receiptの`capture_id`が`snapshot_store`のcanonical snapshot ledgerで一意なactual recordへ解決できる
+- actual recordのexact target、`observed_at`、event hash、content hash、安全属性が整合する
+- `human_send_observed_at`がtimezone付きISO 8601で、snapshot `observed_at`がその時刻以後かつcloseoutから15分以内
+- staging packetまたはdry-run reportを渡す正式フローでは両方がreadyで、複写された同じcorrelation IDとroute fingerprintが送信済みmessage routeへ一致する
 - `human_sent_observed=true`
 - `human_reviewed=true`
 - `observed_text_status` が `matches-copy-block` または `human-edited-and-reviewed`
@@ -165,6 +170,14 @@ blocked reason は次を含みます。
 |---|---|
 | `staging_packet_not_ready` | stage 側が ready ではない |
 | `dry_run_not_ready` | Chrome 拡張 dry-run が ready ではない |
+| `post_send_snapshot_capture_not_found` | receiptのcapture IDがcanonical snapshot ledgerにない |
+| `post_send_snapshot_receipt_record_mismatch` | caller receiptとactual recordのtarget/time/hashが一致しない |
+| `human_send_observed_at_missing_or_invalid` | 送信済み観測時刻がない、またはtimezone付きISO 8601として無効 |
+| `post_send_snapshot_precedes_human_send_observation` | snapshotが人間の送信観測より前 |
+| `post_send_snapshot_observed_in_future` / `post_send_snapshot_stale` | snapshotが未来、または15分超 |
+| `post_send_operation_binding_incomplete` | 正式フローのstage / dry-runの片方しかない |
+| `post_send_operation_correlation_mismatch` | stage / dry-runのcorrelation bindingが一致しない |
+| `post_send_operation_target_mismatch` | pre-send routeと送信済みmessage routeが一致しない |
 | `human_send_not_observed` | 人間送信後の visible message を確認していない |
 | `human_review_not_confirmed` | 送信後の見え方を人間が確認していない |
 | `observed_text_not_checked` | 送信後本文状態が未確認 |
@@ -176,6 +189,12 @@ blocked reason は次を含みます。
 出力は `observed_message_id_output=omitted`、`observed_url_output=omitted`、
 `raw_discord_text_output=omitted`、`text_returned=false` を維持します。未読確認も
 本文や message ID ではなく、`unread_check_status` と `unread_signal_count` だけを返します。
+
+generic snapshot ledgerはoperation correlation IDを保存しません。したがって正式フローは
+stageからdry-runへ複写されたcorrelation IDとroute fingerprintを検証し、snapshot側は
+exact message URLのactual recordへ結合します。stage / dry-runを両方省く事後closeoutは
+`operation_binding.status=retrospective_snapshot_only`で、pre-send gate通過を主張しません。
+`not_sent`はsnapshot receipt、`human_send_observed_at`、operation correlationを要求しません。
 
 ## Socket checks
 
@@ -209,6 +228,8 @@ scope_route: Discord Chrome extension fill-only / external_action none until hum
 [ ] pre-send socket ping が通った
 [ ] automation は送信ボタン手前で停止した
 [ ] final send は human 操作
+[ ] receipt capture_id がcanonical snapshot ledgerのactual recordへ解決できた
+[ ] snapshot observed_at がhuman_send_observed_at以後でfresh
 [ ] unread check が none_unread
 [ ] closeout-discord-send が closed
 ```

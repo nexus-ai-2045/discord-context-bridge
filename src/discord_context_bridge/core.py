@@ -2216,6 +2216,8 @@ def snapshot_visible_text(
         "capture_id": snapshot["event_id"],
         "target_key": target_key,
         "observed_at": captured_at,
+        "event_hash": snapshot["event_hash"],
+        "content_hash": content_hash,
         "freshness": {
             "status": "recent",
             "observed_at": captured_at,
@@ -3630,6 +3632,15 @@ DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS = (
 )
 
 
+def discord_route_fingerprint(url: str) -> str:
+    """Return a content-free guild/channel route binding for Discord URLs."""
+
+    match = DISCORD_MESSAGE_URL_RE.fullmatch(url.strip()) or DISCORD_CHANNEL_URL_RE.fullmatch(url.strip())
+    if not match:
+        return ""
+    return stable_text_hash(f"{match.group('guild')}/{match.group('channel')}")
+
+
 def _enforce_discord_fill_only_guard(packet: dict[str, Any]) -> dict[str, Any]:
     browser_action = packet.get("browser_action") or {}
     allowed_actions = set(browser_action.get("allowed_actions") or [])
@@ -3699,6 +3710,22 @@ def build_discord_send_staging_packet(
         if not mention_label.strip().startswith("@"):
             blockers.append("mention_label_required")
     staging_status = "ready_to_fill" if not blockers else "blocked"
+    target_fingerprint = target_key_for_url(target_url) if target_kind != "unknown" else ""
+    route_fingerprint = discord_route_fingerprint(target_url)
+    operation_correlation_id = (
+        stable_text_hash(
+            "|".join(
+                [
+                    "discord_send_operation.v1",
+                    normalized_mode,
+                    route_fingerprint,
+                    stable_text_hash(draft),
+                ]
+            )
+        )
+        if staging_status == "ready_to_fill" and route_fingerprint
+        else ""
+    )
     browser_steps = [
         "socket_preflight",
         "claim_existing_discord_tab_or_open_target",
@@ -3718,6 +3745,13 @@ def build_discord_send_staging_packet(
         "blockers": blockers,
         "target_kind": target_kind,
         "target_url_output": "omitted",
+        "operation_binding": {
+            "schema": "discord_send_operation_binding.v1",
+            "correlation_id": operation_correlation_id,
+            "target_fingerprint": target_fingerprint,
+            "route_fingerprint": route_fingerprint,
+            "target_url_output": "omitted",
+        },
         "mention_label_output": redact_artifact_text(mention_label) if mention_label else "",
         "review": {
             "quick_verdict": review.get("quick_verdict"),
@@ -3776,11 +3810,20 @@ def verify_chrome_extension_fill_only_dry_run(
     also narrow enough to fill without sending.
     """
     mode = str(staging_packet.get("mode") or "").strip().casefold()
+    operation_binding_payload = staging_packet.get("operation_binding")
+    operation_binding = dict(operation_binding_payload) if isinstance(operation_binding_payload, dict) else {}
     blockers: list[str] = []
     if staging_packet.get("schema") != "discord_send_staging_packet.v1":
         blockers.append("invalid_staging_packet")
     if staging_packet.get("staging_status") != "ready_to_fill":
         blockers.append("staging_packet_not_ready")
+    if (
+        operation_binding.get("schema") != "discord_send_operation_binding.v1"
+        or not str(operation_binding.get("correlation_id") or "")
+        or not str(operation_binding.get("target_fingerprint") or "")
+        or not str(operation_binding.get("route_fingerprint") or "")
+    ):
+        blockers.append("staging_operation_binding_missing")
     if not socket_preflight:
         blockers.append("socket_preflight_missing")
     if not target_url_verified:
@@ -3825,6 +3868,13 @@ def verify_chrome_extension_fill_only_dry_run(
             "message_box_candidates": message_box_candidates,
             "draft_matches_copy_block": draft_matches_copy_block,
             "socket_pre_send": socket_pre_send,
+        },
+        "operation_binding": {
+            "schema": "discord_send_operation_binding.v1",
+            "correlation_id": str(operation_binding.get("correlation_id") or ""),
+            "target_fingerprint": str(operation_binding.get("target_fingerprint") or ""),
+            "route_fingerprint": str(operation_binding.get("route_fingerprint") or ""),
+            "target_url_output": "omitted",
         },
         "required_stop": "stop_before_send_button",
         "allowed_next_action": "fill_draft_then_stop" if dry_run_status == "ready_to_fill" else "fix_blockers",
@@ -4056,13 +4106,92 @@ def build_discord_auto_send_preflight(
     }
 
 
+def _resolve_saved_post_send_snapshot(
+    path: Path,
+    capture_id: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Resolve and integrity-check one snapshot observation from the canonical ledger."""
+
+    if not capture_id:
+        return {}, ["post_send_snapshot_capture_id_missing"]
+    try:
+        records = load_text_snapshots(path)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {}, ["post_send_snapshot_store_unreadable"]
+    matches = [record for record in records if str(record.get("event_id") or "") == capture_id]
+    if not matches:
+        return {}, ["post_send_snapshot_capture_not_found"]
+    if len(matches) != 1:
+        return {}, ["post_send_snapshot_capture_not_unique"]
+    record = dict(matches[0])
+    blockers: list[str] = []
+    observed_at = str(record.get("observed_at") or "").strip()
+    record_target_key = str(record.get("target_key") or "").strip()
+    record_url = str(record.get("url") or "").strip()
+    content_hash = str(record.get("content_hash") or "")
+    if (
+        record.get("schema") != "discord_context_bridge_text_snapshot_observation.v1"
+        or record.get("event_type") != "discord.visible_text.snapshot_observed"
+    ):
+        blockers.append("post_send_snapshot_record_schema_invalid")
+    if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(str(record.get("event_id") or "")):
+        blockers.append("post_send_snapshot_record_capture_id_invalid")
+    if (
+        not DISCORD_MESSAGE_URL_RE.fullmatch(record_url)
+        or not record_target_key
+        or record_target_key != target_key_for_url(record_url)
+        or record.get("stream_id") != record_target_key
+        or record.get("subject") != record_target_key
+    ):
+        blockers.append("post_send_snapshot_record_target_invalid")
+    if (
+        not observed_at
+        or parse_snapshot_timestamp(observed_at) is None
+        or record.get("captured_at") != observed_at
+        or record.get("time") != observed_at
+    ):
+        blockers.append("post_send_snapshot_record_observed_at_invalid")
+    text = record.get("text")
+    if not isinstance(text, str) or not content_hash or stable_text_hash(text) != content_hash:
+        blockers.append("post_send_snapshot_record_content_hash_invalid")
+    stream_sequence = record.get("stream_sequence")
+    if (
+        not isinstance(stream_sequence, int)
+        or isinstance(stream_sequence, bool)
+        or stream_sequence < 1
+        or not observed_at
+        or not record_target_key
+        or not content_hash
+        or str(record.get("event_id") or "")
+        != snapshot_observation_event_id(
+            captured_at=observed_at,
+            target_key=record_target_key,
+            content_hash=content_hash,
+            source=str(record.get("source") or ""),
+            stream_sequence=stream_sequence if isinstance(stream_sequence, int) else 0,
+        )
+    ):
+        blockers.append("post_send_snapshot_record_capture_identity_invalid")
+    if not str(record.get("event_hash") or "") or canonical_event_hash(record) != record.get("event_hash"):
+        blockers.append("post_send_snapshot_record_event_hash_invalid")
+    if (
+        record.get("private_local_only") is not True
+        or record.get("external_share_allowed") is not False
+        or record.get("outbound_actions") != "disabled"
+    ):
+        blockers.append("post_send_snapshot_record_unsafe")
+    return record, blockers
+
+
 def build_discord_post_send_closeout_packet(
     *,
     staging_packet: dict[str, Any] | None = None,
     dry_run_report: dict[str, Any] | None = None,
     snapshot_receipt: dict[str, Any] | None = None,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
     external_action_state: str = "human_sent",
     human_sent_observed: bool = False,
+    human_send_observed_at: str = "",
     human_reviewed: bool = False,
     observed_text_status: str = "not_checked",
     unread_check_status: str = "not_checked",
@@ -4113,9 +4242,14 @@ def build_discord_post_send_closeout_packet(
     )
     normalized_snapshot_receipt = dict(receipt_candidate) if isinstance(receipt_candidate, dict) else {}
     snapshot_capture_id = str(normalized_snapshot_receipt.get("capture_id") or "").strip()
-    snapshot_target_key = str(normalized_snapshot_receipt.get("target_key") or "").strip()
-    snapshot_observed_at = str(normalized_snapshot_receipt.get("observed_at") or "").strip()
+    snapshot_record, snapshot_record_blockers = _resolve_saved_post_send_snapshot(
+        snapshot_store,
+        snapshot_capture_id,
+    ) if normalized_external_action_state == "human_sent" else ({}, [])
+    snapshot_target_key = str(snapshot_record.get("target_key") or "").strip()
+    snapshot_observed_at = str(snapshot_record.get("observed_at") or "").strip()
     snapshot_observed_time = parse_snapshot_timestamp(snapshot_observed_at)
+    human_send_observed_time = parse_snapshot_timestamp(human_send_observed_at)
     closeout_time = parse_snapshot_timestamp(closeout_observed_at) or datetime.now(timezone.utc)
     snapshot_age_seconds: int | None = None
     if snapshot_observed_time is not None:
@@ -4124,11 +4258,24 @@ def build_discord_post_send_closeout_packet(
     snapshot_target_match = bool(
         observed_target_valid
         and snapshot_target_key
+        and snapshot_record.get("url") == observed_url.strip()
         and snapshot_target_key == target_key_for_url(observed_url)
     )
     claimed_freshness_payload = normalized_snapshot_receipt.get("freshness")
     claimed_freshness = dict(claimed_freshness_payload) if isinstance(claimed_freshness_payload, dict) else {}
     snapshot_receipt_blockers: list[str] = []
+    operation_binding_blockers: list[str] = []
+    staging_binding_payload = (staging_packet or {}).get("operation_binding")
+    dry_run_binding_payload = (dry_run_report or {}).get("operation_binding")
+    staging_operation_binding = (
+        dict(staging_binding_payload) if isinstance(staging_binding_payload, dict) else {}
+    )
+    dry_run_operation_binding = (
+        dict(dry_run_binding_payload) if isinstance(dry_run_binding_payload, dict) else {}
+    )
+    formal_operation_binding = normalized_external_action_state == "human_sent" and (
+        staging_packet is not None or dry_run_report is not None
+    )
     if normalized_external_action_state not in allowed_external_action_states:
         blockers.append("invalid_external_action_state")
     if staging_packet is not None:
@@ -4144,7 +4291,41 @@ def build_discord_post_send_closeout_packet(
             or dry_run_report.get("fill_permitted") is not True
         ):
             blockers.append("dry_run_not_ready")
+    if formal_operation_binding:
+        staging_copy_block = (staging_packet or {}).get("copy_block")
+        staging_copy_block = dict(staging_copy_block) if isinstance(staging_copy_block, dict) else {}
+        expected_operation_correlation_id = stable_text_hash(
+            "|".join(
+                [
+                    "discord_send_operation.v1",
+                    str((staging_packet or {}).get("mode") or "").strip().casefold(),
+                    str(staging_operation_binding.get("route_fingerprint") or ""),
+                    stable_text_hash(str(staging_copy_block.get("text") or "")),
+                ]
+            )
+        )
+        if staging_packet is None or dry_run_report is None:
+            operation_binding_blockers.append("post_send_operation_binding_incomplete")
+        elif (
+            staging_operation_binding.get("schema") != "discord_send_operation_binding.v1"
+            or dry_run_operation_binding.get("schema") != "discord_send_operation_binding.v1"
+            or not str(staging_operation_binding.get("correlation_id") or "")
+            or staging_operation_binding != dry_run_operation_binding
+            or not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(
+                str(staging_operation_binding.get("target_fingerprint") or "")
+            )
+            or not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(
+                str(staging_operation_binding.get("route_fingerprint") or "")
+            )
+            or staging_operation_binding.get("correlation_id") != expected_operation_correlation_id
+        ):
+            operation_binding_blockers.append("post_send_operation_correlation_mismatch")
+        elif str(staging_operation_binding.get("route_fingerprint") or "") != discord_route_fingerprint(observed_url):
+            operation_binding_blockers.append("post_send_operation_target_mismatch")
+        blockers.extend(operation_binding_blockers)
     if normalized_external_action_state == "human_sent":
+        if human_send_observed_time is None:
+            snapshot_receipt_blockers.append("human_send_observed_at_missing_or_invalid")
         if not normalized_snapshot_receipt:
             snapshot_receipt_blockers.append("post_send_snapshot_receipt_missing")
         else:
@@ -4153,7 +4334,20 @@ def build_discord_post_send_closeout_packet(
             if normalized_snapshot_receipt.get("saved") is not True:
                 snapshot_receipt_blockers.append("post_send_snapshot_not_saved")
             if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(snapshot_capture_id):
-                snapshot_receipt_blockers.append("post_send_snapshot_capture_id_missing")
+                snapshot_receipt_blockers.append("post_send_snapshot_capture_id_invalid")
+            snapshot_receipt_blockers.extend(snapshot_record_blockers)
+            receipt_record_values = {
+                "capture_id": snapshot_record.get("event_id"),
+                "target_key": snapshot_record.get("target_key"),
+                "observed_at": snapshot_record.get("observed_at"),
+                "event_hash": snapshot_record.get("event_hash"),
+                "content_hash": snapshot_record.get("content_hash"),
+            }
+            if snapshot_record and any(
+                normalized_snapshot_receipt.get(key) != value
+                for key, value in receipt_record_values.items()
+            ):
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_record_mismatch")
             if not observed_url.strip() or not snapshot_target_key:
                 snapshot_receipt_blockers.append("post_send_snapshot_target_missing")
             elif not observed_target_valid:
@@ -4162,6 +4356,8 @@ def build_discord_post_send_closeout_packet(
                 snapshot_receipt_blockers.append("post_send_snapshot_target_mismatch")
             if snapshot_observed_time is None:
                 snapshot_receipt_blockers.append("post_send_snapshot_observed_at_invalid")
+            elif human_send_observed_time is not None and snapshot_observed_time < human_send_observed_time:
+                snapshot_receipt_blockers.append("post_send_snapshot_precedes_human_send_observation")
             elif snapshot_age_seconds is not None and snapshot_age_seconds < 0:
                 snapshot_receipt_blockers.append("post_send_snapshot_observed_in_future")
             elif snapshot_age_seconds is not None and snapshot_age_seconds > POST_SEND_SNAPSHOT_MAX_AGE_SECONDS:
@@ -4172,7 +4368,11 @@ def build_discord_post_send_closeout_packet(
                 or claimed_freshness.get("max_age_seconds") != POST_SEND_SNAPSHOT_MAX_AGE_SECONDS
             ):
                 snapshot_receipt_blockers.append("post_send_snapshot_freshness_receipt_invalid")
-            if normalized_snapshot_receipt.get("outbound_actions") != "disabled":
+            if (
+                normalized_snapshot_receipt.get("private_local_only") is not True
+                or normalized_snapshot_receipt.get("external_share_allowed") is not False
+                or normalized_snapshot_receipt.get("outbound_actions") != "disabled"
+            ):
                 snapshot_receipt_blockers.append("post_send_snapshot_receipt_unsafe")
         blockers.extend(snapshot_receipt_blockers)
         if not human_sent_observed:
@@ -4216,8 +4416,25 @@ def build_discord_post_send_closeout_packet(
         recommended_next_state = "review_unread_items"
     elif snapshot_receipt_blockers:
         recommended_next_state = "capture_fresh_post_send_snapshot"
+    elif operation_binding_blockers:
+        recommended_next_state = "fix_post_send_operation_binding"
     else:
         recommended_next_state = "fix_blockers"
+    operation_correlation_id = str(staging_operation_binding.get("correlation_id") or "")
+    closeout_correlation_id = (
+        stable_text_hash(
+            "|".join(
+                [
+                    "discord_post_send_closeout.v1",
+                    operation_correlation_id or "retrospective_snapshot_only",
+                    str(snapshot_record.get("event_hash") or ""),
+                    human_send_observed_at,
+                ]
+            )
+        )
+        if normalized_external_action_state == "human_sent" and snapshot_record
+        else ""
+    )
     learning_handoff_required = closeout_status == "closed"
     allowed_learning_statuses = {"pending", "completed", "held"}
     if learning_handoff_required:
@@ -4265,6 +4482,9 @@ def build_discord_post_send_closeout_packet(
         "blockers": blockers,
         "external_action_state": normalized_external_action_state,
         "human_sent_observed": human_sent_observed,
+        "human_send_observed_at": human_send_observed_at
+        if normalized_external_action_state == "human_sent" and human_send_observed_time is not None
+        else "",
         "human_reviewed": human_reviewed,
         "observed_text_status": normalized_text_status,
         "unread_check_status": normalized_unread_status,
@@ -4306,6 +4526,25 @@ def build_discord_post_send_closeout_packet(
             },
             "raw_text_output": "omitted",
             "target_url_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+        "operation_binding": {
+            "schema": "discord_post_send_operation_binding.v1",
+            "status": (
+                "not_applicable"
+                if normalized_external_action_state == "not_sent"
+                else "verified"
+                if formal_operation_binding and not operation_binding_blockers and not snapshot_receipt_blockers
+                else "retrospective_snapshot_only"
+                if not formal_operation_binding and not snapshot_receipt_blockers
+                else "blocked"
+            ),
+            "pre_send_correlation_id_output": "omitted" if operation_correlation_id else "not_provided",
+            "snapshot_capture_id_output": "omitted" if snapshot_capture_id else "not_provided",
+            "closeout_correlation_id": closeout_correlation_id,
+            "exact_target_fingerprint_output": "omitted" if snapshot_target_key else "not_provided",
+            "route_fingerprint_output": "omitted" if discord_route_fingerprint(observed_url) else "not_provided",
+            "pre_send_claimed": formal_operation_binding and not operation_binding_blockers,
             "outbound_actions": "disabled",
         },
         "note_label_output": redact_artifact_text(note_label) if note_label else "",

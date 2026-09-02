@@ -149,7 +149,11 @@ reply UI が 0 件または複数件の場合、通常 message box へ fallback 
 metadata-only に閉じます。`human_sent` では、先にexact message URLを
 `snapshot-discord-url-text` または `bridge-intake` へ保存し、その出力の
 `discord_saved_snapshot_receipt.v1` をcloseoutへ渡します。この closeout はreceiptの
-capture ID、target key、観測時刻、15分以内のfreshnessを再計算して照合し、
+capture IDをcanonical snapshot ledgerで解決し、caller申告値ではなく実recordの
+target key、観測時刻、event hash、content hash、安全属性を照合します。
+`human_send_observed_at`を送信観測の下限として、snapshotがそれより前、未来、15分超、
+別対象、改変済み、または未保存ならfail-closedで停止します。正式フローでstaging packetか
+dry-run reportを渡す場合は両方を必須とし、同じcorrelation IDとroute fingerprintを照合します。
 `human_sent_observed`、
 `human_reviewed`、`observed_text_status`、`unread_check_status`、
 `unread_signal_count` だけを状態として返し、本文、URL、snowflake は出力しません。
@@ -159,7 +163,9 @@ capture ID、target key、観測時刻、15分以内のfreshnessを再計算し�
 送信後本文は先に `snapshot-discord-url-text` でprivate snapshot store へ保存し、
 そのreceiptを渡した後に `closeout-discord-send` で
 metadata-only の完了状態だけを閉じます。snapshot 保存と closeout を同じ操作に混ぜません。
-`not_sent` は従来どおりsnapshot receipt不要です。
+staging / dry-runなしの事後closeoutは`retrospective_snapshot_only`であり、pre-send gate通過を
+主張しません。`not_sent` は従来どおりsnapshot receipt、`human_send_observed_at`、
+operation correlationが不要です。
 
 ## やらないこと
 

@@ -687,12 +687,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="human-sent時に必須: snapshot-discord-url-text / bridge-intake が保存後に返した JSON receipt",
     )
     closeout_send.add_argument(
+        "--snapshot-store",
+        type=Path,
+        default=None,
+        help="receiptのcapture IDを照合するcanonical snapshot ledger",
+    )
+    closeout_send.add_argument(
         "--external-action-state",
         choices=["human-sent", "not-sent"],
         default="human-sent",
         help="外部 action の状態。途中停止や添付失敗で送信しなかった場合は not-sent",
     )
     closeout_send.add_argument("--human-sent-observed", action="store_true", help="Discord 上で人間送信済み message を確認した")
+    closeout_send.add_argument(
+        "--human-send-observed-at",
+        default="",
+        help="human-sent時に必須: 人間が送信済みを観測したtimezone付きISO 8601時刻",
+    )
     closeout_send.add_argument("--human-reviewed", action="store_true", help="送信後の見え方を人間が確認済み")
     closeout_send.add_argument(
         "--observed-text-status",
@@ -2027,8 +2038,10 @@ def _cmd_closeout_discord_send(args: argparse.Namespace) -> int:
         staging_packet=staging_packet,
         dry_run_report=dry_run_report,
         snapshot_receipt=snapshot_receipt,
+        snapshot_store=args.snapshot_store,
         external_action_state=args.external_action_state,
         human_sent_observed=args.human_sent_observed,
+        human_send_observed_at=args.human_send_observed_at,
         human_reviewed=args.human_reviewed,
         observed_text_status=args.observed_text_status,
         unread_check_status=args.unread_check_status,

@@ -60,7 +60,7 @@ required_commands:
   - command: auto-send-preflight
     purpose: private adapter に自動送信を許可してよいかを明示承認・宛先一致・dry-run・監査証跡で fail-closed 判定する
   - command: closeout-discord-send
-    purpose: 人間送信後の保存済みexact-target fresh snapshot receiptを照合してmetadata-only記録を閉じ、learning_handoffを返す
+    purpose: 人間送信後のreceipt capture IDをcanonical snapshot ledgerの実recordへ解決し、exact target・送信観測下限・freshness・operation bindingを照合してmetadata-only記録を閉じ、learning_handoffを返す
 verification_commands:
   - command: python3 scripts/verify_ssot_projection.py --json
     purpose: SSOT から生成された runtime skill が最新か確認する

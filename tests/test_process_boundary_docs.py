@@ -128,6 +128,44 @@ def test_discord_send_runbook_blocks_wrong_route_and_unverified_done_claims():
         assert term in body
 
 
+def test_post_send_closeout_docs_require_canonical_freshness_binding():
+    required_by_doc = {
+        "PROCESS_BOUNDARY.md": [
+            "canonical snapshot ledger",
+            "human_send_observed_at",
+            "event hash",
+            "content hash",
+            "retrospective_snapshot_only",
+        ],
+        "docs/discord-send-operation-runbook.md": [
+            "--snapshot-store",
+            "--human-send-observed-at",
+            "canonical snapshot ledger",
+            "correlation ID",
+            "retrospective_snapshot_only",
+        ],
+        "docs/full-reference.md": [
+            "snapshot_store",
+            "human_send_observed_at",
+            "capture_id",
+            "actual record",
+            "retrospective_snapshot_only",
+        ],
+        "docs/codex-chrome-extension-capability-inventory.md": [
+            "snapshot_store",
+            "human_send_observed_at",
+            "capture_id",
+            "actual record",
+            "retrospective_snapshot_only",
+        ],
+    }
+
+    for relative_path, required_terms in required_by_doc.items():
+        body = (ROOT / relative_path).read_text(encoding="utf-8")
+        for term in required_terms:
+            assert term in body, f"{relative_path} must preserve {term}"
+
+
 def test_process_boundary_removes_ocr_as_discord_text_intake_fallback():
     body = (ROOT / "PROCESS_BOUNDARY.md").read_text(encoding="utf-8")
 
