@@ -1,0 +1,638 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .core import DiscordEvent, load_text_snapshots
+from .knowledge_projection import (
+    _extract_topics,
+    _load_topic_registry,
+    _parse_knowledge_events,
+    _projection_records,
+    _stable_id,
+    _structured_message_identity,
+)
+
+
+PACKET_SCHEMA = "dcb.topic_classification_packet.v1"
+RESULT_SCHEMA = "dcb.topic_classification_result.v1"
+PROPOSAL_SCHEMA = "dcb.topic_classification_proposal.v1"
+MODEL_ROUTE = "gpt-5.3-codex-spark"
+PROMPT_VERSION = "dcb-topic-candidate-v1"
+
+
+def _atomic_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _json_fingerprint(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@contextmanager
+def _exclusive_ledger_lock(ledger_path: Path):
+    """Serialize ledger validation, deduplication, and append across processes."""
+    lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        if lock_path.stat().st_size == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        if locked:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _require_string(value: Any, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ValueError("expected string field")
+    if not allow_empty and not value.strip():
+        raise ValueError("expected non-empty string field")
+    return value
+
+
+def _optional_string(mapping: dict[str, Any], key: str) -> str:
+    if key not in mapping or mapping[key] is None:
+        return ""
+    return _require_string(mapping[key], allow_empty=True).strip()
+
+
+def _validate_packet_integrity(packet: dict[str, Any]) -> None:
+    if (
+        packet.get("schema") != PACKET_SCHEMA
+        or packet.get("model_route") != MODEL_ROUTE
+        or packet.get("prompt_version") != PROMPT_VERSION
+        or packet.get("private_local_only") is not True
+        or packet.get("contains_raw_discord_text") is not True
+        or packet.get("external_send_approved") is not False
+        or packet.get("review_policy") != "proposal_only_human_promotion_required"
+        or not isinstance(packet.get("items"), list)
+        or not isinstance(packet.get("taxonomy"), list)
+    ):
+        raise ValueError("invalid classification packet")
+    items = packet["items"]
+    taxonomy = packet["taxonomy"]
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("invalid classification packet item")
+        text = item.get("text")
+        if not isinstance(text, str) or hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest() != item.get("content_hash"):
+            raise ValueError("classification packet content integrity mismatch")
+    source_fingerprint = _json_fingerprint(
+        [(item.get("observation_id"), item.get("content_hash")) for item in items]
+    )
+    packet_id = _stable_id(
+        "topic-packet",
+        source_fingerprint,
+        _json_fingerprint(taxonomy),
+        PROMPT_VERSION,
+    )
+    if (
+        packet.get("source_fingerprint") != source_fingerprint
+        or packet.get("packet_id") != packet_id
+    ):
+        raise ValueError("classification packet fingerprint mismatch")
+
+
+def _normalize_topic_candidates(
+    topics: list[Any], taxonomy_ids: set[str]
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            raise ValueError("invalid topic candidate")
+        existing_topic_id = _optional_string(topic, "existing_topic_id")
+        proposed_label = _optional_string(topic, "proposed_label")
+        confidence = topic.get("confidence")
+        reason = _optional_string(topic, "reason")
+        if (
+            bool(existing_topic_id) == bool(proposed_label)
+            or (existing_topic_id and existing_topic_id not in taxonomy_ids)
+            or not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or not 0 <= float(confidence) <= 1
+            or not reason
+            or len(reason) > 500
+        ):
+            raise ValueError("invalid topic candidate")
+        normalized.append(
+            {
+                "existing_topic_id": existing_topic_id or None,
+                "proposed_label": proposed_label or None,
+                "confidence": float(confidence),
+                "reason": reason,
+            }
+        )
+    return normalized
+
+
+def _proposal_item_fingerprint_payload(
+    *,
+    observation_id: str,
+    content_hash: str,
+    topics: list[dict[str, Any]],
+    abstain_reason: str,
+) -> dict[str, Any]:
+    return {
+        "observation_id": observation_id,
+        "content_hash": content_hash,
+        "topics": topics,
+        "abstain_reason": abstain_reason,
+    }
+
+
+def _validate_proposal_against_packet(
+    proposal: dict[str, Any], packet: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(proposal, dict):
+        raise ValueError("invalid proposal record")
+    item_by_id = {
+        str(item["observation_id"]): item for item in packet["items"] if isinstance(item, dict)
+    }
+    taxonomy_ids = {
+        str(item["topic_id"]) for item in packet["taxonomy"] if isinstance(item, dict)
+    }
+    observation_id = proposal.get("observation_id")
+    content_hash = proposal.get("content_hash")
+    topics = proposal.get("topics")
+    abstain_reason = proposal.get("abstain_reason")
+    if (
+        proposal.get("schema") != PROPOSAL_SCHEMA
+        or proposal.get("packet_id") != packet.get("packet_id")
+        or proposal.get("model") != MODEL_ROUTE
+        or proposal.get("prompt_version") != PROMPT_VERSION
+        or proposal.get("review_status") != "pending_human_review"
+        or proposal.get("private_local_only") is not True
+        or not isinstance(observation_id, str)
+        or observation_id not in item_by_id
+        or not isinstance(content_hash, str)
+        or content_hash != item_by_id[observation_id].get("content_hash")
+        or not isinstance(topics, list)
+        or not isinstance(abstain_reason, str)
+        or bool(topics) == bool(abstain_reason.strip())
+        or not isinstance(proposal.get("recorded_at"), str)
+        or not proposal.get("recorded_at")
+    ):
+        raise ValueError("invalid proposal record")
+    normalized_topics = _normalize_topic_candidates(topics, taxonomy_ids)
+    expected_proposal_id = _stable_id(
+        "topic-proposal",
+        str(packet["packet_id"]),
+        observation_id,
+        _json_fingerprint(
+            _proposal_item_fingerprint_payload(
+                observation_id=observation_id,
+                content_hash=content_hash,
+                topics=normalized_topics,
+                abstain_reason=abstain_reason,
+            )
+        ),
+    )
+    if proposal.get("proposal_id") != expected_proposal_id:
+        raise ValueError("proposal fingerprint mismatch")
+    return {
+        "schema": PROPOSAL_SCHEMA,
+        "proposal_id": expected_proposal_id,
+        "packet_id": packet["packet_id"],
+        "observation_id": observation_id,
+        "content_hash": content_hash,
+        "model": MODEL_ROUTE,
+        "prompt_version": PROMPT_VERSION,
+        "topics": normalized_topics,
+        "abstain_reason": abstain_reason,
+        "review_status": "pending_human_review",
+        "recorded_at": proposal["recorded_at"],
+        "private_local_only": True,
+    }
+
+
+def _load_proposed_observation_ids(path: Path | None) -> set[str]:
+    if path is None or not path.exists():
+        return set()
+    proposed: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if (
+                record.get("schema") != PROPOSAL_SCHEMA
+                or not str(record.get("proposal_id") or "")
+                or not str(record.get("observation_id") or "")
+            ):
+                raise ValueError("invalid proposal ledger")
+            observation_id = str(record.get("observation_id") or "")
+            if observation_id:
+                proposed.add(observation_id)
+    return proposed
+
+
+def _candidate_events(snapshot_store: Path) -> list[dict[str, str]]:
+    records = load_text_snapshots(snapshot_store)
+    candidates: list[dict[str, str]] = []
+    for record in _projection_records(records):
+        target = str(record.get("target_key") or record.get("stream_id") or "unknown")
+        observed_at = str(
+            record.get("captured_at")
+            or record.get("observed_at")
+            or record.get("time")
+            or ""
+        )
+        source = str(record.get("source") or "unknown")
+        content_hash = str(record.get("content_hash") or "")
+        if record.get("event_type") == "message_observation":
+            parsed_events = [
+                DiscordEvent.from_dict(
+                    {
+                        "observed_at": observed_at,
+                        "source": source,
+                        "guild_label": "private-local",
+                        "channel_label": "knowledge-projection",
+                        "author_label": str(record.get("author_label") or "unknown"),
+                        "text_snippet": str(record.get("text") or ""),
+                        "confidence": "structured",
+                        "private_surface": True,
+                    }
+                )
+            ]
+        else:
+            parsed_events = _parse_knowledge_events(
+                str(record.get("text") or ""),
+                source=source,
+                observed_at=observed_at,
+            )
+        for index, parsed in enumerate(parsed_events, start=1):
+            observation_parts = [target, content_hash, str(index)]
+            if record.get("event_type") == "message_observation":
+                observation_parts.append(_structured_message_identity(record))
+            candidates.append(
+                {
+                    "observation_id": _stable_id("observation", *observation_parts),
+                    "stream_ref": _stable_id("stream", target),
+                    "observed_at": observed_at,
+                    "content_hash": hashlib.sha256(
+                        parsed.text_snippet.encode("utf-8")
+                    ).hexdigest(),
+                    "text": parsed.text_snippet,
+                    "explicit_topics": "\0".join(_extract_topics(parsed.text_snippet)),
+                }
+            )
+    return candidates
+
+
+def build_topic_classification_packet(
+    *,
+    snapshot_store: Path,
+    topic_registry: Path,
+    output_path: Path,
+    proposal_ledger: Path | None = None,
+    max_items: int = 100,
+) -> dict[str, Any]:
+    if max_items <= 0:
+        raise ValueError("max_items must be greater than zero")
+    if not snapshot_store.is_file():
+        return {
+            "schema": PACKET_SCHEMA,
+            "ok": False,
+            "reason": "snapshot_store_missing",
+            "private_local_only": True,
+            "outbound_actions": "disabled",
+            "paths_returned": False,
+        }
+    (
+        topics,
+        assignments,
+        _,
+        broader_topics,
+        related_topics,
+        _,
+    ) = _load_topic_registry(topic_registry)
+    proposed = _load_proposed_observation_ids(proposal_ledger)
+    pending = [
+        item
+        for item in _candidate_events(snapshot_store)
+        if not item["explicit_topics"]
+        and item["observation_id"] not in assignments
+        and item["observation_id"] not in proposed
+    ]
+    selected = pending[:max_items]
+    taxonomy = [
+        {
+            "topic_id": topic_id,
+            "label": label,
+            "broader_topic_ids": broader_topics.get(topic_id, []),
+            "related_topic_ids": related_topics.get(topic_id, []),
+        }
+        for topic_id, (_, label) in sorted(topics.items())
+    ]
+    source_fingerprint = _json_fingerprint(
+        [(item["observation_id"], item["content_hash"]) for item in selected]
+    )
+    packet_id = _stable_id(
+        "topic-packet",
+        source_fingerprint,
+        _json_fingerprint(taxonomy),
+        PROMPT_VERSION,
+    )
+    packet = {
+        "schema": PACKET_SCHEMA,
+        "packet_id": packet_id,
+        "model_route": MODEL_ROUTE,
+        "prompt_version": PROMPT_VERSION,
+        "private_local_only": True,
+        "contains_raw_discord_text": True,
+        "external_send_approved": False,
+        "review_policy": "proposal_only_human_promotion_required",
+        "source_fingerprint": source_fingerprint,
+        "taxonomy": taxonomy,
+        "items": [
+            {
+                "observation_id": item["observation_id"],
+                "stream_ref": item["stream_ref"],
+                "observed_at": item["observed_at"],
+                "content_hash": item["content_hash"],
+                "text": item["text"],
+            }
+            for item in selected
+        ],
+        "instructions": {
+            "task": "Propose zero or more topic candidates for every item.",
+            "do_not": [
+                "identify people",
+                "invent facts",
+                "promote proposals to reviewed assignments",
+                "repeat raw text in the result",
+            ],
+            "result_schema": RESULT_SCHEMA,
+        },
+    }
+    _atomic_text(
+        output_path,
+        json.dumps(packet, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+    )
+    return {
+        "schema": PACKET_SCHEMA,
+        "ok": True,
+        "packet_id": packet_id,
+        "candidate_count": len(selected),
+        "remaining_candidate_count": max(0, len(pending) - len(selected)),
+        "taxonomy_count": len(taxonomy),
+        "private_local_only": True,
+        "contains_raw_discord_text": True,
+        "external_send_approved": False,
+        "outbound_actions": "disabled",
+        "paths_returned": False,
+    }
+
+
+def _validated_result(
+    packet: dict[str, Any], result: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if (
+        result.get("schema") != RESULT_SCHEMA
+        or result.get("packet_id") != packet.get("packet_id")
+        or result.get("model") != MODEL_ROUTE
+        or not isinstance(result.get("items"), list)
+    ):
+        raise ValueError("invalid classification result envelope")
+    expected = {str(item["observation_id"]): item for item in packet["items"]}
+    taxonomy_ids = {str(item["topic_id"]) for item in packet["taxonomy"]}
+    validated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in result["items"]:
+        if not isinstance(item, dict):
+            raise ValueError("invalid classification result item")
+        observation_id = item.get("observation_id")
+        topics = item.get("topics")
+        if "abstain_reason" in item and item["abstain_reason"] is not None:
+            abstain_reason = _require_string(
+                item["abstain_reason"], allow_empty=True
+            ).strip()
+        else:
+            abstain_reason = ""
+        if (
+            not isinstance(observation_id, str)
+            or observation_id not in expected
+            or observation_id in seen
+            or not isinstance(topics, list)
+            or bool(topics) == bool(abstain_reason)
+        ):
+            raise ValueError("invalid classification result item")
+        seen.add(observation_id)
+        validated.append(
+            {
+                "observation_id": observation_id,
+                "content_hash": expected[observation_id]["content_hash"],
+                "topics": _normalize_topic_candidates(topics, taxonomy_ids),
+                "abstain_reason": abstain_reason,
+            }
+        )
+    if seen != set(expected):
+        raise ValueError("classification result is incomplete")
+    return validated
+
+
+def import_topic_classification_result(
+    *, packet_path: Path, result_path: Path, proposal_ledger: Path
+) -> dict[str, Any]:
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(packet, dict) or not isinstance(result, dict):
+        raise ValueError("invalid classification document")
+    _validate_packet_integrity(packet)
+    validated = _validated_result(packet, result)
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    candidate_records: list[dict[str, Any]] = []
+    for item in validated:
+        proposal_id = _stable_id(
+            "topic-proposal",
+            str(packet["packet_id"]),
+            item["observation_id"],
+            _json_fingerprint(
+                _proposal_item_fingerprint_payload(
+                    observation_id=item["observation_id"],
+                    content_hash=item["content_hash"],
+                    topics=item["topics"],
+                    abstain_reason=item["abstain_reason"],
+                )
+            ),
+        )
+        candidate_records.append(
+            {
+                "schema": PROPOSAL_SCHEMA,
+                "proposal_id": proposal_id,
+                "packet_id": packet["packet_id"],
+                "observation_id": item["observation_id"],
+                "content_hash": item["content_hash"],
+                "model": MODEL_ROUTE,
+                "prompt_version": PROMPT_VERSION,
+                "topics": item["topics"],
+                "abstain_reason": item["abstain_reason"],
+                "review_status": "pending_human_review",
+                "recorded_at": recorded_at,
+                "private_local_only": True,
+            }
+        )
+    records: list[dict[str, Any]] = []
+    with _exclusive_ledger_lock(proposal_ledger):
+        existing_ids: set[str] = set()
+        if proposal_ledger.exists():
+            with proposal_ledger.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        record = json.loads(line)
+                        proposal_id = str(record.get("proposal_id") or "")
+                        if record.get("schema") != PROPOSAL_SCHEMA or not proposal_id:
+                            raise ValueError("invalid proposal ledger")
+                        existing_ids.add(proposal_id)
+        records = [
+            record
+            for record in candidate_records
+            if record["proposal_id"] not in existing_ids
+        ]
+        if records:
+            payload = "".join(
+                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+                for record in records
+            ).encode("utf-8")
+            descriptor = os.open(
+                proposal_ledger, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600
+            )
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("proposal ledger append failed")
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    return {
+        "schema": PROPOSAL_SCHEMA,
+        "ok": True,
+        "packet_id": packet["packet_id"],
+        "validated_item_count": len(validated),
+        "appended_proposal_count": len(records),
+        "pending_human_review_count": sum(1 for item in validated if item["topics"]),
+        "abstained_count": sum(1 for item in validated if not item["topics"]),
+        "reviewed_registry_changed": False,
+        "wiki_changed": False,
+        "private_local_only": True,
+        "outbound_actions": "disabled",
+        "paths_returned": False,
+    }
+
+
+def build_topic_human_review_packet(
+    *, packet_path: Path, proposal_ledger: Path, output_path: Path
+) -> dict[str, Any]:
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    if not isinstance(packet, dict):
+        raise ValueError("invalid classification packet")
+    _validate_packet_integrity(packet)
+    item_by_id = {item["observation_id"]: item for item in packet["items"]}
+    proposals: list[dict[str, Any]] = []
+    with proposal_ledger.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            proposal = json.loads(line)
+            if not isinstance(proposal, dict):
+                raise ValueError("invalid proposal record")
+            if proposal.get("packet_id") != packet["packet_id"]:
+                continue
+            proposals.append(_validate_proposal_against_packet(proposal, packet))
+    lines = [
+        "---",
+        'title: "DCB 題分類 人間レビューパケット"',
+        "type: dcb-topic-review-packet",
+        "private_local_only: true",
+        f'packet_id: "{packet["packet_id"]}"',
+        "---",
+        "",
+        "# DCB 題分類 人間レビューパケット",
+        "",
+        "> Sparkの出力は候補です。採用してもreviewed registryへの反映は別工程です。",
+        "",
+    ]
+    for proposal in proposals:
+        source = item_by_id[proposal["observation_id"]]
+        lines.extend(
+            [
+                f"## `{proposal['observation_id']}`",
+                "",
+                source["text"],
+                "",
+                f"- content_hash: `{source['content_hash']}`",
+                f"- model: `{proposal['model']}`",
+                "- decision: [ ] adopt / [ ] revise / [ ] reject",
+                "",
+                "### 候補",
+                "",
+            ]
+        )
+        if not proposal["topics"]:
+            lines.append(f"- abstain: {proposal['abstain_reason']}")
+        for topic in proposal["topics"]:
+            label = topic["existing_topic_id"] or topic["proposed_label"]
+            lines.append(
+                f"- `{label}` / confidence={topic['confidence']:.2f} / {topic['reason']}"
+            )
+        lines.append("")
+    _atomic_text(output_path, "\n".join(lines).rstrip() + "\n")
+    return {
+        "schema": "dcb.topic_human_review_packet.v1",
+        "ok": True,
+        "proposal_count": len(proposals),
+        "private_local_only": True,
+        "contains_raw_discord_text": True,
+        "reviewed_registry_changed": False,
+        "paths_returned": False,
+        "outbound_actions": "disabled",
+    }

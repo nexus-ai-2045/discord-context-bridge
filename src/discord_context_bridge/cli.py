@@ -29,6 +29,11 @@ from .local_config import (
 )
 from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
+from .topic_classification import (
+    build_topic_classification_packet,
+    build_topic_human_review_packet,
+    import_topic_classification_result,
+)
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .capture.loop import build_capture_status_projection
 from .capture.orchestrator import capture_watermark_digest
@@ -312,6 +317,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="人間レビュー済み話題付与台帳（private local JSON）",
     )
     export_knowledge.set_defaults(handler=_cmd_export_knowledge_wiki)
+
+    topic_packet = sub.add_parser(
+        "build-topic-classification-packet",
+        help="未分類イベントからSpark向けprivate候補生成packetを作る",
+    )
+    topic_packet.add_argument("--snapshot-store", type=Path, required=True)
+    topic_packet.add_argument("--topic-registry", type=Path, required=True)
+    topic_packet.add_argument("--output", type=Path, required=True)
+    topic_packet.add_argument("--proposal-ledger", type=Path)
+    topic_packet.add_argument("--max-items", type=int, default=100)
+    topic_packet.add_argument("--json", action="store_true")
+    topic_packet.set_defaults(handler=_cmd_build_topic_classification_packet)
+
+    topic_import = sub.add_parser(
+        "import-topic-classification-result",
+        help="Spark候補を検証しappend-onlyレビュー待ち台帳へ取り込む",
+    )
+    topic_import.add_argument("--packet", type=Path, required=True)
+    topic_import.add_argument("--result", type=Path, required=True)
+    topic_import.add_argument("--proposal-ledger", type=Path, required=True)
+    topic_import.add_argument("--json", action="store_true")
+    topic_import.set_defaults(handler=_cmd_import_topic_classification_result)
+
+    topic_review = sub.add_parser(
+        "build-topic-human-review-packet",
+        help="分類候補と原文をprivate人間レビューpacketへまとめる",
+    )
+    topic_review.add_argument("--packet", type=Path, required=True)
+    topic_review.add_argument("--proposal-ledger", type=Path, required=True)
+    topic_review.add_argument("--output", type=Path, required=True)
+    topic_review.add_argument("--json", action="store_true")
+    topic_review.set_defaults(handler=_cmd_build_topic_human_review_packet)
 
     fast_path = sub.add_parser(
         "url-intake-fast-path",
@@ -1235,6 +1272,57 @@ def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
             f"{result['elapsed_ms']} ms"
         )
     return 0 if result["ok"] else 2
+
+
+def _topic_command(handler, args: argparse.Namespace) -> int:
+    try:
+        result = handler()
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        result = {
+            "schema": "dcb.topic_classification_operation.v1",
+            "ok": False,
+            "reason": "classification_artifact_invalid",
+            "private_local_only": True,
+            "outbound_actions": "disabled",
+            "paths_returned": False,
+        }
+    print(_json(result) if args.json else ("完了" if result["ok"] else "安全に停止しました。"))
+    return 0 if result["ok"] else 2
+
+
+def _cmd_build_topic_classification_packet(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: build_topic_classification_packet(
+            snapshot_store=args.snapshot_store,
+            topic_registry=args.topic_registry,
+            output_path=args.output,
+            proposal_ledger=args.proposal_ledger,
+            max_items=args.max_items,
+        ),
+        args,
+    )
+
+
+def _cmd_import_topic_classification_result(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: import_topic_classification_result(
+            packet_path=args.packet,
+            result_path=args.result,
+            proposal_ledger=args.proposal_ledger,
+        ),
+        args,
+    )
+
+
+def _cmd_build_topic_human_review_packet(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: build_topic_human_review_packet(
+            packet_path=args.packet,
+            proposal_ledger=args.proposal_ledger,
+            output_path=args.output,
+        ),
+        args,
+    )
 
 
 def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:

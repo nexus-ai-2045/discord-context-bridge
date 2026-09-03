@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from hashlib import sha256
 
 import pytest
+
+requires_secure_attachment_store = pytest.mark.skipif(
+    os.name == "nt", reason="secure managed attachment storage is unavailable on Windows"
+)
 
 from discord_context_bridge.capture.service import (
     append_persisted_message_event,
@@ -374,6 +379,7 @@ def test_capture_loop_cli_reconcile_fails_closed_for_unsealed_attachments(
     assert payload["receipt_persisted"] is False
 
 
+@requires_secure_attachment_store
 def test_attachment_save_seal_and_reconcile_supports_attachment_full(
     tmp_path, capsys
 ) -> None:
@@ -418,6 +424,7 @@ def test_attachment_save_seal_and_reconcile_supports_attachment_full(
     assert reconciled["receipt_persisted"] is True
 
 
+@requires_secure_attachment_store
 def test_attachment_save_rejects_unknown_missing_and_hash_mismatch(tmp_path, capsys) -> None:
     capture_id = _capture_with_ledger(tmp_path, with_attachment=True)
     object_file = tmp_path / "object.bin"
@@ -478,6 +485,7 @@ def test_attachment_save_rejects_unsafe_private_ref(tmp_path, capsys, private_re
     capsys.readouterr()
 
 
+@requires_secure_attachment_store
 def test_attachment_seal_is_invalidated_by_later_observe(tmp_path, capsys) -> None:
     capture_id = _capture_with_ledger(tmp_path, with_attachment=True)
     object_file = tmp_path / "object.bin"
@@ -535,6 +543,7 @@ def test_attachment_seal_is_invalidated_by_later_observe(tmp_path, capsys) -> No
     assert payload["receipt_persisted"] is False
 
 
+@requires_secure_attachment_store
 @pytest.mark.parametrize("mutation", ["delete", "replace"])
 def test_reconcile_rejects_deleted_or_replaced_managed_attachment(
     tmp_path, capsys, mutation
@@ -575,6 +584,7 @@ def test_reconcile_rejects_deleted_or_replaced_managed_attachment(
     assert payload["receipt_persisted"] is False
 
 
+@requires_secure_attachment_store
 @pytest.mark.parametrize("mutation", ["delete", "replace"])
 def test_full_receipt_load_rechecks_managed_attachment_object(
     tmp_path, capsys, mutation
@@ -715,6 +725,7 @@ def test_attachment_save_fails_closed_without_secure_directory_writes(
     )
 
 
+@requires_secure_attachment_store
 def test_attachment_ledger_ref_and_tip_tamper_fail_closed(tmp_path) -> None:
     capture_id = _capture_with_ledger(tmp_path, with_attachment=True)
     source = tmp_path / "source.bin"
@@ -765,6 +776,7 @@ def test_direct_message_append_invalidates_full_receipt(tmp_path, capsys) -> Non
     assert store.full_capture_receipt_path(capture_id).exists() is False
 
 
+@requires_secure_attachment_store
 def test_attachment_seal_after_receipt_invalidates_and_reconcile_recovers(
     tmp_path, capsys
 ) -> None:
