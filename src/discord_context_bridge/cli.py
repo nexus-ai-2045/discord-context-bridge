@@ -49,6 +49,13 @@ from .capture.service import (
 )
 from .capture.message_ledger import build_strict_full_capture_evidence_from_projections
 from .capture.receipts import persist_strict_full_capture_receipt
+from .capture.parallel_closeout import (
+    evaluate_legacy_parallel_run,
+    evaluate_legacy_parallel_run_from_store,
+    persist_legacy_parallel_closeout,
+    persist_parallel_producer_drain_receipt,
+    persist_parallel_run_stop_receipt,
+)
 from .capture.store import (
     CaptureCheckpointStore,
     CaptureStoreError,
@@ -943,6 +950,52 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parent.add_argument("--parent-target-key", required=True)
     audit_parent.add_argument("--json", action="store_true")
     audit_parent.set_defaults(handler=_cmd_audit_parent_completeness)
+
+    parallel_closeout = sub.add_parser(
+        "closeout-parallel-run",
+        help="legacy並列取得runを正規証拠からmetadata-onlyで終端判定する",
+    )
+    parallel_closeout.add_argument("--run-dir", type=Path, required=True)
+    parallel_closeout.add_argument(
+        "--completeness-db",
+        type=Path,
+        help="canonical parent completeness SQLite store",
+    )
+    parallel_closeout.add_argument(
+        "--parent-target-key",
+        help="run-metadataのprivacy-safe digestに結合された親target key",
+    )
+    parallel_closeout.add_argument(
+        "--finalize",
+        action="store_true",
+        help="証拠不足runをfullにせずblocked_closedとして確定する",
+    )
+    parallel_closeout.add_argument("--json", action="store_true")
+    parallel_closeout.set_defaults(handler=_cmd_closeout_parallel_run)
+
+    producer_drain = sub.add_parser(
+        "record-parallel-producer-drain",
+        help="worker/importer自身のterminal eventをcreate-onlyで記録する",
+    )
+    producer_drain.add_argument("--run-dir", type=Path, required=True)
+    producer_drain.add_argument("--producer", required=True)
+    producer_drain.add_argument("--event-id", required=True)
+    producer_drain.add_argument("--json", action="store_true")
+    producer_drain.set_defaults(handler=_cmd_record_parallel_producer_drain)
+
+    run_stop = sub.add_parser(
+        "record-parallel-run-stop",
+        help="全producer drainを集約したterminal eventをcreate-onlyで記録する",
+    )
+    run_stop.add_argument("--run-dir", type=Path, required=True)
+    run_stop.add_argument("--event-id", required=True)
+    run_stop.add_argument(
+        "--stopped-reason",
+        choices=["completed", "producer_failed", "operator_cancelled", "superseded"],
+        required=True,
+    )
+    run_stop.add_argument("--json", action="store_true")
+    run_stop.set_defaults(handler=_cmd_record_parallel_run_stop)
 
     return parser
 
@@ -2627,6 +2680,107 @@ def _cmd_audit_parent_completeness(args: argparse.Namespace) -> int:
     payload = store.audit_parent(args.parent_target_key)
     print(_json(payload))
     return 0 if payload["parent_full_capture_confirmed"] else 2
+
+
+def _cmd_closeout_parallel_run(args: argparse.Namespace) -> int:
+    try:
+        if bool(args.completeness_db) != bool(args.parent_target_key):
+            raise ValueError("completeness db and parent target key must be paired")
+        if args.completeness_db:
+            payload = evaluate_legacy_parallel_run_from_store(
+                args.run_dir,
+                completeness_db=args.completeness_db,
+                parent_target_key=args.parent_target_key,
+                finalize=args.finalize,
+            )
+        else:
+            payload = evaluate_legacy_parallel_run(
+                args.run_dir,
+                finalize=args.finalize,
+            )
+        should_persist = payload["terminal_state"] == "full_closed" or (
+            args.finalize and payload["terminal_state"] == "blocked_closed"
+        )
+        if should_persist:
+            payload = persist_legacy_parallel_closeout(
+                args.run_dir,
+                completeness_db=args.completeness_db,
+                parent_target_key=args.parent_target_key,
+                finalize=args.finalize,
+            )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        payload = {
+            "language": "ja",
+            "schema": "dcb.parallel-run-operational-closeout.v1",
+            "status": "blocked",
+            "terminal_state": "running",
+            "full_capture_confirmed": False,
+            "persistence_confirmed": False,
+            "blockers": ["parallel_run_closeout_failed"],
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    print(_json(payload))
+    return 0 if payload["full_capture_confirmed"] else 2
+
+
+def _cmd_record_parallel_producer_drain(args: argparse.Namespace) -> int:
+    try:
+        persist_parallel_producer_drain_receipt(
+            args.run_dir,
+            producer=args.producer,
+            event_id=args.event_id,
+        )
+        ok = True
+        blockers: list[str] = []
+    except (OSError, TypeError, ValueError):
+        ok = False
+        blockers = ["parallel_producer_drain_rejected"]
+    print(
+        _json(
+            {
+                "schema": "dcb.parallel-producer-drain-operation.v1",
+                "ok": ok,
+                "blockers": blockers,
+                "raw_text_returned": False,
+                "participant_names_returned": False,
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0 if ok else 2
+
+
+def _cmd_record_parallel_run_stop(args: argparse.Namespace) -> int:
+    try:
+        persist_parallel_run_stop_receipt(
+            args.run_dir,
+            event_id=args.event_id,
+            stopped_reason=args.stopped_reason,
+        )
+        ok = True
+        blockers: list[str] = []
+    except (OSError, TypeError, ValueError):
+        ok = False
+        blockers = ["parallel_run_stop_rejected"]
+    print(
+        _json(
+            {
+                "schema": "dcb.parallel-run-stop-operation.v1",
+                "ok": ok,
+                "blockers": blockers,
+                "raw_text_returned": False,
+                "participant_names_returned": False,
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":
