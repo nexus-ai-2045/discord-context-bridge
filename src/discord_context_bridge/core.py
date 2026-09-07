@@ -8,8 +8,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
+from .capture.store import (
+    CaptureCheckpointStore,
+    CheckpointCorruptError,
+    EventConflictError,
+    SequenceConflictError,
+    _append_store_relative_bytes,
+)
 from .full_capture import build_capture_route_policy
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
@@ -318,7 +325,6 @@ def matching_snapshot_records(path: Path, *, url: str, target_key: str) -> list[
 
 
 def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str, target_key: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {key: value for key, value in record.items() if key not in {"line_no", "source_format"}}
     payload["url"] = url
     payload["target_key"] = target_key
@@ -326,8 +332,7 @@ def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str,
     payload.setdefault("private_local_only", True)
     payload.setdefault("external_share_allowed", False)
     payload.setdefault("outbound_actions", "disabled")
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    append_text_snapshot(payload, path)
 
 
 def build_url_intake_gate(
@@ -1372,10 +1377,124 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
     return snapshots
 
 
-def append_text_snapshot(snapshot: dict[str, Any], path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(snapshot, ensure_ascii=False, sort_keys=True) + "\n")
+def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
+    return str(snapshot.get("stream_id") or snapshot.get("target_key") or "")
+
+
+def _is_chained_text_snapshot(snapshot: dict[str, Any]) -> bool:
+    return snapshot.get("schema") == "discord_context_bridge_text_snapshot_observation.v1" and any(
+        key in snapshot
+        for key in (
+            "event_id",
+            "event_hash",
+            "stream_id",
+            "stream_sequence",
+            "expected_previous_stream_sequence",
+            "previous_event_hash",
+        )
+    )
+
+
+def _validate_text_snapshot_chain(
+    snapshots: list[dict[str, Any]],
+) -> dict[str, tuple[int, str]]:
+    """既存の stream head を検証し、stream ごとの sequence と hash を返す。"""
+
+    heads: dict[str, tuple[int, str]] = {}
+    event_ids: dict[str, dict[str, Any]] = {}
+    for snapshot in snapshots:
+        event_id = str(snapshot.get("event_id") or "")
+        if event_id:
+            existing = event_ids.get(event_id)
+            if existing is not None:
+                if existing != snapshot:
+                    raise CheckpointCorruptError("snapshot event id is bound to different content")
+                raise CheckpointCorruptError("snapshot ledger contains a duplicate event id")
+            event_ids[event_id] = snapshot
+
+        stream_id = _snapshot_stream_id(snapshot)
+        if not stream_id:
+            if _is_chained_text_snapshot(snapshot):
+                raise CheckpointCorruptError("snapshot stream binding is missing")
+            continue
+        previous_sequence, previous_hash = heads.get(stream_id, (0, ""))
+        next_sequence = previous_sequence + 1
+
+        if _is_chained_text_snapshot(snapshot):
+            sequence = snapshot.get("stream_sequence")
+            expected_previous = snapshot.get("expected_previous_stream_sequence")
+            if (
+                not isinstance(sequence, int)
+                or isinstance(sequence, bool)
+                or sequence != next_sequence
+                or expected_previous != previous_sequence
+            ):
+                raise CheckpointCorruptError("snapshot stream sequence is invalid")
+            if str(snapshot.get("previous_event_hash") or "") != previous_hash:
+                raise CheckpointCorruptError("snapshot previous event hash is invalid")
+            event_hash = str(snapshot.get("event_hash") or "")
+            if event_hash != canonical_event_hash(snapshot):
+                raise CheckpointCorruptError("snapshot event hash is invalid")
+        else:
+            event_hash = canonical_event_hash(snapshot)
+        heads[stream_id] = (next_sequence, event_hash)
+    return heads
+
+
+def _append_text_snapshot_transaction(
+    build_snapshot: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    path: Path,
+) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
+    path = Path(path)
+    store = CaptureCheckpointStore(path.parent)
+    with store.transition_lock("canonical-text-snapshots"):
+        snapshots = load_text_snapshots(path)
+        heads = _validate_text_snapshot_chain(snapshots)
+        snapshot = build_snapshot(snapshots)
+
+        event_id = str(snapshot.get("event_id") or "")
+        if event_id:
+            for existing in snapshots:
+                if str(existing.get("event_id") or "") != event_id:
+                    continue
+                if existing != snapshot:
+                    raise EventConflictError("snapshot event id is already bound to other content")
+                return False, existing, snapshots
+
+        stream_id = _snapshot_stream_id(snapshot)
+        if _is_chained_text_snapshot(snapshot):
+            if not event_id or not stream_id:
+                raise CheckpointCorruptError("snapshot identity binding is missing")
+            if str(snapshot.get("event_hash") or "") != canonical_event_hash(snapshot):
+                raise CheckpointCorruptError("snapshot event hash is invalid")
+            current_sequence, current_hash = heads.get(stream_id, (0, ""))
+            expected_previous = snapshot.get("expected_previous_stream_sequence")
+            if expected_previous != current_sequence:
+                raise SequenceConflictError(
+                    f"snapshot sequence conflict: expected {expected_previous}, found {current_sequence}"
+                )
+            if snapshot.get("stream_sequence") != current_sequence + 1:
+                raise SequenceConflictError("snapshot sequence is not the next durable sequence")
+            if str(snapshot.get("previous_event_hash") or "") != current_hash:
+                raise SequenceConflictError("snapshot previous event hash is stale")
+
+        encoded = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        _append_store_relative_bytes(path.parent, path, encoded)
+
+        read_back = load_text_snapshots(path)
+        _validate_text_snapshot_chain(read_back)
+        if len(read_back) != len(snapshots) + 1 or read_back[-1] != snapshot:
+            raise CheckpointCorruptError("snapshot append read-back is invalid")
+        return True, snapshot, read_back
+
+
+def append_text_snapshot(
+    snapshot: dict[str, Any], path: Path = DEFAULT_TEXT_SNAPSHOT_STORE
+) -> bool:
+    """Canonical ledger へ CAS・冪等性・耐障害性を保って一件追記する。"""
+
+    appended, _, _ = _append_text_snapshot_transaction(lambda _: snapshot, Path(path))
+    return appended
 
 
 def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> dict[str, Any] | None:
@@ -2153,59 +2272,64 @@ def snapshot_visible_text(
     target_identity = url.strip() or title.strip() or content[:120]
     target_key = stable_text_hash(target_identity)
     content_hash = stable_text_hash(content)
-    previous = latest_snapshot_for_target(target_key, path)
-    previous_hash = str(previous.get("content_hash") or "") if previous else None
-    previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
-    snapshot_count_before = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
-    previous_stream_sequence = (
-        int(previous.get("stream_sequence") or previous.get("observation_index_for_target") or snapshot_count_before)
-        if previous
-        else 0
-    )
-    changed = previous_hash != content_hash
-    stream_sequence = snapshot_count_before + 1
-    captured_at = utc_now()
-    snapshot = {
-        "schema": "discord_context_bridge_text_snapshot_observation.v1",
-        "event_id": snapshot_observation_event_id(
-            captured_at=captured_at,
-            target_key=target_key,
-            content_hash=content_hash,
-            source=source,
-            stream_sequence=stream_sequence,
-        ),
-        "event_type": "discord.visible_text.snapshot_observed",
-        "stream_id": target_key,
-        "stream_sequence": stream_sequence,
-        "expected_previous_stream_sequence": previous_stream_sequence,
-        "specversion": "1.0",
-        "type": "discord.visible_text.snapshot_observed",
-        "subject": target_key,
-        "time": captured_at,
-        "datacontenttype": "text/plain; charset=utf-8",
-        "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
-        "captured_at": captured_at,
-        "observed_at": captured_at,
-        "ingested_at": captured_at,
-        "source": source,
-        "url": url.strip(),
-        "title": title.strip(),
-        "target_key": target_key,
-        "content_hash": content_hash,
-        "previous_content_hash": previous_hash,
-        "previous_event_hash": previous_event_hash,
-        "changed": changed,
-        "duplicate_content": not changed,
-        "observation_index_for_target": stream_sequence,
-        "acquisition_context": acquisition_context_for_source(source),
-        "text": content,
-        "private_local_only": True,
-        "external_share_allowed": False,
-        "outbound_actions": "disabled",
-    }
-    snapshot["event_hash"] = canonical_event_hash(snapshot)
-    append_text_snapshot(snapshot, path)
-    snapshot_count = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
+
+    def build_snapshot(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+        target_snapshots = [item for item in snapshots if item.get("target_key") == target_key]
+        previous = target_snapshots[-1] if target_snapshots else None
+        previous_hash = str(previous.get("content_hash") or "") if previous else None
+        previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
+        previous_stream_sequence = (
+            int(previous.get("stream_sequence") or previous.get("observation_index_for_target") or len(target_snapshots))
+            if previous
+            else 0
+        )
+        stream_sequence = len(target_snapshots) + 1
+        captured_at = utc_now()
+        snapshot = {
+            "schema": "discord_context_bridge_text_snapshot_observation.v1",
+            "event_id": snapshot_observation_event_id(
+                captured_at=captured_at,
+                target_key=target_key,
+                content_hash=content_hash,
+                source=source,
+                stream_sequence=stream_sequence,
+            ),
+            "event_type": "discord.visible_text.snapshot_observed",
+            "stream_id": target_key,
+            "stream_sequence": stream_sequence,
+            "expected_previous_stream_sequence": previous_stream_sequence,
+            "specversion": "1.0",
+            "type": "discord.visible_text.snapshot_observed",
+            "subject": target_key,
+            "time": captured_at,
+            "datacontenttype": "text/plain; charset=utf-8",
+            "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
+            "captured_at": captured_at,
+            "observed_at": captured_at,
+            "ingested_at": captured_at,
+            "source": source,
+            "url": url.strip(),
+            "title": title.strip(),
+            "target_key": target_key,
+            "content_hash": content_hash,
+            "previous_content_hash": previous_hash,
+            "previous_event_hash": previous_event_hash,
+            "changed": previous_hash != content_hash,
+            "duplicate_content": previous_hash == content_hash,
+            "observation_index_for_target": stream_sequence,
+            "acquisition_context": acquisition_context_for_source(source),
+            "text": content,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        snapshot["event_hash"] = canonical_event_hash(snapshot)
+        return snapshot
+
+    _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
+    snapshot_count = sum(1 for item in read_back if item.get("target_key") == target_key)
+    previous_hash = snapshot["previous_content_hash"]
+    changed = bool(snapshot["changed"])
     return {
         "language": DEFAULT_LANGUAGE,
         "message": "Discord 可視テキスト snapshot observation を追記しました。",
