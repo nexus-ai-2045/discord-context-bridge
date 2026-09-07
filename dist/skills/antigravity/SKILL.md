@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 8d0f17f5a2b17b9fd01577bc184e03380690bd20
+ssot_commit: 791d4660bceefd640741aac31e34d8551f2f5f33
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 8b239ebaf9916937b9b3adb08b2330da9b5db39738cdb76c5fbab4fc858761fe
-contract_checksum: 83763c09b9871a89ab4bc4e7aac4187de2e7e8618599d5a51e43c5f0e95598e1
-generated_at: 2026-08-23T12:27:20+00:00
+manifest_checksum: 3d4586ba5c0aa2ab07eb2314ccd68dae4e3a1ffb81cd9cb05dd3eec24011a9b5
+contract_checksum: 10e288e2b1fd68c6c8729faf9959d26553a5c3bed8ca4cdafdf76a72bd6fe0e3
+generated_at: 2026-09-07T16:18:13+00:00
 runtime_target: antigravity
 ---
 
@@ -33,7 +33,8 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、`SendKeys`、`AppActivate`、クリック、スクロール、スクショ取得、Chromeを勝手に開く・遷移する操作は、ユーザーの明示許可なしに実行しない。DCB の Chrome visible fallback は、正規 adapter / DOM取得口 / clipboard / local file が使える場合だけ進め、Windows UI 自動操作へ迂回しない。
 - `no_browser_before_dcb_preflight`: Discord URL、Discord画面、チャンネル用途、投稿先、投稿本文、返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache-first、coverage、route判定を通す。ブラウザ操作前は `--preflight-only` の `ready_for_browser_preflight`、対象タブ到達後は `ready_for_bridge` を別段階で確認し、visible fallbackが次の正規経路であることを確認するまで本文読取へ進まない。ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
 - `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
-- Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
+- Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。tokenの設定済み状態とlive到達確認を分離し、`discord_bot_live_verify.py --expected-url` がBot本人、対象guild所属、対象channel読取をGETだけで実測した署名済みprivate receiptがなければ主経路をreadyにしない。consumerは現在credentialとexpected targetを再計算し、対象未指定・別対象・期限切れ・改変receiptをfail-closedにする。
+- live verificationの対応channel typeは共有正本 `SUPPORTED_TARGET_CHANNEL_TYPES` に限定する。text、announcement、各thread、forum、mediaだけを受理し、voice、category、stage、directoryなどはproducerとconsumerの双方でfail-closedにする。本文履歴APIの対応種別は別の共有正本 `MESSAGE_HISTORY_CHANNEL_TYPES` でtext、announcement、各threadに限定する。
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
 - Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。
 - Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
@@ -139,13 +140,14 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 0. `intent_router`: `read-current-visible` / `full-capture` / `reply-review` / `posted-record` を先に切る。
 1. `codex_discord_ingress_smoke.py`: URL / Chrome 状態の safe metadata 確認。
 2. `discord_route_retry_decider.py`: `gateway_live_event`、`rest_backfill`、`bot_text_event_inbox` の順に確認。
-3. `discord_rest_backfill.py`: bot token の環境変数または secret-command provider が設定済みの場合だけ Bot REST API で read-only に履歴を backfill し、stdout は metadata-only にする。provider の状態は `env` / `secret_command` / `missing` の安全ラベルだけを返し、rate limit は `rate_limited_retryable` として closeout に残す。
-4. `private_adapter_probe.py`: private adapter / private command の設定状態を確認。
-5. `read-current-visible` で 2-4 が未設定なら、ここで `blocked_need_chrome_visible_read_go` を返す。すでにユーザーが Chrome 可視読取を許可している場合だけ次へ進む。
-6. `chrome_visible_fallback_guard.py`: Chrome visible fallback の前に既存タブ棚卸しを評価し、既存対象タブ claim / 既存Discordタブ claim + target navigation / 既存Chromeウィンドウ内の新規タブ作成を決める。
-7. `read-current-visible` では Chrome 可視DOMからスレッド本文だけを抽出し、raw本文は private artifact / local store に保存する。ユーザーが「本文を出して」と求めた場合でも visible output には raw本文を貼らず、件数、coverage、保存先の safe label、未取得理由だけを返す。
-8. `full-capture` では明示された local file / source command、Discord Desktop cache、添付候補の保存まで進める。clipboard は明示時のみ。
-9. OCR / screenshot / vision は DCB 本文取得ルートから除外する。使う場合は DCB ではなく別 skill / 別 task として Type1 明示承認を取る。
+3. `discord_bot_live_verify.py --expected-url`: 現在credentialでBot本人、対象guild所属、対象channel読取をGETだけで実測し、対象とcredentialへ署名したprivate receiptを作る。一般statusや対象未指定ではreadyにしない。
+4. `discord_rest_backfill.py`: 同じexpected targetの有効なlive receiptがある場合だけ Bot REST API でread-onlyに履歴をbackfillし、stdoutはmetadata-onlyにする。providerの状態は `env` / `secret_command` / `missing` の安全ラベルだけを返し、rate limitは `rate_limited_retryable` としてcloseoutに残す。
+5. `private_adapter_probe.py`: private adapter / private command の設定状態を確認。
+6. `read-current-visible` で 2-5 が未設定なら、ここで `blocked_need_chrome_visible_read_go` を返す。すでにユーザーが Chrome 可視読取を許可している場合だけ次へ進む。
+7. `chrome_visible_fallback_guard.py`: Chrome visible fallback の前に既存タブ棚卸しを評価し、既存対象タブ claim / 既存Discordタブ claim + target navigation / 既存Chromeウィンドウ内の新規タブ作成を決める。
+8. `read-current-visible` では Chrome 可視DOMからスレッド本文だけを抽出し、raw本文は private artifact / local store に保存する。ユーザーが「本文を出して」と求めた場合でも visible output には raw本文を貼らず、件数、coverage、保存先の safe label、未取得理由だけを返す。
+9. `full-capture` では明示された local file / source command、Discord Desktop cache、添付候補の保存まで進める。clipboard は明示時のみ。
+10. OCR / screenshot / vision は DCB 本文取得ルートから除外する。使う場合は DCB ではなく別 skill / 別 task として Type1 明示承認を取る。
 
 全文取得要求では、可視範囲の取得を待たせず foreground lane として即時保存し、同時に background lane を開始する。foreground lane の成功は provisional context に限り、background lane が最古端、最新watermark、添付、再走査、artifact照合を閉じるまで full を名乗らない。partial は background lane の正常終了状態ではなく、再開可能なcheckpointまたは明示的な停止理由を必ず持つ。
 
@@ -238,6 +240,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 - `python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json`: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
 - `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
+- `python3 scripts/discord_bot_live_verify.py --expected-url <discord-url> --json`: Bot本人、対象guild所属、対象channel読取をGETだけで実測し、署名済みprivate receiptを作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
