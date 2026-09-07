@@ -19,7 +19,18 @@ ALGORITHM_IDS = [
     "attachment_manifest_reconciliation",
     "pending_work_zero",
 ]
-REQUIRED_INVENTORY_SCOPES = {"active", "archived_public", "archived_private"}
+LEGACY_INVENTORY_SCOPES = {"active", "archived_public", "archived_private"}
+REQUIRED_SCOPES_BY_PARENT_KIND = {
+    "announcement": ("active_filtered", "archived_public"),
+    "forum": ("active_filtered", "archived_public"),
+    "media": ("active_filtered", "archived_public"),
+    "text": ("active_filtered", "archived_public", "archived_private"),
+}
+SCOPE_ROUTES = {
+    "active_filtered": "GET /guilds/{guild_id}/threads/active",
+    "archived_public": "GET /channels/{channel_id}/threads/archived/public",
+    "archived_private": "GET /channels/{channel_id}/threads/archived/private",
+}
 
 
 def _digest_ids(values: Sequence[str]) -> str:
@@ -41,10 +52,100 @@ def _require_bool(value: object, field: str) -> bool:
     return value
 
 
-def _inventory_complete(scopes: Mapping[str, Any], pagination_exhausted: bool) -> bool:
-    if not pagination_exhausted:
-        return False
-    return all(bool(scopes.get(scope)) for scope in REQUIRED_INVENTORY_SCOPES)
+def _stored_scope_receipts(value: object) -> tuple[dict[str, Any], bool]:
+    if not isinstance(value, str) or not value:
+        return {}, False
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}, False
+    if not isinstance(parsed, dict) or any(
+        not isinstance(receipt, Mapping) for receipt in parsed.values()
+    ):
+        return {}, False
+    return parsed, True
+
+
+def _normalize_scope_receipts(
+    parent_target_key: str,
+    parent_kind: str,
+    receipts: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    required = REQUIRED_SCOPES_BY_PARENT_KIND.get(parent_kind)
+    if required is None:
+        raise ValueError("parent_kind_invalid")
+    if any(scope not in required for scope in receipts):
+        raise ValueError("scope_receipt_not_applicable")
+    normalized: dict[str, dict[str, Any]] = {}
+    all_thread_ids: list[str] = []
+    for scope, receipt in receipts.items():
+        if not isinstance(receipt, Mapping):
+            raise ValueError("scope_receipt_object_required")
+        if receipt.get("route") != SCOPE_ROUTES[scope]:
+            raise ValueError("scope_receipt_route_mismatch")
+        if receipt.get("parent_target_key") != parent_target_key:
+            raise ValueError("scope_receipt_parent_binding_mismatch")
+        filtered = receipt.get("active_parent_filter_applied")
+        if not isinstance(filtered, bool):
+            raise ValueError("scope_receipt_parent_filter_boolean_required")
+        if scope == "active_filtered" and not filtered:
+            raise ValueError("scope_receipt_active_parent_filter_required")
+        page_count = receipt.get("page_count")
+        if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
+            raise ValueError("scope_receipt_page_count_invalid")
+        terminal_reached = receipt.get("terminal_reached")
+        if not isinstance(terminal_reached, bool) or "terminal_cursor" not in receipt:
+            raise ValueError("scope_receipt_terminal_evidence_required")
+        terminal_cursor = receipt["terminal_cursor"]
+        if terminal_cursor is not None and not isinstance(terminal_cursor, str):
+            raise ValueError("scope_receipt_terminal_cursor_invalid")
+        raw_thread_ids = receipt.get("thread_ids")
+        if not isinstance(raw_thread_ids, list) or any(
+            not isinstance(value, str) or not value.strip() for value in raw_thread_ids
+        ):
+            raise ValueError("scope_receipt_thread_ids_invalid")
+        thread_ids = list(raw_thread_ids)
+        if len(thread_ids) != len(set(thread_ids)):
+            raise ValueError("duplicate_thread_id")
+        locked_count = receipt.get("locked_count")
+        if (
+            not isinstance(locked_count, int)
+            or isinstance(locked_count, bool)
+            or locked_count < 0
+            or locked_count > len(thread_ids)
+        ):
+            raise ValueError("scope_receipt_locked_count_invalid")
+        authorization_confirmed = None
+        if scope == "archived_private":
+            authorization = receipt.get("authorization")
+            if isinstance(authorization, Mapping):
+                authorization_confirmed = (
+                    authorization.get("capability") == "manage_threads"
+                    and authorization.get("confirmed") is True
+                )
+        normalized[scope] = {
+            "route": SCOPE_ROUTES[scope],
+            "parent_bound": True,
+            "active_parent_filter_applied": filtered,
+            "page_count": page_count,
+            "terminal_reached": terminal_reached,
+            "terminal_cursor_digest": hashlib.sha256(
+                (terminal_cursor if terminal_cursor is not None else "<none>").encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            "thread_count": len(thread_ids),
+            "thread_set_digest": _digest_ids(thread_ids),
+            "locked_count": locked_count,
+            "authorization_confirmed": authorization_confirmed,
+            "authorization_capability": (
+                "manage_threads" if authorization_confirmed is True else None
+            ),
+        }
+        all_thread_ids.extend(thread_ids)
+    if len(all_thread_ids) != len(set(all_thread_ids)):
+        raise ValueError("thread_scope_overlap")
+    return normalized, all_thread_ids
 
 
 class CompletenessStore:
@@ -105,6 +206,8 @@ class CompletenessStore:
                     thread_set_digest TEXT NOT NULL,
                     scopes_json TEXT NOT NULL,
                     pagination_exhausted INTEGER NOT NULL CHECK(pagination_exhausted IN (0, 1)),
+                    parent_kind TEXT,
+                    scope_receipts_json TEXT,
                     UNIQUE(parent_target_key, scan_id)
                 );
                 CREATE TABLE IF NOT EXISTS inventory_threads (
@@ -141,6 +244,16 @@ class CompletenessStore:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(inventory_scans)").fetchall()
+            }
+            if "parent_kind" not in columns:
+                connection.execute("ALTER TABLE inventory_scans ADD COLUMN parent_kind TEXT")
+            if "scope_receipts_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE inventory_scans ADD COLUMN scope_receipts_json TEXT"
+                )
 
     def record_inventory_scan(
         self,
@@ -148,20 +261,32 @@ class CompletenessStore:
         parent_target_key: str,
         scan_id: str,
         observed_at: str,
-        thread_ids: Sequence[str],
-        scopes: Mapping[str, bool],
-        pagination_exhausted: bool,
+        thread_ids: Sequence[str] | None = None,
+        scopes: Mapping[str, bool] | None = None,
+        pagination_exhausted: bool | None = None,
+        parent_kind: str | None = None,
+        scope_receipts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
-        normalized_ids = [str(value) for value in thread_ids]
         if not parent_target_key.strip() or not scan_id.strip():
             raise ValueError("inventory_binding_required")
-        if not isinstance(pagination_exhausted, bool):
-            raise ValueError("pagination_exhausted_boolean_required")
-        if any(
-            scope not in scopes or not isinstance(scopes[scope], bool)
-            for scope in REQUIRED_INVENTORY_SCOPES
-        ):
-            raise ValueError("inventory_scope_boolean_required")
+        normalized_receipts: dict[str, dict[str, Any]] | None = None
+        if scope_receipts is not None or parent_kind is not None:
+            if not isinstance(scope_receipts, Mapping) or parent_kind is None:
+                raise ValueError("canonical_inventory_evidence_required")
+            normalized_receipts, normalized_ids = _normalize_scope_receipts(
+                parent_target_key, parent_kind, scope_receipts
+            )
+            scopes = {}
+            pagination_exhausted = False
+        else:
+            normalized_ids = [str(value) for value in (thread_ids or [])]
+            if not isinstance(pagination_exhausted, bool):
+                raise ValueError("pagination_exhausted_boolean_required")
+            if not isinstance(scopes, Mapping) or any(
+                scope not in scopes or not isinstance(scopes[scope], bool)
+                for scope in LEGACY_INVENTORY_SCOPES
+            ):
+                raise ValueError("inventory_scope_boolean_required")
         if len(normalized_ids) != len(set(normalized_ids)):
             raise ValueError("duplicate_thread_id")
         normalized_observed_at = _normalized_time(observed_at)
@@ -174,8 +299,9 @@ class CompletenessStore:
                 """
                 INSERT INTO inventory_scans(
                     parent_target_key, scan_id, observed_at, thread_count,
-                    thread_set_digest, scopes_json, pagination_exhausted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    thread_set_digest, scopes_json, pagination_exhausted,
+                    parent_kind, scope_receipts_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     parent_target_key,
@@ -185,6 +311,12 @@ class CompletenessStore:
                     _digest_ids(normalized_ids),
                     json.dumps(dict(scopes), sort_keys=True),
                     int(pagination_exhausted),
+                    parent_kind,
+                    (
+                        json.dumps(normalized_receipts, sort_keys=True)
+                        if normalized_receipts is not None
+                        else None
+                    ),
                 ),
             )
             scan_row_id = int(cursor.lastrowid)
@@ -326,6 +458,11 @@ class CompletenessStore:
         retired_count = 0
         both_complete = False
         stable = False
+        latest_receipts: dict[str, Any] = {}
+        required_scopes: tuple[str, ...] = ()
+        evidence_model = "missing"
+        locked_count = 0
+        latest_complete = False
         with self._connect() as connection:
             scans = connection.execute(
                 """
@@ -340,9 +477,23 @@ class CompletenessStore:
 
             if len(scans) == 2:
                 parsed_complete = []
+                scan_receipts_by_position: list[dict[str, Any]] = []
                 for scan in scans:
-                    scopes_probe = json.loads(scan["scopes_json"])
-                    complete = _inventory_complete(scopes_probe, bool(scan["pagination_exhausted"]))
+                    scan_kind = scan["parent_kind"]
+                    receipt_json = scan["scope_receipts_json"]
+                    scan_receipts, receipts_valid = _stored_scope_receipts(receipt_json)
+                    scan_receipts_by_position.append(scan_receipts)
+                    scan_required = REQUIRED_SCOPES_BY_PARENT_KIND.get(scan_kind, ())
+                    complete = receipts_valid and bool(scan_required) and all(
+                        scope in scan_receipts
+                        and scan_receipts[scope].get("terminal_reached") is True
+                        for scope in scan_required
+                    )
+                    if scan_kind == "text" and complete:
+                        complete = (
+                            scan_receipts["archived_private"].get("authorization_confirmed")
+                            is True
+                        )
                     parsed_complete.append(complete)
                 both_complete = all(parsed_complete)
                 if not both_complete:
@@ -350,6 +501,25 @@ class CompletenessStore:
                 digest_match = (
                     scans[0]["thread_set_digest"] == scans[1]["thread_set_digest"]
                     and scans[0]["thread_count"] == scans[1]["thread_count"]
+                    and scans[0]["parent_kind"] == scans[1]["parent_kind"]
+                    and bool(REQUIRED_SCOPES_BY_PARENT_KIND.get(scans[0]["parent_kind"]))
+                    and all(
+                        scan_receipts_by_position[0].get(scope, {}).get(
+                            "thread_set_digest"
+                        )
+                        == scan_receipts_by_position[1].get(scope, {}).get(
+                            "thread_set_digest"
+                        )
+                        and scan_receipts_by_position[0].get(scope, {}).get(
+                            "thread_count"
+                        )
+                        == scan_receipts_by_position[1].get(scope, {}).get(
+                            "thread_count"
+                        )
+                        for scope in REQUIRED_SCOPES_BY_PARENT_KIND.get(
+                            scans[0]["parent_kind"], ()
+                        )
+                    )
                 )
                 stable = both_complete and digest_match
                 if both_complete and not digest_match:
@@ -357,7 +527,6 @@ class CompletenessStore:
 
             latest = scans[0] if scans else None
             thread_ids: set[str] = set()
-            scopes: dict[str, bool] = {}
             pagination_exhausted = False
             if latest is None:
                 blockers.append("parent_inventory_missing")
@@ -369,12 +538,43 @@ class CompletenessStore:
                         (latest["id"],),
                     )
                 }
-                scopes = json.loads(latest["scopes_json"])
-                pagination_exhausted = bool(latest["pagination_exhausted"])
+                if latest["scope_receipts_json"]:
+                    evidence_model = "scope_receipts_v1"
+                    latest_receipts, receipts_valid = _stored_scope_receipts(
+                        latest["scope_receipts_json"]
+                    )
+                    if not receipts_valid:
+                        blockers.append("inventory_scope_receipts_invalid")
+                    required_scopes = REQUIRED_SCOPES_BY_PARENT_KIND.get(
+                        latest["parent_kind"], ()
+                    )
+                    pagination_exhausted = bool(required_scopes) and all(
+                        latest_receipts.get(scope, {}).get("terminal_reached") is True
+                        for scope in required_scopes
+                    )
+                    latest_complete = pagination_exhausted and all(
+                        scope in latest_receipts for scope in required_scopes
+                    )
+                    locked_count = sum(
+                        int(latest_receipts.get(scope, {}).get("locked_count") or 0)
+                        for scope in required_scopes
+                    )
+                    if not all(scope in latest_receipts for scope in required_scopes):
+                        blockers.append("inventory_scope_incomplete")
+                    if (
+                        latest["parent_kind"] == "text"
+                        and latest_receipts.get("archived_private", {}).get(
+                            "authorization_confirmed"
+                        )
+                        is not True
+                    ):
+                        blockers.append("private_archive_authorization_missing")
+                        latest_complete = False
+                else:
+                    evidence_model = "legacy_aggregate"
+                    blockers.append("inventory_scope_receipts_missing")
                 if not pagination_exhausted:
                     blockers.append("inventory_pagination_not_exhausted")
-                if not all(bool(scopes.get(scope)) for scope in REQUIRED_INVENTORY_SCOPES):
-                    blockers.append("inventory_scope_incomplete")
 
             retired_count = self._retire_absent_certificates(
                 connection,
@@ -439,10 +639,10 @@ class CompletenessStore:
             "inventory": {
                 "stable_scan_count": 2 if stable else len(scans),
                 "pagination_exhausted": pagination_exhausted,
-                "required_scopes_complete": all(
-                    bool(scopes.get(scope)) for scope in REQUIRED_INVENTORY_SCOPES
-                ),
+                "required_scopes": list(required_scopes),
+                "required_scopes_complete": latest_complete,
                 "both_latest_scans_complete": both_complete if len(scans) == 2 else False,
+                "evidence_model": evidence_model,
             },
             "counts": {
                 "inventory_threads": len(thread_ids),
@@ -450,6 +650,7 @@ class CompletenessStore:
                 "full_children": full_children,
                 "pending_children": len(thread_ids) - full_children,
                 "retired_certificates": retired_count,
+                "locked_threads": locked_count,
             },
             "blockers": blockers,
             "next_action": "context_understanding" if status == "full" else "continue_parent_capture",

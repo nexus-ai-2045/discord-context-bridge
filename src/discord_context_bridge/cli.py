@@ -2611,14 +2611,31 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
         evidence = _load_private_json(args.evidence)
         store = CompletenessStore(args.db)
         store.initialize()
-        store.record_inventory_scan(
-            parent_target_key=str(evidence["parent_target_key"]),
-            scan_id=str(evidence["scan_id"]),
-            observed_at=str(evidence["observed_at"]),
-            thread_ids=[str(value) for value in evidence["thread_ids"]],
-            scopes=dict(evidence["scopes"]),
-            pagination_exhausted=evidence["pagination_exhausted"],
-        )
+        if "scope_receipts" in evidence or "parent_kind" in evidence:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                parent_kind=str(evidence["parent_kind"]),
+                scope_receipts=dict(evidence["scope_receipts"]),
+            )
+            thread_count = len(
+                {
+                    str(thread_id)
+                    for receipt in evidence["scope_receipts"].values()
+                    for thread_id in receipt.get("thread_ids", [])
+                }
+            )
+        else:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                thread_ids=[str(value) for value in evidence["thread_ids"]],
+                scopes=dict(evidence["scopes"]),
+                pagination_exhausted=evidence["pagination_exhausted"],
+            )
+            thread_count = len(evidence["thread_ids"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         payload = {
             "language": "ja",
@@ -2636,7 +2653,7 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
             "schema": "discord_completeness_store_operation.v1",
             "ok": True,
             "operation": "record_parent_inventory",
-            "thread_count": len(evidence["thread_ids"]),
+            "thread_count": thread_count,
             "path_output": "omitted",
             "identifiers_returned": False,
             "outbound_actions": "disabled",

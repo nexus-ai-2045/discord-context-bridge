@@ -34,6 +34,7 @@ import gh_pr_read
 from discord_context_bridge.cli import safe_command_failure_reason
 from discord_context_bridge.credentials import (
     BOT_TOKEN_ENV,
+    CHANNEL_DIR_ENV,
     TOKEN_COMMAND_ENV,
     configured_bot_token_provider,
     load_bot_token_from_provider,
@@ -44,12 +45,22 @@ def ready_channel_dir(tmp_path: Path) -> Path:
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
     token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path = channel_dir / ".env"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
     )
     return channel_dir
+
+
+def write_safe_channel_env(channel_dir: Path) -> Path:
+    env_path = channel_dir / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    return env_path
 
 
 def configure_test_secret_command(monkeypatch, python_code: str) -> None:
@@ -78,15 +89,122 @@ def test_public_safe_payload_omits_nested_store_paths():
     assert live_mvp_status.public_safe_payload(payload)["live_smoke"]["store"] == "omitted"
 
 
-def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Path):
+def test_channel_env_provider_status_and_load_agree_without_returning_value(tmp_path: Path):
     env_path = tmp_path / ".env"
     token_key = "DISCORD_" + "BOT_TOKEN"
     env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
 
-    status = discord_bot_route_preflight.read_env_status(env_path)
+    status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+    loaded = load_bot_token_from_provider(env={}, channel_env_path=env_path)
 
-    assert status == {"exists": True, "token_set": True}
+    assert status["ok"] is True
+    assert status["provider"] == "channel_env"
+    assert loaded.ok is True
+    assert loaded.provider == "channel_env"
+    assert loaded.token == "synthetic-secret"
     assert "synthetic-secret" not in str(status)
+
+
+def test_channel_env_never_executes_lines_and_reads_only_exact_key(tmp_path: Path):
+    marker = tmp_path / "must-not-exist"
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"source {tmp_path / 'another.env'}\n"
+        f"touch={marker}\n"
+        f"{'DISCORD_' + 'BOT_TOKEN'}=synthetic-secret\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+
+    loaded = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+
+    assert loaded.ok is True
+    assert loaded.token == "synthetic-secret"
+    assert marker.exists() is False
+
+
+def test_channel_env_rejects_unsafe_mode_and_symlink(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    if os.name != "nt":
+        env_path.chmod(0o644)
+        result = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+        status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+        assert result.failure_stage == "channel_env_mode_0600_required"
+        assert status["failure_stage"] == result.failure_stage
+        assert status["provider"] == result.provider
+
+    target = tmp_path / "target.env"
+    target.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    target.chmod(0o600)
+    link = tmp_path / "linked.env"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        return
+    result = load_bot_token_from_provider(env={}, channel_env_path=link)
+    assert result.failure_stage == "channel_env_not_regular_file"
+
+
+def test_channel_env_rejects_duplicate_exact_token_key(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(
+        f"{token_key}=first-secret\n{token_key}=second-secret\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+
+    result = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+    status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+
+    assert result.failure_stage == "channel_env_duplicate_token_key"
+    assert status["failure_stage"] == result.failure_stage
+    assert "first-secret" not in json.dumps(status)
+    assert "second-secret" not in json.dumps(status)
+
+
+def test_bot_route_preflight_uses_same_channel_env_provider(tmp_path: Path, monkeypatch):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    write_safe_channel_env(channel_dir)
+    (channel_dir / "access.json").write_text(
+        json.dumps({"dmPolicy": "locked", "allowFrom": ["safe"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+
+    payload = discord_bot_route_preflight.build_preflight(channel_dir)
+
+    assert payload["ok"] is True
+    assert payload["bot_token"]["provider"] == "channel_env"
+    assert payload["credential_provider"]["provider"] == "channel_env"
+    assert payload["credential_provider"]["token_set"] is True
+
+
+def test_explicit_env_and_secret_command_keep_priority_over_channel_env(
+    tmp_path: Path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=channel-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    explicit = load_bot_token_from_provider(
+        env={BOT_TOKEN_ENV: "explicit-secret", TOKEN_COMMAND_ENV: "ignored"},
+        channel_env_path=env_path,
+    )
+    assert explicit.provider == "env"
+    assert explicit.token == "explicit-secret"
+
+    configure_test_secret_command(monkeypatch, "print('command-secret')")
+    source = dict(os.environ)
+    source.pop(BOT_TOKEN_ENV, None)
+    command = load_bot_token_from_provider(env=source, channel_env_path=env_path)
+    assert command.provider == "secret_command"
+    assert command.token == "command-secret"
 
 
 def test_configured_bot_token_provider_detects_secret_command_without_value(monkeypatch):
@@ -143,9 +261,10 @@ def test_bot_route_preflight_accepts_secret_command_provider(tmp_path: Path, mon
     assert "12345" not in json.dumps(payload, ensure_ascii=False)
 
 
-def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch):
+def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch, tmp_path):
     monkeypatch.delenv("DISCORD_" + "BOT_TOKEN", raising=False)
     monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    monkeypatch.setenv(CHANNEL_DIR_ENV, str(tmp_path / "missing-channel"))
 
     result = discord_rest_backfill.main(["--url", "https://discord.com/channels/7/8/9", "--json"])
 
@@ -290,8 +409,7 @@ def test_bot_private_ingest_empty_input_is_safe(tmp_path: Path):
 def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         (
             '{"dmPolicy":"allowlist",'
@@ -949,8 +1067,7 @@ def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path, monk
     channel_dir = tmp_path / "discord"
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
@@ -1518,8 +1635,7 @@ def test_repo_goal_status_includes_ops_smoke_failure(monkeypatch):
 def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
@@ -1621,8 +1737,7 @@ def test_route_retry_decider_uses_inbox_when_api_unconfigured(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
