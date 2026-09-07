@@ -13,18 +13,42 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def build_status(channel_dir: Path) -> dict[str, Any]:
-    preflight = discord_bot_route_preflight.build_preflight(channel_dir)
+def build_status(
+    channel_dir: Path, *, expected_url: str | None = None
+) -> dict[str, Any]:
+    preflight = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=expected_url
+    )
     access = preflight["access"]
     bot_ready = bool(preflight["ok"])
     bot_token_set = bool(preflight["bot_token"]["set"])
+    live_verified = bool(preflight["live_verification"]["live_verified"])
     token_provider = str(preflight["bot_token"].get("provider") or "missing")
     control_plane_ready = bot_token_set and bool(access.get("readable", True))
+    main_route_ready = control_plane_ready and live_verified
+    history_ready = main_route_ready and bool(
+        preflight["live_verification"]["message_history_supported"]
+    )
+    parent_inventory_required = main_route_ready and not history_ready
 
     return {
         "schema": "discord_plugin_route_status.v1",
-        "ok": control_plane_ready,
-        "recommended_route": "rest_backfill" if bot_token_set else "discord_configure_or_access",
+        "ok": history_ready,
+        "recommended_route": (
+            "rest_backfill"
+            if history_ready
+            else (
+                "thread_inventory"
+                if parent_inventory_required
+                else (
+                "discord_verify_target_access"
+                if control_plane_ready
+                else "discord_configure_or_access"
+                )
+            )
+        ),
+        "configuration_state": "configured" if control_plane_ready else "not_ready",
+        "live_state": "live_verified" if live_verified else "live_unverified",
         "routes": {
             "discord_configure": {
                 "route_class": "control",
@@ -50,8 +74,21 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
             "rest_backfill": {
                 "route_class": "main",
                 "role": "Bot REST API で履歴を read-only backfill する主経路",
-                "status": "ready" if bot_token_set else "blocked",
-                "next": "run_discord_rest_backfill" if bot_token_set else "set_bot_token_env_or_secret_command",
+                "status": "ready" if history_ready else "blocked",
+                "next": (
+                    "run_discord_rest_backfill"
+                    if history_ready
+                    else (
+                        "run_discord_archived_thread_inventory"
+                        if parent_inventory_required
+                        else "obtain_explicit_target_live_verification_receipt"
+                        if bot_token_set else "set_bot_token_env_or_secret_command"
+                    )
+                ),
+                "credential_configured": bot_token_set,
+                "live_verified": live_verified,
+                "channel_type_class": preflight["live_verification"]["channel_type_class"],
+                "message_history_supported": history_ready,
                 "provider": token_provider,
                 "token_output": "omitted",
                 "command_output": "omitted",
@@ -59,11 +96,19 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
                 "outbound_actions": "disabled",
                 "send_capability": "disabled_by_policy",
             },
+            "thread_inventory": {
+                "route_class": "main",
+                "role": "forum / media 親からthreadを列挙する経路",
+                "status": "required" if parent_inventory_required else "not_required",
+                "outbound_actions": "disabled",
+            },
             "bot_private_ingest": {
                 "route_class": "main",
                 "role": "受け取った Discord 本文を文脈カード / 返信前 gate へ流す本線",
                 "status": "ready" if bot_ready else "blocked",
                 "next": preflight["next"],
+                "credential_configured": bot_token_set,
+                "live_verified": live_verified,
                 "text_output": "omitted",
                 "outbound_actions": "disabled",
             },
@@ -89,6 +134,10 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="@discord / Computer Use route の安全な状態を一覧する。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument(
+        "--expected-url",
+        help="照合するDiscord対象URL。未指定時は主経路をreadyにしません。",
+    )
     parser.add_argument("--json", action="store_true", help="JSON で出力する。")
     return parser
 
@@ -113,7 +162,7 @@ def print_human(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    payload = build_status(args.channel_dir)
+    payload = build_status(args.channel_dir, expected_url=args.expected_url)
     if args.json:
         print(_json(payload))
     else:
