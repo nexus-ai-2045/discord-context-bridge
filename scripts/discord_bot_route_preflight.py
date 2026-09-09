@@ -15,8 +15,14 @@ if str(SRC) not in sys.path:
 
 from discord_context_bridge import configured_bot_token_provider
 from discord_context_bridge.cli import JapaneseArgumentParser
+from discord_context_bridge.credentials import _channel_env_path
 
 DEFAULT_CHANNEL_DIR = Path.home() / ".claude" / "channels" / "discord"
+
+
+def default_channel_dir() -> Path:
+    """credential loader と同じ環境変数・既定 path 解決を再利用する。"""
+    return _channel_env_path(os.environ, None).parent
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -108,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--channel-dir",
         type=Path,
-        default=Path(os.environ.get("DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR", DEFAULT_CHANNEL_DIR)),
+        default=default_channel_dir(),
         help="Discord channel設定directory",
     )
     return parser

@@ -260,6 +260,7 @@ class CompletenessStore:
                     inventory_scan_id INTEGER NOT NULL
                         REFERENCES inventory_scans(id) ON DELETE CASCADE,
                     thread_id TEXT NOT NULL,
+                    scope TEXT,
                     PRIMARY KEY(inventory_scan_id, thread_id)
                 );
                 CREATE TABLE IF NOT EXISTS child_capture_certificates (
@@ -300,6 +301,12 @@ class CompletenessStore:
                 connection.execute(
                     "ALTER TABLE inventory_scans ADD COLUMN scope_receipts_json TEXT"
                 )
+            membership_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(inventory_threads)")
+            }
+            if "scope" not in membership_columns:
+                # 過去のaggregateからscope所属は復元できない。推測せず再取得を要求する。
+                connection.execute("ALTER TABLE inventory_threads ADD COLUMN scope TEXT")
 
     def record_inventory_scan(
         self,
@@ -316,12 +323,17 @@ class CompletenessStore:
         if not parent_target_key.strip() or not scan_id.strip():
             raise ValueError("inventory_binding_required")
         normalized_receipts: dict[str, dict[str, Any]] | None = None
+        scope_by_thread: dict[str, str] = {}
         if scope_receipts is not None or parent_kind is not None:
             if not isinstance(scope_receipts, Mapping) or parent_kind is None:
                 raise ValueError("canonical_inventory_evidence_required")
             normalized_receipts, normalized_ids = _normalize_scope_receipts(
                 parent_target_key, parent_kind, scope_receipts
             )
+            scope_by_thread = {
+                thread_id: scope for scope, receipt in scope_receipts.items()
+                for thread_id in receipt["thread_ids"]
+            }
             scopes = {}
             pagination_exhausted = False
         else:
@@ -367,8 +379,8 @@ class CompletenessStore:
             )
             scan_row_id = int(cursor.lastrowid)
             connection.executemany(
-                "INSERT INTO inventory_threads(inventory_scan_id, thread_id) VALUES (?, ?)",
-                [(scan_row_id, thread_id) for thread_id in normalized_ids],
+                "INSERT INTO inventory_threads(inventory_scan_id, thread_id, scope) VALUES (?, ?, ?)",
+                [(scan_row_id, thread_id, scope_by_thread.get(thread_id)) for thread_id in normalized_ids],
             )
 
     def record_child_certificate(
@@ -526,16 +538,24 @@ class CompletenessStore:
                 receipts, valid = _stored_scope_receipts(
                     scan["scope_receipts_json"], parent_kind=scan["parent_kind"]
                 )
-                actual_ids = [
-                    row["thread_id"] for row in connection.execute(
-                        "SELECT thread_id FROM inventory_threads WHERE inventory_scan_id = ?",
-                        (scan["id"],),
-                    )
-                ]
+                membership = connection.execute(
+                    "SELECT thread_id, scope FROM inventory_threads WHERE inventory_scan_id = ?",
+                    (scan["id"],),
+                ).fetchall()
+                actual_ids = [row["thread_id"] for row in membership]
+                scope_ids: dict[str | None, list[str]] = {}
+                for row in membership:
+                    scope_ids.setdefault(row["scope"], []).append(row["thread_id"])
+                scopes_reconciled = valid and set(scope_ids).issubset(receipts) and all(
+                    receipt["thread_count"] == len(scope_ids.get(scope, []))
+                    and receipt["thread_set_digest"] == _digest_ids(scope_ids.get(scope, []))
+                    for scope, receipt in receipts.items()
+                )
                 reconciled = (
                     len(actual_ids) == scan["thread_count"]
                     and _digest_ids(actual_ids) == scan["thread_set_digest"]
                     and valid
+                    and scopes_reconciled
                     and sum(receipt["thread_count"] for receipt in receipts.values())
                     == len(actual_ids)
                 )

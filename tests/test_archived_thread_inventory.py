@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sqlite3
 import stat
 import urllib.error
 from pathlib import Path
@@ -21,10 +22,10 @@ from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.completeness_store import CompletenessStore
 
 
-def _sized_scope_receipt(size: int) -> dict:
+def _sized_scope_receipt(size: int, *, observed_at: str = "2026-09-07T00:00:00+00:00") -> dict:
     payload = build_scope_receipts_inventory(
         parent_target_key="fixture-parent", parent_kind="forum", scan_id="fixture-scan",
-        observed_at="2026-09-07T00:00:00+00:00",
+        observed_at=observed_at,
         active_filtered=build_active_filtered_result({"threads": []}, parent_target_key="fixture-parent"),
         archived_results=[enumerate_archive_pages(
             scope="public", fetch_page=lambda _: {"threads": [], "has_more": False}, max_pages=1,
@@ -37,6 +38,27 @@ def _sized_scope_receipt(size: int) -> dict:
     padding_bytes = size - base
     payload["fixture_padding"] = "あ" * (padding_bytes // 3) + "x" * (padding_bytes % 3)
     return payload
+
+
+@pytest.mark.parametrize("observed_at", ["not-a-time", "2026-09-07T00:00:00", "2026-09-07"])
+def test_scope_receipt_producer_rejects_invalid_observation_time(observed_at):
+    with pytest.raises(ArchiveInventoryError, match="inventory_observed_at_invalid"):
+        _sized_scope_receipt(2000, observed_at=observed_at)
+
+
+def test_scope_receipt_offset_time_normalized_producer_consumer_roundtrip(tmp_path, capsys):
+    payload = _sized_scope_receipt(2000, observed_at="2026-09-07T09:00:00+09:00")
+    assert payload["observed_at"] == "2026-09-07T00:00:00+00:00"
+    evidence = tmp_path / "receipt.json"
+    write_private_scope_receipts(evidence, payload)
+    database = tmp_path / "db.sqlite3"
+    assert cli_main([
+        "record-parent-inventory", "--db", str(database), "--evidence", str(evidence), "--json",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    with sqlite3.connect(database) as connection:
+        saved = connection.execute("SELECT observed_at FROM inventory_scans").fetchone()
+    assert saved[0] == payload["observed_at"]
 
 
 @pytest.mark.parametrize("size", [1_000_001, 10_000_000])

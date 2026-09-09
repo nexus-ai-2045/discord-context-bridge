@@ -131,6 +131,54 @@ def test_parent_audit_is_full_when_inventory_and_all_children_reconcile(tmp_path
 
 
 @pytest.mark.parametrize("older_only", [False, True])
+def test_nonempty_scope_digest_is_bound_to_membership(tmp_path, older_only):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    _record_stable_inventory(store, target)
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    with sqlite3.connect(store.path) as connection:
+        scans = connection.execute("SELECT id, scope_receipts_json FROM inventory_scans ORDER BY id").fetchall()
+        for scan_id, raw in scans[:1] if older_only else scans:
+            receipts = json.loads(raw)
+            for receipt in receipts.values():
+                if receipt["thread_count"]:
+                    receipt["thread_set_digest"] = "a" * 64
+            connection.execute("UPDATE inventory_scans SET scope_receipts_json=? WHERE id=?", (json.dumps(receipts), scan_id))
+    result = store.audit_parent(target)
+    assert result["parent_full_capture_confirmed"] is False
+    assert result["inventory"]["both_latest_scans_complete"] is False
+    assert result["counts"]["retired_certificates"] == 0
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "missing", "swapped", "legacy_schema"])
+def test_scope_membership_corruption_or_legacy_schema_requires_recapture(tmp_path, mutation):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    _record_stable_inventory(store, target)
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    with sqlite3.connect(store.path) as connection:
+        if mutation == "legacy_schema":
+            connection.execute("ALTER TABLE inventory_threads DROP COLUMN scope")
+        elif mutation == "swapped":
+            connection.execute("UPDATE inventory_threads SET scope=CASE scope WHEN 'active_filtered' THEN 'archived_public' ELSE 'active_filtered' END")
+        else:
+            connection.execute("UPDATE inventory_threads SET scope=?", (None if mutation == "missing" else "unknown",))
+    store.initialize()
+    store.initialize()
+    result = store.audit_parent(target)
+    assert result["parent_full_capture_confirmed"] is False
+    assert "inventory_saved_evidence_mismatch" in result["blockers"]
+    assert result["counts"]["retired_certificates"] == 0
+    assert result["counts"]["child_certificates"] == 2
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM inventory_threads").fetchone()[0] == 4
+
+
+@pytest.mark.parametrize("older_only", [False, True])
 @pytest.mark.parametrize("mutation", ["empty_scopes", "deleted_ids", "changed_ids"])
 def test_saved_inventory_mismatch_blocks_full_and_retirement(tmp_path, mutation, older_only):
     from discord_context_bridge.completeness_store import _digest_ids

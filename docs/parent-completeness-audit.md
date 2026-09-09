@@ -109,6 +109,14 @@ text親の `archived_private` receipt は routeを
 保存時にscopeごとの集合digestを計算し、route・親binding・filter・page/cursor終端・件数と
 一体のreceiptとしてDBに保存します。ID、cursor、URLは監査出力へ返しません。
 
+`observed_at` は生成時・取込み時ともタイムゾーン付き日時を必須とし、UTCへ正規化します。
+不正形式やタイムゾーンのない時刻では、完全な棚卸しとして保存しません。
+各スレッドのscope所属は `inventory_threads.scope` に保存し、監査時に所属集合から
+scopeごとの件数とdigestを再計算します。保存receipt同士が一致するだけでは合格しません。
+旧DBへの初期化はnullable列を追加するだけで、過去の所属を推測しません。所属のない
+非空走査は `inventory_saved_evidence_mismatch` で停止するため、正規証拠を新しいscanとして
+再取込みするか再走査してください。過去の走査と子証明書は、この不整合を理由に削除しません。
+
 同じ対象を時間を分けて2回以上走査し、少なくとも最新2回を保存します。
 
 ```powershell

@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .completeness_store import _normalized_time
+
 ARCHIVE_SCOPES = ("public", "private", "joined_private")
 CANONICAL_SCOPE_ROUTES = {
     "active_filtered": "GET /guilds/{guild_id}/threads/active",
@@ -253,6 +255,10 @@ def build_scope_receipts_inventory(
         raise ArchiveInventoryError("parent_kind_invalid")
     if not parent_target_key or not scan_id or not observed_at:
         raise ArchiveInventoryError("inventory_binding_required")
+    try:
+        normalized_observed_at = _normalized_time(observed_at)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ArchiveInventoryError("inventory_observed_at_invalid") from exc
     archived = {str(result.get("scope") or ""): result for result in archived_results}
     required_archive = (
         ("public",)
@@ -323,7 +329,7 @@ def build_scope_receipts_inventory(
         "parent_target_key": parent_target_key,
         "parent_kind": parent_kind,
         "scan_id": scan_id,
-        "observed_at": observed_at,
+        "observed_at": normalized_observed_at,
         "scope_receipts": receipts,
         # 旧consumer向けの読み取り互換。正本はscope_receipts。
         "thread_ids": sorted(all_ids),

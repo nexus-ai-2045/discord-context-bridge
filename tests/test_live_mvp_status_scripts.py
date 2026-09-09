@@ -4,6 +4,7 @@ import os
 import shlex
 import sys
 import subprocess
+import pytest
 from pathlib import Path
 
 
@@ -53,6 +54,44 @@ def ready_channel_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return channel_dir
+
+
+@pytest.mark.parametrize("script", [discord_plugin_route_status, discord_main_route_smoke, discord_bot_private_ingest])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_route_wrappers_respect_channel_dir_environment(tmp_path, monkeypatch, capsys, script, explicit):
+    configured = ready_channel_dir(tmp_path)
+    monkeypatch.setattr(discord_bot_route_preflight, "DEFAULT_CHANNEL_DIR", tmp_path / "unconfigured")
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    monkeypatch.setenv(CHANNEL_DIR_ENV, str(configured if not explicit else tmp_path / "missing"))
+    argv = ["--json"]
+    if explicit:
+        argv += ["--channel-dir", str(configured)]
+    if script in (discord_main_route_smoke, discord_bot_private_ingest):
+        fixture = tmp_path / "input.txt"
+        fixture.write_text("member-a: 前提を確認します。\nmember-b: 了解です。\n", encoding="utf-8")
+        argv += ["--input", str(fixture)]
+    script.main(argv)
+    report = json.loads(capsys.readouterr().out)
+    if script is discord_bot_private_ingest:
+        ready = report["preflight"]["ok"]
+    elif script is discord_main_route_smoke:
+        ready = report["route_ready"]
+    else:
+        ready = report["routes"]["bot_private_ingest"]["status"] == "ready"
+    assert ready is True
+    rendered = json.dumps(report)
+    assert "synthetic-secret" not in rendered
+    assert str(configured) not in rendered
+    assert "member-a" not in rendered
+
+
+@pytest.mark.parametrize("script", [discord_plugin_route_status, discord_main_route_smoke, discord_bot_private_ingest])
+def test_route_wrapper_channel_path_preserves_windows_syntax(monkeypatch, script):
+    configured = r"C:\DCB Fixture\Discord Channel"
+    monkeypatch.setenv(CHANNEL_DIR_ENV, configured)
+    assert script.build_parser().parse_args([]).channel_dir == Path(configured)
+    assert script.build_parser().parse_args(["--channel-dir", "override"]).channel_dir == Path("override")
 
 
 def write_safe_channel_env(channel_dir: Path) -> Path:
