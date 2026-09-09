@@ -23,7 +23,6 @@ if str(SRC) not in sys.path:
 
 from discord_context_bridge import (
     load_bot_token_from_provider,
-    plan_discord_url_read,
 )
 from discord_context_bridge.archive_inventory import (
     ARCHIVE_SCOPES,
@@ -36,6 +35,7 @@ from discord_context_bridge.archive_inventory import (
     write_private_scope_receipts,
 )
 from discord_context_bridge.cli import JapaneseArgumentParser
+from discord_context_bridge.url_identity import parse_guild_channel_url
 
 API_BASE = "https://discord.com/api/v10"
 DEFAULT_OUTPUT = Path(".local/discord-context-bridge/archived-thread-inventory.json")
@@ -233,12 +233,11 @@ def _blocked(reason: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    route = plan_discord_url_read(args.url)
-    if not route.get("ok_to_open") or route.get("message_or_thread_id"):
+    parent_identity = parse_guild_channel_url(args.url)
+    if parent_identity is None:
         print(json.dumps(_blocked("discord_parent_channel_url_required"), ensure_ascii=False, sort_keys=True))
         return 2
-    channel_id = str(route.get("channel_id") or "")
-    guild_id = str(route.get("guild_id") or "")
+    guild_id, channel_id = parent_identity
     if args.parent_kind:
         canonical_archive_scopes = ("public", "private") if args.parent_kind == "text" else ("public",)
         scopes = tuple(dict.fromkeys(args.scope or canonical_archive_scopes))

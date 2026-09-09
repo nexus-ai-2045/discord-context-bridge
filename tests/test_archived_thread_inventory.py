@@ -341,8 +341,12 @@ def test_text_scope_requires_confirmed_manage_threads_authorization() -> None:
     }
 
 
+@pytest.mark.parametrize("host", [
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+])
 def test_canonical_fixture_cli_saves_private_receipts_and_public_output_is_safe(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, host
 ) -> None:
     repo = Path(__file__).resolve().parents[1]
     module = _load_script(repo)
@@ -369,7 +373,7 @@ def test_canonical_fixture_cli_saves_private_receipts_and_public_output_is_safe(
     exit_code = module.main(
         [
             "--url",
-            "https://discord.com/channels/1/2",
+            f"https://{host}/channels/1/2",
             "--parent-kind",
             "forum",
             "--fixture-input",
@@ -392,6 +396,28 @@ def test_canonical_fixture_cli_saves_private_receipts_and_public_output_is_safe(
         "private-active-id"
     ]
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("url", [
+    "https://discord.com.evil.example/channels/1/2",
+    "https://discord.com@evil.example/channels/1/2",
+    "http://discord.com/channels/1/2",
+    "https://discord.com:444/channels/1/2",
+    "https://discord.com/channels/@me/2",
+    "https://canary.discord.com/channels/1/2/3",
+    "https://discordapp.com/channels/1/2/threads/3",
+    "https://ptb.discord.com/channels/1/not-an-id",
+    "https://discord.com/channels/1/１２",
+])
+def test_parent_url_validation_fails_before_credentials(tmp_path, capsys, monkeypatch, url):
+    module = _load_script(Path(__file__).resolve().parents[1])
+    monkeypatch.setattr(module, "load_bot_token_from_provider", lambda **kwargs: pytest.fail("credential access"))
+    output = tmp_path / "receipt.json"
+    assert module.main(["--url", url, "--output", str(output), "--json"]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["blockers"] == ["discord_parent_channel_url_required"]
+    assert url not in json.dumps(report)
+    assert not output.exists()
 
 
 def test_parent_kind_mismatch_from_channel_metadata_fails_closed(

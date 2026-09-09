@@ -26,16 +26,19 @@ def _route_key(url: str) -> tuple[str | None, str | None, str | None]:
     if len(parts) not in {3, 4, 5, 6} or parts[0] != "channels":
         return None, None, None
     guild = parts[1]
+    # DM の予約値は guild 位置だけで許可し、channel/message ID へ拡張しない。
+    if guild != "@me" and not guild.isdigit():
+        return None, None, None
     if len(parts) in {5, 6}:
         if parts[3] != "threads":
             return None, None, None
         channel = parts[4]
         message = parts[5] if len(parts) == 6 else None
-        identifiers = (guild, parts[2], channel, message)
+        identifiers = (parts[2], channel, message)
     else:
         channel = parts[2]
         message = parts[3] if len(parts) == 4 else None
-        identifiers = (guild, channel, message)
+        identifiers = (channel, message)
     if any(value is not None and not value.isdigit() for value in identifiers):
         return None, None, None
     # nested表記と直接thread表記は実thread IDを共通identityにする。

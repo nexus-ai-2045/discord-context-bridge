@@ -22,6 +22,52 @@ TARGET = (
 )
 
 
+@pytest.mark.parametrize("message", [False, True])
+def test_guard_claims_exact_dm_channel_or_message(message: bool) -> None:
+    target = f"https://discord.com/channels/@me/{SYNTHETIC_TARGET_CHANNEL_ID}"
+    if message:
+        target += f"/{SYNTHETIC_SIBLING_CHANNEL_ID}"
+    payload = chrome_visible_fallback_guard.decide_visible_fallback(
+        target_url=target, open_tabs=[{"id": "fixture-tab", "url": target}],
+    )
+    assert payload["decision"] == "claim_existing_target_tab"
+    assert payload["chrome_action_policy"]["ok_to_claim_existing_tab"] is True
+    assert payload["chrome_action_policy"]["navigate_after_claim"] is False
+    assert target not in json.dumps(payload)
+    assert SYNTHETIC_TARGET_CHANNEL_ID not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("dm_is_target", [False, True])
+def test_guard_reuses_dm_and_guild_tabs_without_confusing_identity(dm_is_target: bool) -> None:
+    dm = f"https://discord.com/channels/@me/{SYNTHETIC_TARGET_CHANNEL_ID}"
+    target, existing = (dm, TARGET) if dm_is_target else (TARGET, dm)
+    payload = chrome_visible_fallback_guard.decide_visible_fallback(
+        target_url=target, open_tabs=[{"id": "fixture-tab", "url": existing}],
+    )
+    assert payload["decision"] == "claim_existing_discord_tab_then_navigate"
+    assert payload["inventory"]["matching_target_tab_count"] == 0
+    assert payload["inventory"]["same_guild_tab_count"] == 0
+    assert payload["chrome_action_policy"]["navigate_after_claim"] is True
+    assert payload["chrome_action_policy"]["ok_to_open_new_tab"] is False
+
+
+@pytest.mark.parametrize("route", [
+    "https://discord.com.evil.example/channels/@me/222222222222222222",
+    "https://discord.com/channels/@other/222222222222222222",
+    "https://discord.com/channels/@me/not-numeric",
+    "https://discord.com/channels/@me/222222222222222222/not-numeric",
+    "https://discord.com/channels/111111111111111111/@me",
+    "https://discord.com/channels/@me/222222222222222222/@me",
+    "https://discord.com/channels/@me/222222222222222222/threads/@me",
+])
+def test_guard_dm_exception_does_not_relax_host_or_other_identifiers(route: str) -> None:
+    payload = chrome_visible_fallback_guard.decide_visible_fallback(
+        target_url=route, open_tabs=[{"id": "fixture-tab", "url": route}],
+    )
+    assert payload["decision"] == "blocked"
+    assert payload["reason"] == "invalid_target_url"
+
+
 def test_guard_claims_existing_exact_target_without_new_tab() -> None:
     payload = chrome_visible_fallback_guard.decide_visible_fallback(
         target_url=TARGET,
