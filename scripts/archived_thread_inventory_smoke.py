@@ -11,6 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from discord_archived_thread_inventory import main as inventory_main
+
 from discord_context_bridge.cli import JapaneseArgumentParser
 
 

@@ -1,8 +1,8 @@
 import json
 import sqlite3
 
-from discord_context_bridge.completeness_store import CompletenessStore
 from discord_context_bridge.cli import main as cli_main
+from discord_context_bridge.completeness_store import CompletenessStore
 
 
 def _scope_receipt(scope: str, target: str, thread_ids: list[str], *, authorized=True) -> dict:

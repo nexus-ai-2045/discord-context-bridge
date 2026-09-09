@@ -31,40 +31,9 @@ ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が
 python3 scripts/discord_plugin_route_status.py --json
 ```
 
-対象ごとの状態確認では `--expected-url` を必ず渡します。未指定の一般statusは主経路を
-絶対に `ready` にしません。
-
-```bash
-python3 scripts/discord_bot_live_verify.py --expected-url "<Discord対象URL>" --json
-python3 scripts/discord_bot_route_preflight.py --expected-url "<Discord対象URL>"
-python3 scripts/discord_plugin_route_status.py --expected-url "<Discord対象URL>" --json
-```
-
-`discord_bot_live_verify.py` が `live-verification.json` の唯一producerです。明示されたURLを
-内部でguild・channelへ正規化し、Bot本人、対象guild、対象channelをDiscord APIのGETだけで
-実測します。本文取得、Bot探索、権限変更、送信は行いません。3確認がすべて成功した時だけ、
-現在credentialと対象種別へ署名したreceiptをmode `0600` でatomic保存します。
-
 この command は route の状態だけを返します。
 `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` がある場合、Keychain / credential store など repo 外の承認済み secret provider として扱います。
 status command は provider 種別だけを返し、token 値、command stdout、vault内部情報は返しません。
-
-tokenが見つかった状態は `configured` にすぎず、Bot経路の利用可能性を意味しません。
-`live-verification.json` のprivate receiptが、現在credentialのdigest、expected targetを
-consumer側で再計算したbinding、Bot本人確認、
-対象guild所属、対象channel読取、有効期限をすべて満たした時だけ `live_verified` とします。
-receiptがない既定状態は `credential_configured_but_live_unverified` で停止し、
-`rest_backfill` と `bot_private_ingest` を `ready` にしません。receiptはmode `0600` の通常fileだけを
-読み、symlink、期限切れ、credential変更、不完全な確認はfail-closedにします。公開出力には
-credential digest、対象digest、実ID、URL、receipt pathを含めません。
-receiptの `verified_at` から `expires_at` までの有効窓は24時間以内に限定します。
-
-live verificationが受理するchannel typeの正本は
-`SUPPORTED_TARGET_CHANNEL_TYPES`です。対象はtext（0）、announcement（5）、
-announcement thread（10）、public thread（11）、private thread（12）、forum（15）、
-media（16）に限定し、voice、category、stage、directoryなどはproducerとconsumerの
-両方で拒否します。本文履歴APIを直接使える種別は
-`MESSAGE_HISTORY_CHANNEL_TYPES`としてtext、announcement、各threadだけに分離します。
 
 bot tokenの選択順は、process環境変数、`DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND`、
 `DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR/.env` の順です。channelの `.env` はshellとして実行せず、

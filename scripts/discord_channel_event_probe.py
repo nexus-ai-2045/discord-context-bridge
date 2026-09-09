@@ -23,10 +23,8 @@ def count_files(root: Path, suffixes: set[str]) -> int:
     return sum(1 for path in root.rglob("*") if path.is_file() and path.suffix.lower() in suffixes)
 
 
-def build_probe(channel_dir: Path, *, expected_url: str | None = None) -> dict[str, Any]:
-    preflight = discord_bot_route_preflight.build_preflight(
-        channel_dir, expected_url=expected_url
-    )
+def build_probe(channel_dir: Path) -> dict[str, Any]:
+    preflight = discord_bot_route_preflight.build_preflight(channel_dir)
     inbox_dir = channel_dir / "inbox"
     text_event_candidates = count_files(inbox_dir, TEXT_EVENT_SUFFIXES)
     media_inbox_count = count_files(inbox_dir, MEDIA_SUFFIXES)
@@ -67,7 +65,6 @@ def build_probe(channel_dir: Path, *, expected_url: str | None = None) -> dict[s
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="@discord channel dir に text event が届いているか安全に確認する。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
-    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -89,7 +86,7 @@ def print_human(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    payload = build_probe(args.channel_dir, expected_url=args.expected_url)
+    payload = build_probe(args.channel_dir)
     if args.json:
         print(_json(payload))
     else:

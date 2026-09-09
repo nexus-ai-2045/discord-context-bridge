@@ -6,10 +6,10 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-
+from typing import Any
 
 ALGORITHM_IDS = [
     "pagination_exhaustion",
@@ -43,7 +43,7 @@ def _normalized_time(value: str) -> str:
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
         raise ValueError("observed_at_timezone_required")
-    return parsed.astimezone(timezone.utc).isoformat()
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _require_bool(value: object, field: str) -> bool:
@@ -425,7 +425,7 @@ class CompletenessStore:
             (parent_target_key,),
         ).fetchall()
         retired = 0
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         for row in rows:
             if row["thread_id"] in latest_thread_ids:
                 continue

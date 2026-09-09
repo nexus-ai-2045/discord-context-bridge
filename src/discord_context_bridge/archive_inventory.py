@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-
 ARCHIVE_SCOPES = ("public", "private", "joined_private")
 CANONICAL_SCOPE_ROUTES = {
     "active_filtered": "GET /guilds/{guild_id}/threads/active",

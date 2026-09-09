@@ -200,16 +200,9 @@ def probe_command_route(
     }
 
 
-def probe_inbox_route(
-    channel_dir: Path,
-    *,
-    expected_url: str | None = None,
-    timing_log: Path | None = None,
-) -> dict[str, Any]:
+def probe_inbox_route(channel_dir: Path, *, timing_log: Path | None = None) -> dict[str, Any]:
     started = time.perf_counter()
-    probe = discord_channel_event_probe.build_probe(
-        channel_dir, expected_url=expected_url
-    )
+    probe = discord_channel_event_probe.build_probe(channel_dir)
     elapsed_ms = (time.perf_counter() - started) * 1000
     if timing_log:
         append_entry(
@@ -256,7 +249,6 @@ def build_decision(
     interval: float = 0.2,
     runner: CommandRunner = run_local_command,
     timing_log: Path | None = None,
-    expected_url: str | None = None,
 ) -> dict[str, Any]:
     route_attempts: dict[str, Any] = {}
 
@@ -288,9 +280,7 @@ def build_decision(
             selected_route = "rest_backfill"
             decision = "use_api_route"
         else:
-            inbox = probe_inbox_route(
-                channel_dir, expected_url=expected_url, timing_log=timing_log
-            )
+            inbox = probe_inbox_route(channel_dir, timing_log=timing_log)
             route_attempts["bot_text_event_inbox"] = inbox
             if inbox["ok"]:
                 selected_route = "bot_private_ingest"
@@ -370,7 +360,6 @@ def notify_user(title: str, message: str) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discord route 1/2 を retry し、失敗時は Chrome fallback を明示確認で止める。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
-    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--gateway-command", default=os.environ.get("DISCORD_CONTEXT_BRIDGE_GATEWAY_COMMAND"))
     parser.add_argument("--rest-command", default=os.environ.get("DISCORD_CONTEXT_BRIDGE_REST_COMMAND"))
     parser.add_argument("--attempts", type=int, default=5)
@@ -404,7 +393,6 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         interval=args.interval,
         timing_log=args.timing_log,
-        expected_url=args.expected_url,
     )
     if args.notify and payload.get("popup"):
         payload["notification"] = notify_user(payload["popup"]["title"], payload["popup"]["message"])

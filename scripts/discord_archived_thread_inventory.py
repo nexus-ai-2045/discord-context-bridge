@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,18 +21,21 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from discord_context_bridge import load_bot_token_from_provider, plan_discord_url_read  # noqa: E402
-from discord_context_bridge.cli import JapaneseArgumentParser  # noqa: E402
-from discord_context_bridge.archive_inventory import (  # noqa: E402
+from discord_context_bridge import (
+    load_bot_token_from_provider,
+    plan_discord_url_read,
+)
+from discord_context_bridge.archive_inventory import (
     ARCHIVE_SCOPES,
     ArchiveInventoryError,
-    build_public_report,
     build_active_filtered_result,
+    build_public_report,
     build_scope_receipts_inventory,
     enumerate_archive_pages,
     write_private_inventory,
     write_private_scope_receipts,
 )
+from discord_context_bridge.cli import JapaneseArgumentParser
 
 API_BASE = "https://discord.com/api/v10"
 DEFAULT_OUTPUT = Path(".local/discord-context-bridge/archived-thread-inventory.json")
@@ -335,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
                 parent_target_key=channel_id,
                 parent_kind=args.parent_kind,
                 scan_id=args.scan_id or str(uuid.uuid4()),
-                observed_at=args.observed_at or datetime.now(timezone.utc).isoformat(),
+                observed_at=args.observed_at or datetime.now(UTC).isoformat(),
                 active_filtered=active_filtered,
                 archived_results=results,
                 # 正式private archive routeの200応答を権限確認証拠とする。

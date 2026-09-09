@@ -2,28 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from discord_context_bridge.live_verification import (
-    LiveVerificationError,
-    normalize_expected_target,
-)
 
 DISCORD_HOSTS = {"discord.com", "www.discord.com", "canary.discord.com", "ptb.discord.com"}
 
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def _path_parts(url: str) -> list[str]:
-    parsed = urlparse(url or "")
-    return [part for part in parsed.path.split("/") if part]
 
 
 def _route_key(url: str) -> tuple[str | None, str | None, str | None]:
@@ -35,14 +22,25 @@ def _route_key(url: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
     if parsed.scheme != "https" or parsed.netloc.casefold() not in DISCORD_HOSTS:
         return None, None, None
-    try:
-        target = normalize_expected_target(parsed._replace(netloc="discord.com").geturl())
-    except LiveVerificationError:
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) not in {3, 4, 5, 6} or parts[0] != "channels":
         return None, None, None
-    parts = _path_parts(url)
-    # メッセージへの移動要求も、別メッセージのタブと同一視しない。
-    message = parts[-1] if len(parts) in {4, 6} else None
-    return target["guild_id"], target["channel_id"], message
+    guild = parts[1]
+    if len(parts) in {5, 6}:
+        if parts[3] != "threads":
+            return None, None, None
+        channel = parts[4]
+        message = parts[5] if len(parts) == 6 else None
+        identifiers = (guild, parts[2], channel, message)
+    else:
+        channel = parts[2]
+        message = parts[3] if len(parts) == 4 else None
+        identifiers = (guild, channel, message)
+    if any(value is not None and not value.isdigit() for value in identifiers):
+        return None, None, None
+    # nested表記と直接thread表記は実thread IDを共通identityにする。
+    # メッセージ指定だけは別移動として区別する。
+    return guild, channel, message
 
 
 def _is_discord_channel(url: str) -> bool:

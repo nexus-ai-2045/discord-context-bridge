@@ -36,7 +36,6 @@ def resolve_source_text(
     source_timeout: float,
     source_label: str,
     use_channel_event: bool,
-    expected_url: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if source_command:
         write_payload = discord_live_text_source.write_source_command_event(
@@ -44,7 +43,6 @@ def resolve_source_text(
             channel_dir=channel_dir,
             source_label=source_label,
             source_timeout=source_timeout,
-            expected_url=expected_url,
         )
         if not write_payload["ok"]:
             return "", {
@@ -52,18 +50,14 @@ def resolve_source_text(
                 "write": write_payload,
                 "latest": None,
             }
-        text, latest_payload = discord_live_text_source.latest_text_event(
-            channel_dir, expected_url=expected_url
-        )
+        text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
         return text, {
             "mode": "source_command_to_channel_event",
             "write": write_payload,
             "latest": latest_payload,
         }
     if use_channel_event:
-        text, latest_payload = discord_live_text_source.latest_text_event(
-            channel_dir, expected_url=expected_url
-        )
+        text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
         return text, {
             "mode": "channel_event",
             "write": None,
@@ -87,11 +81,8 @@ def build_e2e_payload(
     require_channel_event: bool,
     understanding_confirmed: bool = False,
     source_payload: dict[str, Any] | None = None,
-    expected_url: str | None = None,
 ) -> dict[str, Any]:
-    route_status = discord_plugin_route_status.build_status(
-        channel_dir, expected_url=expected_url
-    )
+    route_status = discord_plugin_route_status.build_status(channel_dir)
     main_smoke = discord_main_route_smoke.build_smoke_payload(
         text,
         channel_dir=channel_dir,
@@ -100,11 +91,8 @@ def build_e2e_payload(
         draft=draft,
         min_parsed=min_parsed,
         understanding_confirmed=understanding_confirmed,
-        expected_url=expected_url,
     )
-    channel_probe = discord_channel_event_probe.build_probe(
-        channel_dir, expected_url=expected_url
-    )
+    channel_probe = discord_channel_event_probe.build_probe(channel_dir)
     fixture_path_ready = bool(main_smoke["ok"])
     channel_event_ready = bool(channel_probe["ok"])
     source_ready = source_payload is None or source_payload_is_ready(source_payload)
@@ -220,7 +208,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-label", default="e2e-source-command", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--use-channel-event", action="store_true", help="channel inbox の latest text event を入力として使う。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
-    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel", default="e2e-route-check", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--draft", default="前提を確認します。")
@@ -255,7 +242,6 @@ def main(argv: list[str] | None = None) -> int:
         source_timeout=args.source_timeout,
         source_label=args.source_label,
         use_channel_event=args.use_channel_event,
-        expected_url=args.expected_url,
     )
     payload = build_e2e_payload(
         source_text,
@@ -267,7 +253,6 @@ def main(argv: list[str] | None = None) -> int:
         require_channel_event=args.require_channel_event,
         understanding_confirmed=args.understanding_confirmed,
         source_payload=source_payload,
-        expected_url=args.expected_url,
     )
     if args.json:
         print(_json(payload))
