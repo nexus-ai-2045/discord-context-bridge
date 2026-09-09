@@ -171,3 +171,109 @@ def test_batch_replay_is_idempotent(tmp_path):
     before = path.read_bytes()
     assert core._append_text_snapshots_transaction(lambda _: [first, second], path)[0] == 0
     assert path.read_bytes() == before
+
+
+def test_chained_snapshot_rejects_mismatched_stream_and_target_before_write(tmp_path):
+    seed_path = tmp_path / "seed.ndjson"
+    core.snapshot_visible_text(text="seed", url="https://example.invalid/a", path=seed_path)
+    candidate = dict(core.load_text_snapshots(seed_path)[0])
+    candidate["stream_id"] = "different-stream"
+    candidate["event_hash"] = core.canonical_event_hash(candidate)
+    target_path = tmp_path / "target.ndjson"
+
+    with pytest.raises(CheckpointCorruptError, match="stream binding"):
+        core.append_text_snapshot(candidate, target_path)
+
+    assert not target_path.exists()
+
+
+def test_writer_lock_is_scoped_to_selected_ledger(tmp_path):
+    first = tmp_path / "current.ndjson"
+    second = tmp_path / "archive.ndjson"
+    first_lock = core._text_snapshot_lock_id(first)
+    second_lock = core._text_snapshot_lock_id(second)
+    assert first_lock != second_lock
+
+    with core.CaptureCheckpointStore(tmp_path).transition_lock(first_lock):
+        core.snapshot_visible_text(text="other", url="https://example.invalid/b", path=second)
+        with pytest.raises(SequenceConflictError):
+            core.snapshot_visible_text(text="same", url="https://example.invalid/a", path=first)
+
+    assert len(core.load_text_snapshots(second)) == 1
+    assert not first.exists()
+
+
+def test_legacy_event_hash_is_the_next_event_previous_hash(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    url = "https://example.invalid/legacy"
+    legacy_hash = "legacy-upstream-event-hash"
+    core.append_snapshot_like_record(
+        path,
+        {
+            "schema": "dcb.incremental_visible_message.v1",
+            "stream_id": "raw-session",
+            "event_hash": legacy_hash,
+            "text": "legacy",
+        },
+        url=url,
+        target_key=core.stable_text_hash(url),
+    )
+
+    core.snapshot_visible_text(text="next", url=url, path=path)
+
+    rows = core.load_text_snapshots(path)
+    assert rows[1]["previous_event_hash"] == legacy_hash
+    core._validate_text_snapshot_chain(rows)
+
+
+def test_batch_append_serializes_rows_as_bounded_chunks(tmp_path, monkeypatch):
+    path = tmp_path / "text-snapshots.ndjson"
+    observed_chunk_counts: list[int] = []
+    real_append = capture_store._append_store_relative_chunks
+
+    def observe_chunks(root, selected, chunks):
+        materialized = iter(chunks)
+
+        def counted():
+            count = 0
+            for chunk in materialized:
+                count += 1
+                yield chunk
+            observed_chunk_counts.append(count)
+
+        return real_append(root, selected, counted())
+
+    monkeypatch.setattr(core, "_append_store_relative_chunks", observe_chunks)
+    core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)
+    first_row = core.load_text_snapshots(path)[0]
+    second = _next_event(first_row, event_id="second", text="second")
+    third = _next_event(second, event_id="third", text="third")
+
+    core._append_text_snapshots_transaction(lambda _: [second, third], path)
+
+    assert observed_chunk_counts == [1, 2]
+
+
+def test_failure_during_streamed_batch_rolls_back_every_chunk(tmp_path, monkeypatch):
+    path = tmp_path / "text-snapshots.ndjson"
+    core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)
+    first_row = core.load_text_snapshots(path)[0]
+    second = _next_event(first_row, event_id="second", text="second")
+    third = _next_event(second, event_id="third", text="third")
+    before = path.read_bytes()
+    real_write_all = capture_store._write_all
+    writes = 0
+
+    def fail_second_chunk(descriptor, content):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("injected second chunk failure")
+        real_write_all(descriptor, content)
+
+    monkeypatch.setattr(capture_store, "_write_all", fail_second_chunk)
+
+    with pytest.raises(CheckpointCorruptError):
+        core._append_text_snapshots_transaction(lambda _: [second, third], path)
+
+    assert path.read_bytes() == before

@@ -16,7 +16,9 @@ closed し、既存の `full-capture-gate` へ誘導する。
     `attachment-ledger.md` (現行 writer の既定出力。core.py の DEFAULT_*
     を参照) / `raw/` / `manifests/` / `attachments/by-sha256/` /
     `projections/` / `archive/` / `inbox/` (rest-backfill 系の既定出力) /
-    `locks/canonical-text-snapshots.lock` (正規snapshot writerの排他ファイルのみ)
+    `locks/canonical-text-snapshots-<16桁hex>.lock`
+    (ledger単位の正規snapshot writer排他ファイルのみ)。移行前に作られた固定名の
+    `locks/canonical-text-snapshots.lock` も互換対象として許可する。
 (b) 許可領域内 JSON / NDJSON の schema キー検査 (`schema` キーが必須。
     `schema_version` やキー無しは violation)
 (c) 既知 schema 値のリスト外検知
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -51,6 +54,9 @@ from discord_context_bridge.core import stable_text_hash  # noqa: E402
 DEFAULT_STORE_ROOT = Path(".local/discord-context-bridge")
 DEFAULT_STORE_KIND = "canonical_event_store"
 STORE_KINDS = (DEFAULT_STORE_KIND, "shared_snapshot_bundle")
+CANONICAL_SNAPSHOT_LOCK_RE = re.compile(
+    r"^canonical-text-snapshots-[0-9a-f]{16}\.lock$"
+)
 
 ALLOWED_TOP_LEVEL_FILES = {
     "text-snapshots.ndjson",
@@ -112,6 +118,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _is_allowed_location(relative_parts: tuple[str, ...]) -> bool:
     # transition_lock の正規snapshot用ファイルだけ許可し、locks全体は開放しない。
     if relative_parts == ("locks", "canonical-text-snapshots.lock"):
+        return True
+    if (
+        len(relative_parts) == 2
+        and relative_parts[0] == "locks"
+        and CANONICAL_SNAPSHOT_LOCK_RE.fullmatch(relative_parts[1])
+    ):
         return True
     if len(relative_parts) == 1:
         return relative_parts[0] in ALLOWED_TOP_LEVEL_FILES

@@ -210,7 +210,9 @@ def _write_all(descriptor: int, content: bytes) -> None:
         offset += written
 
 
-def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+def _legacy_append_store_relative_chunks(
+    root: Path, path: Path, chunks: Any
+) -> None:
     checked = _legacy_store_path(root, path, create_parent=True)
     descriptor: int | None = None
     original_size = 0
@@ -230,21 +232,26 @@ def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) 
                 "managed store object is not a bound regular file"
             )
         original_size = opened.st_size
+        total_written = 0
         try:
-            _write_all(descriptor, content)
+            for content in chunks:
+                if not isinstance(content, bytes):
+                    raise TypeError("managed store append chunks must be bytes")
+                _write_all(descriptor, content)
+                total_written += len(content)
             os.fsync(descriptor)
             after = os.fstat(descriptor)
             named_after = _legacy_path_stat(checked)
             _legacy_store_path(root, path, create_parent=False)
             if (
-                after.st_size != original_size + len(content)
+                after.st_size != original_size + total_written
                 or (after.st_dev, after.st_ino)
                 != (named_after.st_dev, named_after.st_ino)
             ):
                 raise CheckpointCorruptError(
                     "managed store object changed during append"
                 )
-        except (CheckpointCorruptError, OSError) as error:
+        except Exception as error:
             try:
                 os.ftruncate(descriptor, original_size)
                 os.fsync(descriptor)
@@ -260,6 +267,10 @@ def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) 
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+    _legacy_append_store_relative_chunks(root, path, (content,))
 
 
 def _legacy_atomic_store_json(root: Path, path: Path, encoded: bytes) -> None:
@@ -539,9 +550,9 @@ def _open_store_relative_regular(
         raise
 
 
-def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+def _append_store_relative_chunks(root: Path, path: Path, chunks: Any) -> None:
     if not _secure_store_ops_supported():
-        _legacy_append_store_relative_bytes(root, path, content)
+        _legacy_append_store_relative_chunks(root, path, chunks)
         return
     descriptor, directory_fds, bindings, name = _open_store_relative_regular(
         root,
@@ -551,16 +562,16 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
     try:
         before = os.fstat(descriptor)
         try:
-            offset = 0
-            while offset < len(content):
-                written = os.write(descriptor, content[offset:])
-                if written <= 0:
-                    raise OSError("managed store append made no progress")
-                offset += written
+            total_written = 0
+            for content in chunks:
+                if not isinstance(content, bytes):
+                    raise TypeError("managed store append chunks must be bytes")
+                _write_all(descriptor, content)
+                total_written += len(content)
             os.fsync(descriptor)
             after = os.fstat(descriptor)
             if (
-                after.st_size != before.st_size + len(content)
+                after.st_size != before.st_size + total_written
                 or not _opened_store_file_matches(
                     root, directory_fds, bindings, name, descriptor
                 )
@@ -569,7 +580,7 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
                     "managed store object changed during append"
                 )
             os.fsync(directory_fds[-1])
-        except (CheckpointCorruptError, OSError) as error:
+        except Exception as error:
             try:
                 os.ftruncate(descriptor, before.st_size)
                 os.fsync(descriptor)
@@ -585,6 +596,10 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
     finally:
         os.close(descriptor)
         _close_store_directory_chain(directory_fds)
+
+
+def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+    _append_store_relative_chunks(root, path, (content,))
 
 
 def _atomic_store_json(root: Path, path: Path, payload: Mapping[str, Any]) -> None:

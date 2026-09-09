@@ -15,7 +15,7 @@ from .capture.store import (
     CheckpointCorruptError,
     EventConflictError,
     SequenceConflictError,
-    _append_store_relative_bytes,
+    _append_store_relative_chunks,
 )
 from .full_capture import build_capture_route_policy
 
@@ -1383,6 +1383,34 @@ def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
     return str(snapshot.get("stream_id") or snapshot.get("target_key") or "")
 
 
+def _validate_snapshot_stream_binding(snapshot: dict[str, Any]) -> None:
+    """chain対象のstreamとcanonical targetが同一であることを検証する。"""
+
+    if not _is_chained_text_snapshot(snapshot):
+        return
+    stream_id = str(snapshot.get("stream_id") or "")
+    target_key = str(snapshot.get("target_key") or "")
+    if not stream_id or not target_key or stream_id != target_key:
+        raise CheckpointCorruptError("snapshot stream binding does not match target")
+
+
+def _durable_snapshot_event_hash(snapshot: dict[str, Any]) -> str:
+    """ledger上で次eventが参照すべきhashを返す。"""
+
+    if not _is_chained_text_snapshot(snapshot):
+        stored_hash = str(snapshot.get("event_hash") or "")
+        if stored_hash:
+            return stored_hash
+    return canonical_event_hash(snapshot)
+
+
+def _text_snapshot_lock_id(path: Path) -> str:
+    """同じstore root内でledgerごとに安定した非公開lock名を返す。"""
+
+    ledger_key = hashlib.sha256(Path(path).name.encode("utf-8")).hexdigest()[:16]
+    return f"canonical-text-snapshots-{ledger_key}"
+
+
 def _is_chained_text_snapshot(snapshot: dict[str, Any]) -> bool:
     return snapshot.get("schema") == "discord_context_bridge_text_snapshot_observation.v1" and any(
         key in snapshot
@@ -1405,6 +1433,7 @@ def _validate_text_snapshot_chain(
     heads: dict[str, tuple[int, str]] = {}
     event_ids: dict[str, dict[str, Any]] = {}
     for snapshot in snapshots:
+        _validate_snapshot_stream_binding(snapshot)
         event_id = str(snapshot.get("event_id") or "")
         if event_id:
             existing = event_ids.get(event_id)
@@ -1440,7 +1469,7 @@ def _validate_text_snapshot_chain(
             if event_hash != canonical_event_hash(snapshot):
                 raise CheckpointCorruptError("snapshot event hash is invalid")
         else:
-            event_hash = canonical_event_hash(snapshot)
+            event_hash = _durable_snapshot_event_hash(snapshot)
         heads[stream_id] = (next_sequence, event_hash)
     return heads
 
@@ -1462,13 +1491,14 @@ def _append_text_snapshots_transaction(
     """batch全体の生成・事前検証・一括追記・再読を同じwriter lockで閉じる。"""
     path = Path(path)
     store = CaptureCheckpointStore(path.parent)
-    with store.transition_lock("canonical-text-snapshots"):
+    with store.transition_lock(_text_snapshot_lock_id(path)):
         snapshots = load_text_snapshots(path)
         heads = _validate_text_snapshot_chain(snapshots)
         candidates = build_snapshots(snapshots)
         additions: list[dict[str, Any]] = []
         by_event_id = {str(row["event_id"]): row for row in snapshots if row.get("event_id")}
         for snapshot in candidates:
+            _validate_snapshot_stream_binding(snapshot)
             event_id = str(snapshot.get("event_id") or "")
             if event_id and event_id in by_event_id:
                 if by_event_id[event_id] != snapshot:
@@ -1496,14 +1526,19 @@ def _append_text_snapshots_transaction(
             if event_id:
                 by_event_id[event_id] = snapshot
             if stream_id:
-                heads[stream_id] = (current_sequence + 1, canonical_event_hash(snapshot))
+                heads[stream_id] = (
+                    current_sequence + 1,
+                    _durable_snapshot_event_hash(snapshot),
+                )
         expected = snapshots + additions
         _validate_text_snapshot_chain(expected)
         if not additions:
             return 0, candidates, snapshots
-        encoded = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
-                          for row in additions).encode("utf-8")
-        _append_store_relative_bytes(path.parent, path, encoded)
+        encoded_rows = (
+            (json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+            for row in additions
+        )
+        _append_store_relative_chunks(path.parent, path, encoded_rows)
         read_back = load_text_snapshots(path)
         _validate_text_snapshot_chain(read_back)
         if read_back != expected:
