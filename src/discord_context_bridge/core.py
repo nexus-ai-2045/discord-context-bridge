@@ -1378,6 +1378,8 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
 
 
 def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
+    if not _is_chained_text_snapshot(snapshot):
+        return str(snapshot.get("target_key") or snapshot.get("stream_id") or "")
     return str(snapshot.get("stream_id") or snapshot.get("target_key") or "")
 
 
@@ -1426,6 +1428,8 @@ def _validate_text_snapshot_chain(
             if (
                 not isinstance(sequence, int)
                 or isinstance(sequence, bool)
+                or not isinstance(expected_previous, int)
+                or isinstance(expected_previous, bool)
                 or sequence != next_sequence
                 or expected_previous != previous_sequence
             ):
@@ -1445,47 +1449,66 @@ def _append_text_snapshot_transaction(
     build_snapshot: Callable[[list[dict[str, Any]]], dict[str, Any]],
     path: Path,
 ) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
+    appended, candidates, read_back = _append_text_snapshots_transaction(
+        lambda snapshots: [build_snapshot(snapshots)], path
+    )
+    return bool(appended), candidates[0], read_back
+
+
+def _append_text_snapshots_transaction(
+    build_snapshots: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    path: Path,
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """batch全体の生成・事前検証・一括追記・再読を同じwriter lockで閉じる。"""
     path = Path(path)
     store = CaptureCheckpointStore(path.parent)
     with store.transition_lock("canonical-text-snapshots"):
         snapshots = load_text_snapshots(path)
         heads = _validate_text_snapshot_chain(snapshots)
-        snapshot = build_snapshot(snapshots)
-
-        event_id = str(snapshot.get("event_id") or "")
-        if event_id:
-            for existing in snapshots:
-                if str(existing.get("event_id") or "") != event_id:
-                    continue
-                if existing != snapshot:
+        candidates = build_snapshots(snapshots)
+        additions: list[dict[str, Any]] = []
+        by_event_id = {str(row["event_id"]): row for row in snapshots if row.get("event_id")}
+        for snapshot in candidates:
+            event_id = str(snapshot.get("event_id") or "")
+            if event_id and event_id in by_event_id:
+                if by_event_id[event_id] != snapshot:
                     raise EventConflictError("snapshot event id is already bound to other content")
-                return False, existing, snapshots
-
-        stream_id = _snapshot_stream_id(snapshot)
-        if _is_chained_text_snapshot(snapshot):
-            if not event_id or not stream_id:
-                raise CheckpointCorruptError("snapshot identity binding is missing")
-            if str(snapshot.get("event_hash") or "") != canonical_event_hash(snapshot):
-                raise CheckpointCorruptError("snapshot event hash is invalid")
+                continue
+            stream_id = _snapshot_stream_id(snapshot)
             current_sequence, current_hash = heads.get(stream_id, (0, ""))
-            expected_previous = snapshot.get("expected_previous_stream_sequence")
-            if expected_previous != current_sequence:
-                raise SequenceConflictError(
-                    f"snapshot sequence conflict: expected {expected_previous}, found {current_sequence}"
-                )
-            if snapshot.get("stream_sequence") != current_sequence + 1:
-                raise SequenceConflictError("snapshot sequence is not the next durable sequence")
-            if str(snapshot.get("previous_event_hash") or "") != current_hash:
-                raise SequenceConflictError("snapshot previous event hash is stale")
-
-        encoded = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+            if _is_chained_text_snapshot(snapshot):
+                if not event_id or not stream_id:
+                    raise CheckpointCorruptError("snapshot identity binding is missing")
+                if str(snapshot.get("event_hash") or "") != canonical_event_hash(snapshot):
+                    raise CheckpointCorruptError("snapshot event hash is invalid")
+                expected_previous = snapshot.get("expected_previous_stream_sequence")
+                sequence = snapshot.get("stream_sequence")
+                if any(not isinstance(value, int) or isinstance(value, bool)
+                       for value in (sequence, expected_previous)):
+                    raise CheckpointCorruptError("snapshot stream sequence must be an integer")
+                if expected_previous != current_sequence:
+                    raise SequenceConflictError("snapshot expected sequence is stale")
+                if sequence != current_sequence + 1:
+                    raise SequenceConflictError("snapshot sequence is not the next durable sequence")
+                if str(snapshot.get("previous_event_hash") or "") != current_hash:
+                    raise SequenceConflictError("snapshot previous event hash is stale")
+            additions.append(snapshot)
+            if event_id:
+                by_event_id[event_id] = snapshot
+            if stream_id:
+                heads[stream_id] = (current_sequence + 1, canonical_event_hash(snapshot))
+        expected = snapshots + additions
+        _validate_text_snapshot_chain(expected)
+        if not additions:
+            return 0, candidates, snapshots
+        encoded = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+                          for row in additions).encode("utf-8")
         _append_store_relative_bytes(path.parent, path, encoded)
-
         read_back = load_text_snapshots(path)
         _validate_text_snapshot_chain(read_back)
-        if len(read_back) != len(snapshots) + 1 or read_back[-1] != snapshot:
+        if read_back != expected:
             raise CheckpointCorruptError("snapshot append read-back is invalid")
-        return True, snapshot, read_back
+        return len(additions), candidates, read_back
 
 
 def append_text_snapshot(

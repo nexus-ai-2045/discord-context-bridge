@@ -116,3 +116,58 @@ def test_tampered_hash_chain_is_rejected_before_next_append(tmp_path):
         core.snapshot_visible_text(text="second", url="https://example.invalid/a", path=path)
 
     assert len(core.load_text_snapshots(path)) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("stream_sequence", 1.0), ("stream_sequence", True),
+    ("expected_previous_stream_sequence", 0.0), ("expected_previous_stream_sequence", False),
+])
+def test_noninteger_candidate_never_reaches_disk(tmp_path, field, value):
+    seed = tmp_path / "seed.ndjson"
+    core.snapshot_visible_text(text="seed", url="https://example.invalid/a", path=seed)
+    candidate = core.load_text_snapshots(seed)[0]
+    candidate[field] = value
+    candidate["event_hash"] = core.canonical_event_hash(candidate)
+    path = tmp_path / "target.ndjson"
+    with pytest.raises(CheckpointCorruptError):
+        core.append_text_snapshot(candidate, path)
+    assert not path.exists()
+
+
+def test_imported_raw_stream_is_keyed_by_canonical_target(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    url = "https://example.invalid/canonical"
+    core.append_snapshot_like_record(
+        path, {"schema": "dcb.incremental_visible_message.v1", "stream_id": "raw-session", "text": "raw"},
+        url=url, target_key=core.stable_text_hash(url),
+    )
+    core.snapshot_visible_text(text="next", url=url, path=path)
+    rows = core.load_text_snapshots(path)
+    assert rows[0]["stream_id"] == "raw-session"
+    assert rows[1]["stream_sequence"] == 2
+    core._validate_text_snapshot_chain(rows)
+
+
+def test_invalid_later_batch_event_cannot_partially_commit(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)
+    first = _next_event(core.load_text_snapshots(path)[0], event_id="second", text="second")
+    invalid = _next_event(first, event_id="third", text="third")
+    invalid["stream_sequence"] = 3.0
+    invalid["event_hash"] = core.canonical_event_hash(invalid)
+    before = path.read_bytes()
+    with pytest.raises(CheckpointCorruptError):
+        core._append_text_snapshots_transaction(lambda _: [first, invalid], path)
+    assert path.read_bytes() == before
+
+
+def test_batch_replay_is_idempotent(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)
+    first = _next_event(core.load_text_snapshots(path)[0], event_id="second", text="second")
+    second = _next_event(first, event_id="third", text="third")
+    count, _, _ = core._append_text_snapshots_transaction(lambda _: [first, second], path)
+    assert count == 2
+    before = path.read_bytes()
+    assert core._append_text_snapshots_transaction(lambda _: [first, second], path)[0] == 0
+    assert path.read_bytes() == before

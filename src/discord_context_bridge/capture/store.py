@@ -503,9 +503,23 @@ def _open_store_relative_regular(
         open_flags = flags | os.O_NOFOLLOW
         if hasattr(os, "O_NONBLOCK"):
             open_flags |= os.O_NONBLOCK
-        descriptor = os.open(
-            parts[-1], open_flags, 0o600, dir_fd=directory_fds[-1]
-        )
+        if open_flags & os.O_CREAT and not open_flags & os.O_EXCL:
+            # 同時初期作成を排他的createと既存openに分離する。
+            # macOSではO_CREAT|O_NOFOLLOWの同時openがENOENTになり得る。
+            try:
+                descriptor = os.open(
+                    parts[-1], open_flags | os.O_EXCL, 0o600,
+                    dir_fd=directory_fds[-1],
+                )
+            except FileExistsError:
+                descriptor = os.open(
+                    parts[-1], open_flags & ~os.O_CREAT, 0o600,
+                    dir_fd=directory_fds[-1],
+                )
+        else:
+            descriptor = os.open(
+                parts[-1], open_flags, 0o600, dir_fd=directory_fds[-1]
+            )
         if not _opened_store_file_matches(
             root, directory_fds, bindings, parts[-1], descriptor
         ):

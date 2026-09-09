@@ -15,7 +15,8 @@ closed し、既存の `full-capture-gate` へ誘導する。
     `context-library.json` / `review-registry.json` /
     `attachment-ledger.md` (現行 writer の既定出力。core.py の DEFAULT_*
     を参照) / `raw/` / `manifests/` / `attachments/by-sha256/` /
-    `projections/` / `archive/` / `inbox/` (rest-backfill 系の既定出力)
+    `projections/` / `archive/` / `inbox/` (rest-backfill 系の既定出力) /
+    `locks/canonical-text-snapshots.lock` (正規snapshot writerの排他ファイルのみ)
 (b) 許可領域内 JSON / NDJSON の schema キー検査 (`schema` キーが必須。
     `schema_version` やキー無しは violation)
 (c) 既知 schema 値のリスト外検知
@@ -109,6 +110,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _is_allowed_location(relative_parts: tuple[str, ...]) -> bool:
+    # transition_lock の正規snapshot用ファイルだけ許可し、locks全体は開放しない。
+    if relative_parts == ("locks", "canonical-text-snapshots.lock"):
+        return True
     if len(relative_parts) == 1:
         return relative_parts[0] in ALLOWED_TOP_LEVEL_FILES
     top = relative_parts[0]
