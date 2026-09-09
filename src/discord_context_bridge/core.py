@@ -1391,6 +1391,8 @@ def _validate_snapshot_stream_binding(snapshot: dict[str, Any]) -> None:
 
     if not _is_chained_text_snapshot(snapshot):
         return
+    if snapshot.get("schema") != "discord_context_bridge_text_snapshot_observation.v1":
+        raise CheckpointCorruptError("snapshot chain schema is invalid")
     stream_id = str(snapshot.get("stream_id") or "")
     target_key = str(snapshot.get("target_key") or "")
     if not stream_id or not target_key or stream_id != target_key:
@@ -1422,6 +1424,10 @@ def _text_snapshot_lock_id(path: Path) -> str:
 
 
 def _is_chained_text_snapshot(snapshot: dict[str, Any]) -> bool:
+    # canonicalな前event参照がある行は、schemaを改変してもlegacy扱いに戻さない。
+    # rawのupstream stream/sequence/event_hash単独は互換性のため区別する。
+    if "expected_previous_stream_sequence" in snapshot or "previous_event_hash" in snapshot:
+        return True
     return snapshot.get("schema") == "discord_context_bridge_text_snapshot_observation.v1" and any(
         key in snapshot
         for key in (
@@ -1502,6 +1508,12 @@ def _append_text_snapshots_transaction(
     path = Path(path)
     store = CaptureCheckpointStore(path.parent)
     with store.transition_lock(_text_snapshot_lock_id(path)):
+        try:
+            ledger_metadata = path.lstat()
+        except FileNotFoundError:
+            ledger_metadata = None
+        if ledger_metadata is not None and ledger_metadata.st_nlink != 1:
+            raise CheckpointCorruptError("snapshot ledger requires exclusive file")
         snapshots = load_text_snapshots(path)
         heads = _validate_text_snapshot_chain(snapshots)
         # 永続化するJSON表現を事前に確定し、冪等性・検証・再読照合で共用する。

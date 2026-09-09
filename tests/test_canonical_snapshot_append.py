@@ -238,6 +238,32 @@ def test_chained_snapshot_rejects_mismatched_stream_and_target_before_write(tmp_
     assert not target_path.exists()
 
 
+@pytest.mark.parametrize("schema", [None, "dcb.raw_capture.v1", "unknown"])
+@pytest.mark.parametrize("rehash", [False, True])
+@pytest.mark.parametrize("persisted", [False, True])
+def test_chain_envelope_cannot_be_downgraded_to_legacy(tmp_path, schema, rehash, persisted):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/a"
+    core.snapshot_visible_text(text="seed", url=url, path=source)
+    row = core.load_text_snapshots(source)[0]
+    if schema is None:
+        del row["schema"]
+    else:
+        row["schema"] = schema
+    if rehash:
+        row["event_hash"] = core.canonical_event_hash(row)
+    path = tmp_path / "ledger.ndjson"
+    if persisted:
+        path.write_text(core.json.dumps(row) + "\n", encoding="utf-8")
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(CheckpointCorruptError):
+        if persisted:
+            core.snapshot_visible_text(text="next", url=url, path=path)
+        else:
+            core.append_text_snapshot(row, path)
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
 def test_writer_lock_is_scoped_to_selected_ledger(tmp_path):
     first = tmp_path / "current.ndjson"
     second = tmp_path / "archive.ndjson"
