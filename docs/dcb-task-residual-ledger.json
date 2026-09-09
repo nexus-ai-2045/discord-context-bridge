@@ -1,7 +1,7 @@
 {
   "schema": "chat-residual-ledger.v1",
   "review": "complete",
-  "canonical_source": "/Users/yasuhirokawagoe/.codex/visualizations/2026/08/31/01a0586a-4dfa-78a1-8a0f-c73415733584/dcb-task-consolidation-20260906.md",
+  "canonical_source": "非公開のタスク統合証跡（実体保持・参照パス非公開）",
   "items": [
     {
       "description": "シンギュラボ親scopeの公開archive、非公開archive、locked分類を終端まで証明する",
