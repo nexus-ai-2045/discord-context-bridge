@@ -41,6 +41,8 @@ from typing import Any
 from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
     _append_text_snapshots_transaction,
+    _snapshot_stream_id,
+    _validate_text_snapshot_chain,
     acquisition_context_for_source,
     canonical_event_hash,
     load_text_snapshots,
@@ -340,7 +342,7 @@ def _build_message_events(
 ) -> list[dict[str, Any]]:
     """apply 時は writer lock 内で読み直した正本から batch 全体を構築する。"""
     existing_records = [
-        record for record in records if record.get("target_key") == target_key
+        record for record in records if _snapshot_stream_id(record) == target_key
     ]
     seen_message_id_hashes: dict[tuple[str, str], Any] = {}
     seen_identity_hashes: dict[tuple[Any, ...], Any] = {}
@@ -357,11 +359,9 @@ def _build_message_events(
             )
             seen_identity_hashes[identity] = record.get("content_hash")
 
-    stream_sequence = len(existing_records)
+    # raw の upstream sequence/hash と canonical head の扱いを共通validatorに揃える。
+    stream_sequence, previous_event_hash = _validate_text_snapshot_chain(records).get(target_key, (0, ""))
     last_record = existing_records[-1] if existing_records else None
-    previous_event_hash = (
-        str(last_record.get("event_hash") or canonical_event_hash(last_record)) if last_record else ""
-    )
     previous_content_hash = str(last_record.get("content_hash") or "") if last_record else None
 
     # payload 側の captured_at (capture 時刻) を ingest 時刻で上書きすると、

@@ -353,9 +353,10 @@ def _import_chained_snapshot(source: dict[str, Any], path: Path, *, url: str, ta
     if (any(not isinstance(value, int) or isinstance(value, bool) for value in (sequence, expected))
         or expected < 0 or sequence != expected + 1):
         raise CheckpointCorruptError("import source sequence is invalid")
+    # legacy predecessorの保存済みhashはopaque文字列。元chain全体の証明とは分離する。
     if (not isinstance(previous_hash, str)
         or (expected == 0 and previous_hash != "")
-        or (expected > 0 and re.fullmatch(r"[0-9a-f]{64}", previous_hash) is None)):
+        or (expected > 0 and not previous_hash)):
         raise CheckpointCorruptError("import source previous hash is invalid")
     imported_id = stable_text_hash(json.dumps(
         ["canonical_import", source["stream_id"], source["event_id"], target_key],
@@ -373,12 +374,15 @@ def _import_chained_snapshot(source: dict[str, Any], path: Path, *, url: str, ta
                 return existing
         sequence, previous_hash = _validate_text_snapshot_chain(snapshots).get(target_key, (0, ""))
         previous = next((row for row in reversed(snapshots) if _snapshot_stream_id(row) == target_key), None)
+        previous_content_hash = str(previous.get("content_hash") or "") if previous else None
         candidate = dict(source)
         candidate.update(
             event_id=imported_id, target_key=target_key, stream_id=target_key, subject=target_key,
             url=url, stream_sequence=sequence + 1, expected_previous_stream_sequence=sequence,
             observation_index_for_target=sequence + 1, previous_event_hash=previous_hash,
-            previous_content_hash=previous.get("content_hash") if previous else None,
+            previous_content_hash=previous_content_hash,
+            changed=previous_content_hash != source.get("content_hash"),
+            duplicate_content=previous_content_hash == source.get("content_hash"),
             import_source_event_hash=source["event_hash"], import_source_event_id=source["event_id"],
             private_local_only=True, external_share_allowed=False, outbound_actions="disabled",
         )

@@ -235,7 +235,7 @@ def test_partial_canonical_cache_sync_and_conflicting_import(tmp_path):
 @pytest.mark.parametrize("updates", [
     {"stream_sequence": -10}, {"stream_sequence": True},
     {"expected_previous_stream_sequence": True}, {"expected_previous_stream_sequence": -1},
-    {"stream_sequence": 5}, {"previous_event_hash": "invalid"},
+    {"stream_sequence": 5}, {"previous_event_hash": 123},
     {"previous_event_hash": ""},
 ])
 def test_import_rejects_locally_invalid_source_envelope(tmp_path, updates):
@@ -249,6 +249,54 @@ def test_import_rejects_locally_invalid_source_envelope(tmp_path, updates):
     with pytest.raises(CheckpointCorruptError):
         core.append_snapshot_like_record(destination, row, url=url, target_key=core.stable_text_hash(url))
     assert not destination.exists()
+
+
+def test_import_accepts_successor_of_opaque_legacy_hash(tmp_path):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/legacy"
+    target = core.stable_text_hash(url)
+    core.append_text_snapshot({
+        "target_key": target, "event_id": "legacy", "event_hash": "upstream-opaque-hash",
+        "text": "old", "content_hash": core.stable_text_hash("old"),
+    }, source)
+    core.snapshot_visible_text(text="new", url=url, path=source)
+    rows = core.load_text_snapshots(source)
+    core._validate_text_snapshot_chain(rows)
+    assert rows[-1]["previous_event_hash"] == "upstream-opaque-hash"
+    destination = tmp_path / "destination.ndjson"
+    core.append_snapshot_like_record(destination, rows[-1], url=url, target_key=target)
+    imported = core.load_text_snapshots(destination)
+    assert imported[0]["import_source_event_hash"] == rows[-1]["event_hash"]
+    assert imported[0]["previous_event_hash"] == ""
+    core._validate_text_snapshot_chain(imported)
+
+
+@pytest.mark.parametrize("source_duplicate", [False, True])
+@pytest.mark.parametrize("destination_text", [None, "same", "different"])
+def test_import_recomputes_content_flags_at_destination(tmp_path, source_duplicate, destination_text):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/flags"
+    core.snapshot_visible_text(text="same" if source_duplicate else "old", url=url, path=source)
+    core.snapshot_visible_text(text="same", url=url, path=source)
+    record = core.load_text_snapshots(source)[-1]
+    assert record["duplicate_content"] is source_duplicate
+    destination = tmp_path / "destination.ndjson"
+    if destination_text is not None:
+        core.snapshot_visible_text(text=destination_text, url=url, path=destination)
+    target = core.stable_text_hash(url)
+    core.append_snapshot_like_record(destination, record, url=url, target_key=target)
+    rows = core.load_text_snapshots(destination)
+    imported = rows[-1]
+    assert imported["previous_content_hash"] == (
+        core.stable_text_hash(destination_text) if destination_text is not None else None
+    )
+    assert imported["duplicate_content"] is (destination_text == "same")
+    assert imported["changed"] is (destination_text != "same")
+    assert imported["captured_at"] == record["captured_at"]
+    core._validate_text_snapshot_chain(rows)
+    before = destination.read_bytes()
+    core.append_snapshot_like_record(destination, record, url=url, target_key=target)
+    assert destination.read_bytes() == before
 
 
 def test_conflicting_legacy_event_ids_still_fail_closed(tmp_path):
