@@ -148,6 +148,57 @@ def test_imported_raw_stream_is_keyed_by_canonical_target(tmp_path):
     core._validate_text_snapshot_chain(rows)
 
 
+@pytest.mark.parametrize("field", ["stream_sequence", "observation_index_for_target"])
+def test_raw_upstream_sequence_does_not_override_validated_head(tmp_path, field):
+    path = tmp_path / "ledger.ndjson"
+    url = "https://example.invalid/raw"
+    core.append_snapshot_like_record(path, {
+        "schema": "dcb.incremental_visible_message.v1", "text": "raw", field: 42,
+    }, url=url, target_key=core.stable_text_hash(url))
+    core.snapshot_visible_text(text="next", url=url, path=path)
+    rows = core.load_text_snapshots(path)
+    assert rows[-1]["expected_previous_stream_sequence"] == 1
+    assert rows[-1]["stream_sequence"] == 2
+    core._validate_text_snapshot_chain(rows)
+
+
+def test_event_bound_raw_import_without_timestamp_replays(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.ndjson"
+    record = {"schema": "dcb.incremental_visible_message.v1", "event_id": "stable-event", "text": "raw"}
+    for timestamp in ("2026-09-10T00:00:00Z", "2026-09-10T01:00:00Z"):
+        monkeypatch.setattr(core, "utc_now", lambda value=timestamp: value)
+        core.append_snapshot_like_record(path, record, url="https://example.invalid/raw", target_key="target")
+    assert len(core.load_text_snapshots(path)) == 1
+
+
+@pytest.mark.parametrize("value", [("a", "b"), {1: "a"}])
+@pytest.mark.parametrize("event_bound", [False, True])
+def test_json_normalized_candidate_matches_readback_and_replay(tmp_path, value, event_bound):
+    path = tmp_path / "ledger.ndjson"
+    candidate = {"target_key": "target", "value": value}
+    if event_bound:
+        candidate["event_id"] = "event"
+    assert core.append_text_snapshot(candidate, path)
+    normalized = core.json.loads(core.json.dumps(candidate))
+    assert core.load_text_snapshots(path) == [normalized]
+    if event_bound:
+        assert core.append_text_snapshot(candidate, path) is False
+        assert core.load_text_snapshots(path) == [normalized]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), {"not-json"}])
+def test_unserializable_batch_is_rejected_before_any_append(tmp_path, value):
+    path = tmp_path / "ledger.ndjson"
+    core.append_text_snapshot({"target_key": "target", "text": "seed"}, path)
+    before = path.read_bytes()
+    with pytest.raises((ValueError, TypeError)):
+        core._append_text_snapshots_transaction(lambda _: [
+            {"target_key": "target", "text": "valid"},
+            {"target_key": "target", "value": value},
+        ], path)
+    assert path.read_bytes() == before
+
+
 def test_invalid_later_batch_event_cannot_partially_commit(tmp_path):
     path = tmp_path / "text-snapshots.ndjson"
     core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)

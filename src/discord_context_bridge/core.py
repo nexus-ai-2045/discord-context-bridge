@@ -328,7 +328,10 @@ def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str,
     payload = {key: value for key, value in record.items() if key not in {"line_no", "source_format"}}
     payload["url"] = url
     payload["target_key"] = target_key
-    payload.setdefault("captured_at", utc_now())
+    # event ID に結び付く入力へ再試行ごとに変わる時刻を注入しない。
+    # 元の観測時刻がない場合は、鮮度不明のまま保存する。
+    if not payload.get("event_id"):
+        payload.setdefault("captured_at", utc_now())
     payload.setdefault("private_local_only", True)
     payload.setdefault("external_share_allowed", False)
     payload.setdefault("outbound_actions", "disabled")
@@ -1405,9 +1408,16 @@ def _durable_snapshot_event_hash(snapshot: dict[str, Any]) -> str:
 
 
 def _text_snapshot_lock_id(path: Path) -> str:
-    """同じstore root内でledgerごとに安定した非公開lock名を返す。"""
+    """同じ物理root内のcase/Unicode表記aliasへ作成前から同じlockを割り当てる。
 
-    ledger_key = hashlib.sha256(Path(path).name.encode("utf-8")).hexdigest()[:16]
+    case-sensitive FSでは一部の別ledgerも直列化する保守的な契約。
+    inodeや存在状態でkeyを切り替えず、初回作成・置換でもlockを分裂させない。
+    rootのaliasは同じ物理lock directoryへ到達する。symlinkは既存store検証で拒否する。
+    """
+    import unicodedata
+
+    name = unicodedata.normalize("NFD", Path(path).name.casefold())
+    ledger_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
     return f"canonical-text-snapshots-{ledger_key}"
 
 
@@ -1494,7 +1504,13 @@ def _append_text_snapshots_transaction(
     with store.transition_lock(_text_snapshot_lock_id(path)):
         snapshots = load_text_snapshots(path)
         heads = _validate_text_snapshot_chain(snapshots)
-        candidates = build_snapshots(snapshots)
+        # 永続化するJSON表現を事前に確定し、冪等性・検証・再読照合で共用する。
+        candidates = [
+            json.loads(json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False))
+            for row in build_snapshots(snapshots)
+        ]
+        if any(not isinstance(row, dict) for row in candidates):
+            raise CheckpointCorruptError("snapshot candidate must be a JSON object")
         additions: list[dict[str, Any]] = []
         by_event_id = {str(row["event_id"]): row for row in snapshots if row.get("event_id")}
         for snapshot in candidates:
@@ -2335,13 +2351,10 @@ def snapshot_visible_text(
         target_snapshots = [item for item in snapshots if item.get("target_key") == target_key]
         previous = target_snapshots[-1] if target_snapshots else None
         previous_hash = str(previous.get("content_hash") or "") if previous else None
-        previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
-        previous_stream_sequence = (
-            int(previous.get("stream_sequence") or previous.get("observation_index_for_target") or len(target_snapshots))
-            if previous
-            else 0
+        previous_stream_sequence, previous_event_hash = _validate_text_snapshot_chain(snapshots).get(
+            target_key, (0, "")
         )
-        stream_sequence = len(target_snapshots) + 1
+        stream_sequence = previous_stream_sequence + 1
         captured_at = utc_now()
         snapshot = {
             "schema": "discord_context_bridge_text_snapshot_observation.v1",
