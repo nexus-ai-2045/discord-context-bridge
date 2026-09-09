@@ -326,6 +326,9 @@ def matching_snapshot_records(path: Path, *, url: str, target_key: str) -> list[
 
 def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str, target_key: str) -> None:
     payload = {key: value for key, value in record.items() if key not in {"line_no", "source_format"}}
+    if _is_chained_text_snapshot(payload):
+        _import_chained_snapshot(payload, Path(path), url=url, target_key=target_key)
+        return
     payload["url"] = url
     payload["target_key"] = target_key
     # event ID に結び付く入力へ再試行ごとに変わる時刻を注入しない。
@@ -336,6 +339,53 @@ def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str,
     payload.setdefault("external_share_allowed", False)
     payload.setdefault("outbound_actions", "disabled")
     append_text_snapshot(payload, path)
+
+
+def _import_chained_snapshot(source: dict[str, Any], path: Path, *, url: str, target_key: str) -> None:
+    """元eventを検証し、保存先のheadに結合した新eventとしてprivateに取り込む。"""
+    source = json.loads(json.dumps(source, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    _validate_snapshot_stream_binding(source)
+    if not source.get("event_id") or source.get("event_hash") != canonical_event_hash(source):
+        raise CheckpointCorruptError("import source event hash is invalid")
+    sequence = source.get("stream_sequence")
+    expected = source.get("expected_previous_stream_sequence")
+    previous_hash = source.get("previous_event_hash")
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in (sequence, expected))
+        or expected < 0 or sequence != expected + 1):
+        raise CheckpointCorruptError("import source sequence is invalid")
+    if (not isinstance(previous_hash, str)
+        or (expected == 0 and previous_hash != "")
+        or (expected > 0 and re.fullmatch(r"[0-9a-f]{64}", previous_hash) is None)):
+        raise CheckpointCorruptError("import source previous hash is invalid")
+    imported_id = stable_text_hash(json.dumps(
+        ["canonical_import", source["stream_id"], source["event_id"], target_key],
+        ensure_ascii=False,
+    ))
+
+    def build(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+        for existing in snapshots:
+            if existing.get("event_id") == imported_id:
+                if (existing.get("import_source_event_hash") != source["event_hash"]
+                    or existing.get("url") != url or existing.get("target_key") != target_key):
+                    raise EventConflictError("import source event is bound to different content")
+                return existing
+            if existing == source and source.get("url") == url and source.get("target_key") == target_key:
+                return existing
+        sequence, previous_hash = _validate_text_snapshot_chain(snapshots).get(target_key, (0, ""))
+        previous = next((row for row in reversed(snapshots) if _snapshot_stream_id(row) == target_key), None)
+        candidate = dict(source)
+        candidate.update(
+            event_id=imported_id, target_key=target_key, stream_id=target_key, subject=target_key,
+            url=url, stream_sequence=sequence + 1, expected_previous_stream_sequence=sequence,
+            observation_index_for_target=sequence + 1, previous_event_hash=previous_hash,
+            previous_content_hash=previous.get("content_hash") if previous else None,
+            import_source_event_hash=source["event_hash"], import_source_event_id=source["event_id"],
+            private_local_only=True, external_share_allowed=False, outbound_actions="disabled",
+        )
+        candidate["event_hash"] = canonical_event_hash(candidate)
+        return candidate
+
+    _append_text_snapshot_transaction(build, path)
 
 
 def build_url_intake_gate(
@@ -1410,7 +1460,7 @@ def _durable_snapshot_event_hash(snapshot: dict[str, Any]) -> str:
 
 
 def _text_snapshot_lock_id(path: Path) -> str:
-    """同じ物理root内のcase/Unicode表記aliasへ作成前から同じlockを割り当てる。
+    """同じ物理root内のcase/Unicode/Win32末尾aliasへ作成前から同じlockを割り当てる。
 
     case-sensitive FSでは一部の別ledgerも直列化する保守的な契約。
     inodeや存在状態でkeyを切り替えず、初回作成・置換でもlockを分裂させない。
@@ -1418,7 +1468,8 @@ def _text_snapshot_lock_id(path: Path) -> str:
     """
     import unicodedata
 
-    name = unicodedata.normalize("NFD", Path(path).name.casefold())
+    # Win32通常pathが無視する末尾dot/spaceも保守的に同じlockへ束ねる。
+    name = unicodedata.normalize("NFD", Path(path).name.casefold()).rstrip(". ")
     ledger_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
     return f"canonical-text-snapshots-{ledger_key}"
 
@@ -1456,7 +1507,9 @@ def _validate_text_snapshot_chain(
             if existing is not None:
                 if existing != snapshot:
                     raise CheckpointCorruptError("snapshot event id is bound to different content")
-                raise CheckpointCorruptError("snapshot ledger contains a duplicate event id")
+                if _is_chained_text_snapshot(snapshot):
+                    raise CheckpointCorruptError("snapshot ledger contains a duplicate event id")
+                # 旧writerの同一raw event再追記は改変せず物理観測数として数える。
             event_ids[event_id] = snapshot
 
         stream_id = _snapshot_stream_id(snapshot)

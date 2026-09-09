@@ -171,6 +171,96 @@ def test_event_bound_raw_import_without_timestamp_replays(tmp_path, monkeypatch)
     assert len(core.load_text_snapshots(path)) == 1
 
 
+def test_identical_legacy_replay_rows_remain_appendable(tmp_path):
+    path = tmp_path / "legacy.ndjson"
+    url = "https://example.invalid/a"
+    row = {"schema": "dcb.incremental_visible_message.v1", "event_id": "old", "target_key": core.stable_text_hash(url), "text": "legacy"}
+    original = (core.json.dumps(row) + "\n") * 2
+    path.write_text(original, encoding="utf-8")
+    core.snapshot_visible_text(text="next", url=url, path=path)
+    assert path.read_text().startswith(original)
+    rows = core.load_text_snapshots(path)
+    assert rows[-1]["stream_sequence"] == 3
+    assert not core.append_text_snapshot(row, path)
+
+
+@pytest.mark.parametrize("rebind", [False, True])
+@pytest.mark.parametrize("seeded", [False, True])
+def test_canonical_cache_import_rechains_against_destination(tmp_path, rebind, seeded):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/a"
+    core.snapshot_visible_text(text="one", url=url, path=source)
+    core.snapshot_visible_text(text="two", url=url, path=source)
+    record = core.load_text_snapshots(source)[-1]
+    destination = tmp_path / "destination.ndjson"
+    if rebind:
+        url = "https://example.invalid/b"
+    target = core.stable_text_hash(url)
+    if seeded:
+        core.snapshot_visible_text(text="destination", url=url, path=destination)
+    core.append_snapshot_like_record(destination, record, url=url, target_key=target)
+    before = destination.read_bytes()
+    core.append_snapshot_like_record(destination, record, url=url, target_key=target)
+    assert destination.read_bytes() == before
+    rows = core.load_text_snapshots(destination)
+    assert rows[-1]["stream_sequence"] == (2 if seeded else 1)
+    assert rows[-1]["target_key"] == rows[-1]["stream_id"] == target
+    assert rows[-1]["text"] == record["text"]
+    assert rows[-1]["captured_at"] == record["captured_at"]
+    core.snapshot_visible_text(text="next", url=url, path=destination)
+    core._validate_text_snapshot_chain(core.load_text_snapshots(destination))
+
+
+def test_partial_canonical_cache_sync_and_conflicting_import(tmp_path):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/a"
+    core.snapshot_visible_text(text="one", url=url, path=source)
+    core.snapshot_visible_text(text="two", url=url, path=source)
+    record = core.load_text_snapshots(source)[-1]
+    partial = tmp_path / "partial.ndjson"
+    partial.write_text(core.json.dumps(record) + "\n", encoding="utf-8")
+    destination = tmp_path / "destination.ndjson"
+    core.build_url_intake_gate(url, raw_cache_path=partial, ai_log_path=destination, sync=True)
+    assert core.load_text_snapshots(destination)[0]["stream_sequence"] == 1
+    before = destination.read_bytes()
+    corrupted = dict(record, text="changed")
+    with pytest.raises(CheckpointCorruptError):
+        core.append_snapshot_like_record(destination, corrupted, url=url, target_key=core.stable_text_hash(url))
+    corrupted["event_hash"] = core.canonical_event_hash(corrupted)
+    with pytest.raises(capture_store.EventConflictError):
+        core.append_snapshot_like_record(destination, corrupted, url=url, target_key=core.stable_text_hash(url))
+    assert destination.read_bytes() == before
+
+
+@pytest.mark.parametrize("updates", [
+    {"stream_sequence": -10}, {"stream_sequence": True},
+    {"expected_previous_stream_sequence": True}, {"expected_previous_stream_sequence": -1},
+    {"stream_sequence": 5}, {"previous_event_hash": "invalid"},
+    {"previous_event_hash": ""},
+])
+def test_import_rejects_locally_invalid_source_envelope(tmp_path, updates):
+    source = tmp_path / "source.ndjson"
+    url = "https://example.invalid/a"
+    core.snapshot_visible_text(text="one", url=url, path=source)
+    core.snapshot_visible_text(text="two", url=url, path=source)
+    row = dict(core.load_text_snapshots(source)[-1], **updates)
+    row["event_hash"] = core.canonical_event_hash(row)
+    destination = tmp_path / "destination.ndjson"
+    with pytest.raises(CheckpointCorruptError):
+        core.append_snapshot_like_record(destination, row, url=url, target_key=core.stable_text_hash(url))
+    assert not destination.exists()
+
+
+def test_conflicting_legacy_event_ids_still_fail_closed(tmp_path):
+    path = tmp_path / "legacy.ndjson"
+    row = {"event_id": "old", "target_key": "target", "text": "a"}
+    path.write_text(core.json.dumps(row) + "\n" + core.json.dumps(dict(row, text="b")) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(CheckpointCorruptError):
+        core.append_text_snapshot({"target_key": "target", "text": "next"}, path)
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("value", [("a", "b"), {1: "a"}])
 @pytest.mark.parametrize("event_bound", [False, True])
 def test_json_normalized_candidate_matches_readback_and_replay(tmp_path, value, event_bound):

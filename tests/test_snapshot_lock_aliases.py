@@ -13,6 +13,9 @@ from discord_context_bridge.capture.store import (
 @pytest.mark.parametrize("first, second", [
     ("current.ndjson", "CURRENT.NDJSON"),
     ("café.ndjson", "cafe\u0301.ndjson"),
+    ("current.ndjson", "CURRENT.NDJSON."),
+    ("current.ndjson", "current.ndjson "),
+    ("current.ndjson", "CURRENT.NDJSON. . "),
 ])
 def test_lock_identity_is_stable_for_aliases_before_and_after_creation(tmp_path, first, second):
     original, alias = tmp_path / first, tmp_path / second
@@ -43,6 +46,29 @@ def test_case_insensitive_root_and_ledger_alias_share_writer_lock(tmp_path, seed
     assert (original.read_bytes() if seeded else None) == before
     if not seeded:
         assert not original.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires actual Win32 filename alias semantics")
+@pytest.mark.parametrize("seeded", [False, True])
+@pytest.mark.parametrize("suffix", [".", " ", ". . "])
+def test_windows_trailing_dot_space_alias_shares_lock(tmp_path, seeded, suffix):
+    root = tmp_path / "capture-root"
+    root.mkdir()
+    original = root / "current.ndjson"
+    alias = root / ("CURRENT.NDJSON" + suffix)
+    if seeded:
+        core.snapshot_visible_text(text="seed", url="https://example.invalid/a", path=original)
+        assert alias.exists() and alias.samefile(original)
+    before = original.read_bytes() if seeded else None
+    with (
+        core.CaptureCheckpointStore(root).transition_lock(core._text_snapshot_lock_id(original)),
+        pytest.raises(SequenceConflictError),
+    ):
+        core.snapshot_visible_text(text="blocked", url="https://example.invalid/a", path=alias)
+    if seeded:
+        assert original.read_bytes() == before
+    else:
+        assert not original.exists() and not alias.exists()
 
 
 def test_alias_fix_does_not_follow_symlink_store_root(tmp_path):
