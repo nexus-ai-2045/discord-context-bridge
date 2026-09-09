@@ -4,7 +4,10 @@ import os
 import shlex
 import sys
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,22 +37,78 @@ import gh_pr_read
 from discord_context_bridge.cli import safe_command_failure_reason
 from discord_context_bridge.credentials import (
     BOT_TOKEN_ENV,
+    CHANNEL_DIR_ENV,
     TOKEN_COMMAND_ENV,
     configured_bot_token_provider,
     load_bot_token_from_provider,
 )
+from discord_context_bridge.live_verification import (
+    LIVE_VERIFICATION_RECEIPT,
+    normalize_expected_target,
+    produce_live_verification_receipt,
+)
+
+
+EXPECTED_TARGET_URL = "https://discord.com/channels/1/2"
 
 
 def ready_channel_dir(tmp_path: Path) -> Path:
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
     token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path = channel_dir / ".env"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
     )
+    write_test_live_verification_receipt(channel_dir)
     return channel_dir
+
+
+def write_safe_channel_env(channel_dir: Path) -> Path:
+    env_path = channel_dir / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    return env_path
+
+
+def write_test_live_verification_receipt(
+    channel_dir: Path,
+    *,
+    token: str = "synthetic-secret",
+    observed_at: datetime | None = None,
+    expected_url: str = EXPECTED_TARGET_URL,
+    channel_type: int = 0,
+) -> Path:
+    target = normalize_expected_target(expected_url)
+
+    def fetch(route: str, supplied_token: str):
+        assert supplied_token == token
+        if route == "/users/@me":
+            return {"id": "bot-private", "bot": True}
+        if route == f"/guilds/{target['guild_id']}":
+            return {"id": target["guild_id"]}
+        if route == f"/channels/{target['channel_id']}":
+            return {
+                "id": target["channel_id"],
+                "guild_id": target["guild_id"],
+                "type": channel_type,
+            }
+        raise AssertionError(route)
+
+    now = observed_at or datetime.now(timezone.utc)
+    receipt = channel_dir / LIVE_VERIFICATION_RECEIPT
+    produce_live_verification_receipt(
+        expected_url=expected_url,
+        token=token,
+        path=receipt,
+        fetch_json=fetch,
+        now=now,
+    )
+    return receipt
 
 
 def configure_test_secret_command(monkeypatch, python_code: str) -> None:
@@ -78,15 +137,127 @@ def test_public_safe_payload_omits_nested_store_paths():
     assert live_mvp_status.public_safe_payload(payload)["live_smoke"]["store"] == "omitted"
 
 
-def test_bot_route_env_status_detects_token_without_returning_value(tmp_path: Path):
+def test_channel_env_provider_status_and_load_agree_without_returning_value(tmp_path: Path):
     env_path = tmp_path / ".env"
     token_key = "DISCORD_" + "BOT_TOKEN"
     env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
 
-    status = discord_bot_route_preflight.read_env_status(env_path)
+    status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+    loaded = load_bot_token_from_provider(env={}, channel_env_path=env_path)
 
-    assert status == {"exists": True, "token_set": True}
+    assert status["ok"] is True
+    assert status["provider"] == "channel_env"
+    assert loaded.ok is True
+    assert loaded.provider == "channel_env"
+    assert loaded.token == "synthetic-secret"
     assert "synthetic-secret" not in str(status)
+
+
+def test_channel_env_never_executes_lines_and_reads_only_exact_key(tmp_path: Path):
+    marker = tmp_path / "must-not-exist"
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"source {tmp_path / 'another.env'}\n"
+        f"touch={marker}\n"
+        f"{'DISCORD_' + 'BOT_TOKEN'}=synthetic-secret\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+
+    loaded = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+
+    assert loaded.ok is True
+    assert loaded.token == "synthetic-secret"
+    assert marker.exists() is False
+
+
+def test_channel_env_rejects_unsafe_mode_and_symlink(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    if os.name != "nt":
+        env_path.chmod(0o644)
+        result = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+        status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+        assert result.failure_stage == "channel_env_mode_0600_required"
+        assert status["failure_stage"] == result.failure_stage
+        assert status["provider"] == result.provider
+
+    target = tmp_path / "target.env"
+    target.write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    target.chmod(0o600)
+    link = tmp_path / "linked.env"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        return
+    result = load_bot_token_from_provider(env={}, channel_env_path=link)
+    assert result.failure_stage == "channel_env_not_regular_file"
+
+
+def test_channel_env_rejects_duplicate_exact_token_key(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(
+        f"{token_key}=first-secret\n{token_key}=second-secret\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+
+    result = load_bot_token_from_provider(env={}, channel_env_path=env_path)
+    status = configured_bot_token_provider(env={}, channel_env_path=env_path)
+
+    assert result.failure_stage == "channel_env_duplicate_token_key"
+    assert status["failure_stage"] == result.failure_stage
+    assert "first-secret" not in json.dumps(status)
+    assert "second-secret" not in json.dumps(status)
+
+
+def test_bot_route_preflight_uses_same_channel_env_provider(tmp_path: Path, monkeypatch):
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    write_safe_channel_env(channel_dir)
+    (channel_dir / "access.json").write_text(
+        json.dumps({"dmPolicy": "locked", "allowFrom": ["safe"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+
+    payload = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert payload["ok"] is False
+    assert payload["bot_token"]["provider"] == "channel_env"
+    assert payload["credential_provider"]["provider"] == "channel_env"
+    assert payload["credential_provider"]["token_set"] is True
+    assert payload["credential_state"] == "configured"
+    assert payload["live_verification"]["status"] == "missing"
+    assert payload["blockers"] == ["credential_configured_but_live_unverified"]
+
+
+def test_explicit_env_and_secret_command_keep_priority_over_channel_env(
+    tmp_path: Path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    token_key = "DISCORD_" + "BOT_TOKEN"
+    env_path.write_text(f"{token_key}=channel-secret\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    explicit = load_bot_token_from_provider(
+        env={BOT_TOKEN_ENV: "explicit-secret", TOKEN_COMMAND_ENV: "ignored"},
+        channel_env_path=env_path,
+    )
+    assert explicit.provider == "env"
+    assert explicit.token == "explicit-secret"
+
+    configure_test_secret_command(monkeypatch, "print('command-secret')")
+    source = dict(os.environ)
+    source.pop(BOT_TOKEN_ENV, None)
+    command = load_bot_token_from_provider(env=source, channel_env_path=env_path)
+    assert command.provider == "secret_command"
+    assert command.token == "command-secret"
 
 
 def test_configured_bot_token_provider_detects_secret_command_without_value(monkeypatch):
@@ -134,18 +305,95 @@ def test_bot_route_preflight_accepts_secret_command_provider(tmp_path: Path, mon
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
     configure_test_secret_command(monkeypatch, "print(12345)")
 
-    payload = discord_bot_route_preflight.build_preflight(channel_dir)
+    payload = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
 
-    assert payload["ok"] is True
+    assert payload["ok"] is False
     assert payload["bot_token"]["set"] is True
     assert payload["bot_token"]["provider"] == "secret_command"
     assert payload["bot_token"]["value_returned"] is False
+    assert payload["live_verification"]["live_verified"] is False
+    assert payload["next"] == "obtain_explicit_target_live_verification_receipt"
     assert "12345" not in json.dumps(payload, ensure_ascii=False)
 
 
-def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch):
+def test_bot_route_preflight_accepts_current_credential_bound_live_receipt(
+    tmp_path: Path, monkeypatch
+):
+    channel_dir = ready_channel_dir(tmp_path)
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+
+    payload = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert payload["ok"] is True
+    assert payload["credential_state"] == "configured"
+    assert payload["live_verification"]["status"] == "verified"
+    assert payload["live_verification"]["live_verified"] is True
+    assert payload["next"] == "bot_route_ready_for_private_smoke"
+    rendered = json.dumps(payload)
+    receipt = json.loads(
+        (channel_dir / LIVE_VERIFICATION_RECEIPT).read_text(encoding="utf-8")
+    )
+    assert receipt["target_binding_sha256"] not in rendered
+    assert receipt["credential_binding_sha256"] not in rendered
+    assert receipt["receipt_mac_sha256"] not in rendered
+
+
+def test_bot_route_preflight_rejects_stale_or_wrong_credential_receipt(
+    tmp_path: Path, monkeypatch
+):
+    channel_dir = ready_channel_dir(tmp_path)
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    write_test_live_verification_receipt(channel_dir, token="different-secret")
+
+    mismatched = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+    write_test_live_verification_receipt(
+        channel_dir,
+        observed_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    expired = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert mismatched["ok"] is False
+    assert mismatched["live_verification"]["status"] == "credential_mismatch"
+    assert expired["ok"] is False
+    assert expired["live_verification"]["status"] == "expired"
+    assert "synthetic-secret" not in json.dumps(mismatched)
+
+
+def test_bot_route_preflight_rejects_hand_modified_live_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    channel_dir = ready_channel_dir(tmp_path)
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    receipt = channel_dir / LIVE_VERIFICATION_RECEIPT
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["target_channel_access_verified"] = False
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    receipt.chmod(0o600)
+
+    result = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert result["ok"] is False
+    assert result["live_verification"]["status"] == "verification_incomplete"
+    assert result["blockers"] == ["credential_configured_but_live_unverified"]
+
+
+def test_rest_backfill_blocks_missing_bot_token_without_leaking(monkeypatch, tmp_path):
     monkeypatch.delenv("DISCORD_" + "BOT_TOKEN", raising=False)
     monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    monkeypatch.setenv(CHANNEL_DIR_ENV, str(tmp_path / "missing-channel"))
 
     result = discord_rest_backfill.main(["--url", "https://discord.com/channels/7/8/9", "--json"])
 
@@ -161,6 +409,15 @@ def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch,
 
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
     configure_test_secret_command(monkeypatch, "print(12345)")
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["safe"]}', encoding="utf-8"
+    )
+    target_url = "https://discord.com/channels/7/8/9"
+    write_test_live_verification_receipt(
+        channel_dir, token="12345", expected_url=target_url
+    )
     monkeypatch.setattr(discord_rest_backfill, "fetch_discord_messages", fake_fetch_discord_messages)
     raw_output = tmp_path / "raw.ndjson"
     manifest_output = tmp_path / "manifest.json"
@@ -168,7 +425,9 @@ def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch,
     result = discord_rest_backfill.main(
         [
             "--url",
-            "https://discord.com/channels/7/8/9",
+            target_url,
+            "--channel-dir",
+            str(channel_dir),
             "--raw-output",
             str(raw_output),
             "--manifest-output",
@@ -256,6 +515,7 @@ def test_bot_private_ingest_returns_context_without_text(tmp_path: Path):
         draft="公開時期の前提を確認します。",
         min_parsed=1,
         understanding_confirmed=True,
+        expected_url=EXPECTED_TARGET_URL,
     )
 
     rendered = discord_bot_private_ingest._json(payload)
@@ -290,8 +550,7 @@ def test_bot_private_ingest_empty_input_is_safe(tmp_path: Path):
 def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         (
             '{"dmPolicy":"allowlist",'
@@ -301,12 +560,17 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
         ),
         encoding="utf-8",
     )
+    write_test_live_verification_receipt(channel_dir)
 
-    payload = discord_plugin_route_status.build_status(channel_dir)
+    payload = discord_plugin_route_status.build_status(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
     rendered = discord_plugin_route_status._json(payload)
 
     assert payload["ok"] is True
     assert payload["recommended_route"] == "rest_backfill"
+    assert payload["configuration_state"] == "configured"
+    assert payload["live_state"] == "live_verified"
     assert payload["routes"]["discord_configure"]["route_class"] == "control"
     assert payload["routes"]["discord_access"]["route_class"] == "control"
     assert payload["routes"]["rest_backfill"]["route_class"] == "main"
@@ -317,6 +581,7 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert payload["routes"]["rest_backfill"]["token_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["raw_text_output"] == "omitted"
     assert payload["routes"]["rest_backfill"]["outbound_actions"] == "disabled"
+    assert payload["routes"]["rest_backfill"]["live_verified"] is True
     assert payload["routes"]["discord_access"]["snowflake_values_output"] == "omitted"
     assert payload["routes"]["discord_access"]["pending_count"] == 1
     assert payload["routes"]["bot_private_ingest"]["outbound_actions"] == "disabled"
@@ -327,6 +592,81 @@ def test_discord_plugin_route_status_masks_control_plane_values(tmp_path: Path):
     assert "111111111111111111" not in rendered
     assert "222222222222222222" not in rendered
     assert "333333" not in rendered
+
+
+@pytest.mark.parametrize("channel_type, channel_class", [(15, "forum"), (16, "media")])
+def test_plugin_routes_forum_and_media_parents_to_thread_inventory(
+    tmp_path: Path, channel_type: int, channel_class: str
+) -> None:
+    channel_dir = ready_channel_dir(tmp_path)
+    write_test_live_verification_receipt(channel_dir, channel_type=channel_type)
+
+    payload = discord_plugin_route_status.build_status(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert payload["ok"] is False
+    assert payload["recommended_route"] == "thread_inventory"
+    assert payload["routes"]["rest_backfill"]["status"] == "blocked"
+    assert payload["routes"]["rest_backfill"]["channel_type_class"] == channel_class
+    assert payload["routes"]["thread_inventory"]["status"] == "required"
+
+
+def test_rest_backfill_rejects_forum_parent_before_message_fetch(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    channel_dir = ready_channel_dir(tmp_path)
+    write_test_live_verification_receipt(channel_dir, channel_type=15)
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+    monkeypatch.setattr(
+        discord_rest_backfill,
+        "fetch_discord_messages",
+        lambda **_kwargs: pytest.fail("forum親で本文履歴APIを呼んではならない"),
+    )
+
+    result = discord_rest_backfill.main(
+        [
+            "--url", EXPECTED_TARGET_URL,
+            "--channel-dir", str(channel_dir),
+            "--raw-output", str(tmp_path / "raw.ndjson"),
+            "--manifest-output", str(tmp_path / "manifest.json"),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 2
+    assert payload["failure_stage"] == "message_history_channel_type_not_supported"
+    assert payload["next"] == "run_discord_archived_thread_inventory"
+    assert payload["channel_type_class"] == "forum"
+
+
+def test_discord_plugin_route_status_never_marks_configured_only_as_ready(
+    tmp_path: Path, monkeypatch
+) -> None:
+    channel_dir = tmp_path / "discord"
+    channel_dir.mkdir()
+    write_safe_channel_env(channel_dir)
+    (channel_dir / "access.json").write_text(
+        '{"dmPolicy":"allowlist","allowFrom":["safe"],"groups":{},"pending":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_COMMAND_ENV, raising=False)
+
+    payload = discord_plugin_route_status.build_status(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+
+    assert payload["ok"] is False
+    assert payload["configuration_state"] == "configured"
+    assert payload["live_state"] == "live_unverified"
+    assert payload["recommended_route"] == "discord_verify_target_access"
+    assert payload["routes"]["rest_backfill"]["status"] == "blocked"
+    assert payload["routes"]["rest_backfill"]["credential_configured"] is True
+    assert payload["routes"]["rest_backfill"]["live_verified"] is False
+    assert payload["routes"]["bot_private_ingest"]["status"] == "blocked"
 
 
 def test_discord_main_route_smoke_reaches_gate_without_text(tmp_path: Path):
@@ -341,6 +681,7 @@ def test_discord_main_route_smoke_reaches_gate_without_text(tmp_path: Path):
         draft="公開時期の前提を確認します。",
         min_parsed=1,
         understanding_confirmed=True,
+        expected_url=EXPECTED_TARGET_URL,
     )
     rendered = discord_main_route_smoke._json(payload)
 
@@ -384,7 +725,9 @@ def test_discord_channel_event_probe_reports_missing_text_without_names(tmp_path
     inbox.mkdir(parents=True)
     (inbox / "123456789012345678-sensitive.png").write_bytes(b"fake")
 
-    payload = discord_channel_event_probe.build_probe(channel_dir)
+    payload = discord_channel_event_probe.build_probe(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
     rendered = discord_channel_event_probe._json(payload)
 
     assert payload["ok"] is False
@@ -406,7 +749,9 @@ def test_discord_channel_event_probe_detects_text_candidate_without_reading_it(t
     inbox.mkdir(parents=True)
     (inbox / "event.ndjson").write_text("member-a: 公開時期の前提を確認したいです。\n", encoding="utf-8")
 
-    payload = discord_channel_event_probe.build_probe(channel_dir)
+    payload = discord_channel_event_probe.build_probe(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
     rendered = discord_channel_event_probe._json(payload)
 
     assert payload["ok"] is True
@@ -425,9 +770,12 @@ def test_discord_live_text_source_writes_latest_without_leaking_text(tmp_path: P
         text,
         channel_dir=channel_dir,
         source_label="fixture source",
+        expected_url=EXPECTED_TARGET_URL,
     )
     rendered = discord_live_text_source._json(payload)
-    latest_text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+    latest_text, latest_payload = discord_live_text_source.latest_text_event(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
     latest_rendered = discord_live_text_source._json(latest_payload)
 
     assert payload["ok"] is True
@@ -460,6 +808,7 @@ def test_e2e_discord_route_check_passes_fixture_without_channel_event(tmp_path: 
         require_channel_event=False,
         understanding_confirmed=True,
         source_payload={"mode": "input", "write": None, "latest": None},
+        expected_url=EXPECTED_TARGET_URL,
     )
     rendered = e2e_discord_route_check._json(payload)
 
@@ -488,6 +837,7 @@ def test_e2e_discord_route_check_blocks_when_channel_event_required(tmp_path: Pa
         min_parsed=1,
         require_channel_event=True,
         source_payload={"mode": "input", "write": None, "latest": None},
+        expected_url=EXPECTED_TARGET_URL,
     )
 
     assert payload["ok"] is False
@@ -500,8 +850,12 @@ def test_e2e_discord_route_check_blocks_when_channel_event_required(tmp_path: Pa
 def test_e2e_discord_route_check_uses_channel_event_when_requested(tmp_path: Path):
     channel_dir = ready_channel_dir(tmp_path)
     text = "member-a: 公開時期の前提を確認したいです。\nmember-b: まず文脈を揃えましょう。\n"
-    write_payload = discord_live_text_source.write_text_event(text, channel_dir=channel_dir)
-    latest_text, latest_payload = discord_live_text_source.latest_text_event(channel_dir)
+    write_payload = discord_live_text_source.write_text_event(
+        text, channel_dir=channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
+    latest_text, latest_payload = discord_live_text_source.latest_text_event(
+        channel_dir, expected_url=EXPECTED_TARGET_URL
+    )
 
     payload = e2e_discord_route_check.build_e2e_payload(
         latest_text,
@@ -512,6 +866,7 @@ def test_e2e_discord_route_check_uses_channel_event_when_requested(tmp_path: Pat
         min_parsed=1,
         require_channel_event=True,
         source_payload={"mode": "channel_event", "write": write_payload, "latest": latest_payload},
+        expected_url=EXPECTED_TARGET_URL,
     )
     rendered = e2e_discord_route_check._json(payload)
 
@@ -949,8 +1304,7 @@ def test_discord_inventory_dashboard_omits_sensitive_values(tmp_path: Path, monk
     channel_dir = tmp_path / "discord"
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
@@ -1518,8 +1872,7 @@ def test_repo_goal_status_includes_ops_smoke_failure(monkeypatch):
 def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
@@ -1545,6 +1898,7 @@ def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path
         attempts=4,
         timeout=0.01,
         interval=0,
+        expected_url=EXPECTED_TARGET_URL,
         runner=fake_timeout,
     )
     rendered = json.dumps(payload, ensure_ascii=False)
@@ -1621,8 +1975,8 @@ def test_route_retry_decider_uses_inbox_when_api_unconfigured(tmp_path: Path):
     channel_dir = tmp_path / "discord"
     inbox = channel_dir / "inbox"
     inbox.mkdir(parents=True)
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    (channel_dir / ".env").write_text(f"{token_key}=synthetic-secret\n", encoding="utf-8")
+    write_safe_channel_env(channel_dir)
+    write_test_live_verification_receipt(channel_dir)
     (channel_dir / "access.json").write_text(
         '{"dmPolicy":"allowlist","allowFrom":["123456789012345678"],"groups":{},"pending":{}}',
         encoding="utf-8",
@@ -1636,6 +1990,7 @@ def test_route_retry_decider_uses_inbox_when_api_unconfigured(tmp_path: Path):
         attempts=5,
         timeout=1,
         interval=0,
+        expected_url=EXPECTED_TARGET_URL,
     )
     rendered = json.dumps(payload, ensure_ascii=False)
 

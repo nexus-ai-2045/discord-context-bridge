@@ -72,8 +72,11 @@ def write_text_event(
     *,
     channel_dir: Path,
     source_label: str = "source-command",
+    expected_url: str | None = None,
 ) -> dict[str, Any]:
-    preflight = discord_bot_route_preflight.build_preflight(channel_dir)
+    preflight = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=expected_url
+    )
     if not text.strip():
         return {
             "schema": "discord_live_text_source.v1",
@@ -95,7 +98,9 @@ def write_text_event(
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     event_name = f"{int(time.time() * 1000)}-{safe_label(source_label)}-{digest}.txt"
     (inbox / event_name).write_text(text, encoding="utf-8")
-    probe = discord_channel_event_probe.build_probe(channel_dir)
+    probe = discord_channel_event_probe.build_probe(
+        channel_dir, expected_url=expected_url
+    )
     ok = bool(preflight["ok"]) and bool(probe["ok"])
     return {
         "schema": "discord_live_text_source.v1",
@@ -126,8 +131,12 @@ def write_text_event(
     }
 
 
-def latest_text_event(channel_dir: Path) -> tuple[str, dict[str, Any]]:
-    preflight = discord_bot_route_preflight.build_preflight(channel_dir)
+def latest_text_event(
+    channel_dir: Path, *, expected_url: str | None = None
+) -> tuple[str, dict[str, Any]]:
+    preflight = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=expected_url
+    )
     files = text_event_files(channel_dir)
     if not files:
         return "", {
@@ -162,7 +171,9 @@ def latest_text_event(channel_dir: Path) -> tuple[str, dict[str, Any]]:
             "file_names_output": "omitted",
             "outbound_actions": "disabled",
         }
-    probe = discord_channel_event_probe.build_probe(channel_dir)
+    probe = discord_channel_event_probe.build_probe(
+        channel_dir, expected_url=expected_url
+    )
     ok = bool(preflight["ok"]) and bool(probe["ok"])
     return text, {
         "schema": "discord_live_text_source_latest.v1",
@@ -197,6 +208,7 @@ def write_source_command_event(
     channel_dir: Path,
     source_label: str,
     source_timeout: float,
+    expected_url: str | None = None,
 ) -> dict[str, Any]:
     try:
         text = read_command_text(
@@ -218,7 +230,12 @@ def write_source_command_event(
             "file_names_output": "omitted",
             "outbound_actions": "disabled",
         }
-    return write_text_event(text, channel_dir=channel_dir, source_label=source_label)
+    return write_text_event(
+        text,
+        channel_dir=channel_dir,
+        source_label=source_label,
+        expected_url=expected_url,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -228,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-timeout", type=float, default=20.0)
     parser.add_argument("--source-label", default="source-command", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--read-latest", action="store_true", help="保存済み latest text event のメタデータだけ確認する。")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -251,19 +269,21 @@ def print_human(payload: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.read_latest:
-        _, payload = latest_text_event(args.channel_dir)
+        _, payload = latest_text_event(args.channel_dir, expected_url=args.expected_url)
     elif args.source_command:
         payload = write_source_command_event(
             args.source_command,
             channel_dir=args.channel_dir,
             source_label=args.source_label,
             source_timeout=args.source_timeout,
+            expected_url=args.expected_url,
         )
     else:
         payload = write_text_event(
             discord_bot_private_ingest.read_input_text(args.input),
             channel_dir=args.channel_dir,
             source_label=args.source_label,
+            expected_url=args.expected_url,
         )
     if args.json:
         print(_json(payload))

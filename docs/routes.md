@@ -1,4 +1,4 @@
-# Discord Context Bridge routes
+# Discord Context Bridgeの経路
 
 この文書は、Discord Context Bridge の取得・制御・fallback 経路を混ぜないための路線図です。
 目的は Discord を直接見続けることではなく、こちら側で文脈カード、返信前 gate、quick verdict を扱うことです。
@@ -25,22 +25,59 @@ ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が
 `not_configured` / `control_plane_not_ready` / `dependency_missing` の reason を返し、
 スコープを広げる場合はユーザーの明示承認を取る。
 
-## status command
+## 状態確認command
 
 ```bash
 python3 scripts/discord_plugin_route_status.py --json
 ```
 
+対象ごとの状態確認では `--expected-url` を必ず渡します。未指定の一般statusは主経路を
+絶対に `ready` にしません。
+
+```bash
+python3 scripts/discord_bot_live_verify.py --expected-url "<Discord対象URL>" --json
+python3 scripts/discord_bot_route_preflight.py --expected-url "<Discord対象URL>"
+python3 scripts/discord_plugin_route_status.py --expected-url "<Discord対象URL>" --json
+```
+
+`discord_bot_live_verify.py` が `live-verification.json` の唯一producerです。明示されたURLを
+内部でguild・channelへ正規化し、Bot本人、対象guild、対象channelをDiscord APIのGETだけで
+実測します。本文取得、Bot探索、権限変更、送信は行いません。3確認がすべて成功した時だけ、
+現在credentialと対象種別へ署名したreceiptをmode `0600` でatomic保存します。
+
 この command は route の状態だけを返します。
 `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` がある場合、Keychain / credential store など repo 外の承認済み secret provider として扱います。
 status command は provider 種別だけを返し、token 値、command stdout、vault内部情報は返しません。
+
+tokenが見つかった状態は `configured` にすぎず、Bot経路の利用可能性を意味しません。
+`live-verification.json` のprivate receiptが、現在credentialのdigest、expected targetを
+consumer側で再計算したbinding、Bot本人確認、
+対象guild所属、対象channel読取、有効期限をすべて満たした時だけ `live_verified` とします。
+receiptがない既定状態は `credential_configured_but_live_unverified` で停止し、
+`rest_backfill` と `bot_private_ingest` を `ready` にしません。receiptはmode `0600` の通常fileだけを
+読み、symlink、期限切れ、credential変更、不完全な確認はfail-closedにします。公開出力には
+credential digest、対象digest、実ID、URL、receipt pathを含めません。
+receiptの `verified_at` から `expires_at` までの有効窓は24時間以内に限定します。
+
+live verificationが受理するchannel typeの正本は
+`SUPPORTED_TARGET_CHANNEL_TYPES`です。対象はtext（0）、announcement（5）、
+announcement thread（10）、public thread（11）、private thread（12）、forum（15）、
+media（16）に限定し、voice、category、stage、directoryなどはproducerとconsumerの
+両方で拒否します。本文履歴APIを直接使える種別は
+`MESSAGE_HISTORY_CHANNEL_TYPES`としてtext、announcement、各threadだけに分離します。
+
+bot tokenの選択順は、process環境変数、`DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND`、
+`DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR/.env` の順です。channelの `.env` はshellとして実行せず、
+mode `0600` の通常fileからbot token用の完全一致keyを1件だけ読みます。
+symlink、権限が広いfile、重複key、不正なtoken値はfail-closedにします。preflightと実取得は
+同じprovider判定を使うため、設定済み表示だけが成功して実取得で欠落する状態を許しません。
 
 - `route_class=main`: 本線。文脈カード / 返信前 gate に流してよい。
 - `route_class=control`: 設定・許可の制御面。本文取得ではない。
 - `route_class=visual_fallback`: 画面確認用。自動送信や本文抽出には使わない。
 - `route_class=last_fallback`: 最終 fallback。明示 region と安全境界が必須。
 
-## main route smoke
+## main経路のsmoke
 
 `main` route の運用保証は、status と private ingest をまとめて確認します。
 
@@ -69,7 +106,7 @@ python3 scripts/discord_channel_event_probe.py --json
 `failure_stage=no_text_event_source` の場合、bot channel server / private adapter から smoke に渡せる本文イベントが
 まだ届いていない状態です。`source_empty` や parser failure とは分けて扱います。
 
-## E2E check
+## E2E確認
 
 fixture / private text と実イベント probe をまとめて見る場合は E2E check を使います。
 
@@ -82,7 +119,7 @@ python3 scripts/e2e_discord_route_check.py \
 実イベント到達まで完了条件に含める場合は `--require-channel-event` を付けます。
 この時に `blocked_stage=no_text_event_source` なら、ingest や parser ではなく text event 未着が原因です。
 
-## stoplines
+## 停止境界
 
 - Discord send / reaction / delete はしない。
 - token / cookie / webhook / browser profile を出力しない。

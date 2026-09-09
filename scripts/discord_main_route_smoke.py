@@ -34,8 +34,11 @@ def build_smoke_payload(
     draft: str,
     min_parsed: int,
     understanding_confirmed: bool = False,
+    expected_url: str | None = None,
 ) -> dict[str, Any]:
-    route_status = discord_plugin_route_status.build_status(channel_dir)
+    route_status = discord_plugin_route_status.build_status(
+        channel_dir, expected_url=expected_url
+    )
     ingest = discord_bot_private_ingest.build_ingest_payload(
         text,
         channel_dir=channel_dir,
@@ -44,6 +47,7 @@ def build_smoke_payload(
         draft=draft,
         min_parsed=min_parsed,
         understanding_confirmed=understanding_confirmed,
+        expected_url=expected_url,
     )
     main_route = route_status["routes"]["bot_private_ingest"]
     main_route_ready = (
@@ -110,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--draft", default="前提を確認します。")
     parser.add_argument("--understanding-confirmed", action="store_true", help="理解サマリを人間確認済みとして返信reviewへ進む")
     parser.add_argument("--min-parsed", type=int, default=1)
+    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -141,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         draft=args.draft,
         min_parsed=args.min_parsed,
         understanding_confirmed=args.understanding_confirmed,
+        expected_url=args.expected_url,
     )
     if args.json:
         print(_json(payload))

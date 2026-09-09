@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--draft", default="", help="任意。返信前 gate にかける下書き。")
     parser.add_argument("--understanding-confirmed", action="store_true", help="文脈理解サマリを人間が確認済みの場合だけ下書き review を進める")
     parser.add_argument("--min-parsed", type=int, default=1)
+    parser.add_argument("--expected-url", help="照合するDiscord対象URL")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -60,8 +61,11 @@ def build_ingest_payload(
     draft: str,
     min_parsed: int,
     understanding_confirmed: bool = False,
+    expected_url: str | None = None,
 ) -> dict[str, Any]:
-    preflight = discord_bot_route_preflight.build_preflight(channel_dir)
+    preflight = discord_bot_route_preflight.build_preflight(
+        channel_dir, expected_url=expected_url
+    )
     if not text.strip():
         return {
             "schema": "discord_bot_private_ingest.v1",
@@ -139,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         draft=args.draft,
         min_parsed=args.min_parsed,
         understanding_confirmed=args.understanding_confirmed,
+        expected_url=args.expected_url,
     )
     if args.json:
         print(_json(payload))
