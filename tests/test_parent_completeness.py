@@ -1,6 +1,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.completeness_store import CompletenessStore
 
@@ -126,6 +128,81 @@ def test_parent_audit_is_full_when_inventory_and_all_children_reconcile(tmp_path
     assert result["blockers"] == []
     assert "t1" not in str(result)
     assert "t2" not in str(result)
+
+
+@pytest.mark.parametrize("older_only", [False, True])
+@pytest.mark.parametrize("mutation", ["empty_scopes", "deleted_ids", "changed_ids"])
+def test_saved_inventory_mismatch_blocks_full_and_retirement(tmp_path, mutation, older_only):
+    from discord_context_bridge.completeness_store import _digest_ids
+
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    _record_stable_inventory(store, target)
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    with sqlite3.connect(store.path) as connection:
+        scans = connection.execute("SELECT id, scope_receipts_json FROM inventory_scans ORDER BY id").fetchall()
+        for scan_id, raw in scans[:1] if older_only else scans:
+            if mutation == "empty_scopes":
+                receipts = json.loads(raw)
+                for receipt in receipts.values():
+                    receipt.update(thread_count=0, locked_count=0, thread_set_digest=_digest_ids([]))
+                connection.execute("UPDATE inventory_scans SET scope_receipts_json=? WHERE id=?", (json.dumps(receipts), scan_id))
+            elif mutation == "deleted_ids":
+                connection.execute("DELETE FROM inventory_threads WHERE inventory_scan_id=?", (scan_id,))
+            else:
+                connection.execute("UPDATE inventory_threads SET thread_id='replacement' WHERE inventory_scan_id=? AND thread_id='t1'", (scan_id,))
+    result = store.audit_parent(target)
+    assert result["parent_full_capture_confirmed"] is False
+    assert result["inventory"]["both_latest_scans_complete"] is False
+    assert result["counts"]["retired_certificates"] == 0
+    assert result["counts"]["child_certificates"] == 2
+
+
+@pytest.mark.parametrize("mutation", [
+    "terminal_only", "missing_digest", "invalid_digest", "wrong_route", "unbound_parent",
+    "bad_page_count", "bad_thread_count", "bad_locked_count", "bad_filter", "missing_authorization",
+])
+@pytest.mark.parametrize("corrupt_older_only", [False, True])
+def test_stored_receipt_semantic_corruption_never_certifies_full(tmp_path, mutation, corrupt_older_only):
+    store = CompletenessStore(tmp_path / "capture.sqlite3")
+    store.initialize()
+    target = "forum-parent"
+    _record_stable_inventory(store, target)
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    with sqlite3.connect(store.path) as connection:
+        for scan_id, raw in connection.execute("SELECT id, scope_receipts_json FROM inventory_scans ORDER BY id").fetchall():
+            receipts = json.loads(raw)
+            for receipt in receipts.values():
+                if mutation == "terminal_only":
+                    receipt.clear()
+                    receipt["terminal_reached"] = True
+                elif mutation == "missing_digest":
+                    del receipt["thread_set_digest"]
+                elif mutation == "invalid_digest":
+                    receipt["thread_set_digest"] = "missing"
+                elif mutation == "wrong_route":
+                    receipt["route"] = "wrong"
+                elif mutation == "unbound_parent":
+                    receipt["parent_bound"] = False
+                elif mutation == "bad_page_count":
+                    receipt["page_count"] = True
+                elif mutation == "bad_thread_count":
+                    receipt["thread_count"] = 1.0
+                elif mutation == "bad_locked_count":
+                    receipt["locked_count"] = -1
+                elif mutation == "bad_filter":
+                    receipt["active_parent_filter_applied"] = "true"
+                elif mutation == "missing_authorization":
+                    del receipt["authorization_confirmed"]
+            connection.execute("UPDATE inventory_scans SET scope_receipts_json=? WHERE id=?", (json.dumps(receipts), scan_id))
+            if corrupt_older_only:
+                break
+    result = store.audit_parent(target)
+    assert result["parent_full_capture_confirmed"] is False
+    assert result["inventory"]["both_latest_scans_complete"] is False
 
 
 def test_changed_second_inventory_scan_blocks_full(tmp_path):

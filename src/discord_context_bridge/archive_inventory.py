@@ -16,6 +16,8 @@ CANONICAL_SCOPE_ROUTES = {
     "archived_private": "GET /channels/{channel_id}/threads/archived/private",
 }
 _MAX_RESPONSE_BYTES = 10_000_000
+# scope receipt の producer と専用 CLI consumer が共有する保存契約。
+MAX_SCOPE_RECEIPT_BYTES = 10_000_000
 
 
 class ArchiveInventoryError(ValueError):
@@ -345,7 +347,7 @@ def write_private_scope_receipts(path: Path, payload: Mapping[str, Any]) -> None
         raise ArchiveInventoryError("scope_receipts_schema_invalid")
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n").encode()
-    if len(encoded) > _MAX_RESPONSE_BYTES:
+    if len(encoded) > MAX_SCOPE_RECEIPT_BYTES:
         raise ArchiveInventoryError("scope_receipts_too_large")
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

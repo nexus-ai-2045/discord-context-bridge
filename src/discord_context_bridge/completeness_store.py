@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -52,7 +53,7 @@ def _require_bool(value: object, field: str) -> bool:
     return value
 
 
-def _stored_scope_receipts(value: object) -> tuple[dict[str, Any], bool]:
+def _stored_scope_receipts(value: object, *, parent_kind: str) -> tuple[dict[str, Any], bool]:
     if not isinstance(value, str) or not value:
         return {}, False
     try:
@@ -63,7 +64,50 @@ def _stored_scope_receipts(value: object) -> tuple[dict[str, Any], bool]:
         not isinstance(receipt, Mapping) for receipt in parsed.values()
     ):
         return {}, False
+    required = REQUIRED_SCOPES_BY_PARENT_KIND.get(parent_kind)
+    if required is None or any(scope not in required for scope in parsed):
+        return {}, False
+    for scope, receipt in parsed.items():
+        if not _normalized_scope_receipt_valid(scope, receipt):
+            return {}, False
     return parsed, True
+
+
+def _normalized_scope_receipt_valid(scope: str, receipt: Mapping[str, Any]) -> bool:
+    """JSON構造だけでなく、保存時と同じ正規化fieldの意味を再検証する。"""
+    fields = {
+        "route", "parent_bound", "active_parent_filter_applied", "page_count",
+        "terminal_reached", "terminal_cursor_digest", "thread_count", "thread_set_digest",
+        "locked_count", "authorization_confirmed", "authorization_capability",
+    }
+    if not fields.issubset(receipt):
+        return False
+    if receipt["route"] != SCOPE_ROUTES.get(scope) or receipt["parent_bound"] is not True:
+        return False
+    if not isinstance(receipt["terminal_reached"], bool):
+        return False
+    filtered = receipt["active_parent_filter_applied"]
+    if not isinstance(filtered, bool) or (scope == "active_filtered" and not filtered):
+        return False
+    for field, minimum in (("page_count", 1), ("thread_count", 0), ("locked_count", 0)):
+        value = receipt[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            return False
+    if receipt["locked_count"] > receipt["thread_count"]:
+        return False
+    for field in ("terminal_cursor_digest", "thread_set_digest"):
+        value = receipt[field]
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            return False
+    if receipt["thread_count"] == 0 and receipt["thread_set_digest"] != _digest_ids([]):
+        return False
+    authorization = receipt["authorization_confirmed"]
+    if scope == "archived_private":
+        if authorization is not None and not isinstance(authorization, bool):
+            return False
+    elif authorization is not None:
+        return False
+    return receipt["authorization_capability"] == ("manage_threads" if authorization is True else None)
 
 
 def _normalize_scope_receipts(
@@ -142,6 +186,8 @@ def _normalize_scope_receipts(
                 "manage_threads" if authorization_confirmed is True else None
             ),
         }
+        if not _normalized_scope_receipt_valid(scope, normalized[scope]):
+            raise ValueError("normalized_scope_receipt_invalid")
         all_thread_ids.extend(thread_ids)
     if len(all_thread_ids) != len(set(all_thread_ids)):
         raise ValueError("thread_scope_overlap")
@@ -475,13 +521,34 @@ class CompletenessStore:
             if len(scans) < 2:
                 blockers.append("stable_inventory_scan_count_insufficient")
 
+            verified_receipts: dict[int, tuple[dict[str, Any], bool]] = {}
+            for scan in scans:
+                receipts, valid = _stored_scope_receipts(
+                    scan["scope_receipts_json"], parent_kind=scan["parent_kind"]
+                )
+                actual_ids = [
+                    row["thread_id"] for row in connection.execute(
+                        "SELECT thread_id FROM inventory_threads WHERE inventory_scan_id = ?",
+                        (scan["id"],),
+                    )
+                ]
+                reconciled = (
+                    len(actual_ids) == scan["thread_count"]
+                    and _digest_ids(actual_ids) == scan["thread_set_digest"]
+                    and valid
+                    and sum(receipt["thread_count"] for receipt in receipts.values())
+                    == len(actual_ids)
+                )
+                if not reconciled:
+                    blockers.append("inventory_saved_evidence_mismatch")
+                verified_receipts[scan["id"]] = (receipts, valid and reconciled)
+
             if len(scans) == 2:
                 parsed_complete = []
                 scan_receipts_by_position: list[dict[str, Any]] = []
                 for scan in scans:
                     scan_kind = scan["parent_kind"]
-                    receipt_json = scan["scope_receipts_json"]
-                    scan_receipts, receipts_valid = _stored_scope_receipts(receipt_json)
+                    scan_receipts, receipts_valid = verified_receipts[scan["id"]]
                     scan_receipts_by_position.append(scan_receipts)
                     scan_required = REQUIRED_SCOPES_BY_PARENT_KIND.get(scan_kind, ())
                     complete = receipts_valid and bool(scan_required) and all(
@@ -540,9 +607,7 @@ class CompletenessStore:
                 }
                 if latest["scope_receipts_json"]:
                     evidence_model = "scope_receipts_v1"
-                    latest_receipts, receipts_valid = _stored_scope_receipts(
-                        latest["scope_receipts_json"]
-                    )
+                    latest_receipts, receipts_valid = verified_receipts[latest["id"]]
                     if not receipts_valid:
                         blockers.append("inventory_scope_receipts_invalid")
                     required_scopes = REQUIRED_SCOPES_BY_PARENT_KIND.get(
@@ -552,7 +617,7 @@ class CompletenessStore:
                         latest_receipts.get(scope, {}).get("terminal_reached") is True
                         for scope in required_scopes
                     )
-                    latest_complete = pagination_exhausted and all(
+                    latest_complete = receipts_valid and pagination_exhausted and all(
                         scope in latest_receipts for scope in required_scopes
                     )
                     locked_count = sum(

@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from .archive_inventory import MAX_SCOPE_RECEIPT_BYTES
 from .process_runner import minimal_child_env, run_process
 from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
@@ -2590,14 +2591,16 @@ def _cmd_init_completeness_db(args: argparse.Namespace) -> int:
     )
     return 0
 
-def _load_private_json(path: Path) -> dict[str, Any]:
+def _load_private_json(path: Path, *, max_bytes: int = 1_000_000) -> dict[str, Any]:
     """Load a private local JSON evidence file without echoing path or raw content."""
 
-    raw = path.read_text(encoding="utf-8")
+    with path.open("rb") as handle:
+        encoded = handle.read(max_bytes + 1)
+    if len(encoded) > max_bytes:
+        raise ValueError("private_json_too_large")
+    raw = encoded.decode("utf-8")
     if not raw.strip():
         raise ValueError("private_json_empty")
-    if len(raw.encode("utf-8")) > 1_000_000:
-        raise ValueError("private_json_too_large")
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("private_json_object_required")
@@ -2608,7 +2611,7 @@ def _load_private_json(path: Path) -> dict[str, Any]:
 
 def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
     try:
-        evidence = _load_private_json(args.evidence)
+        evidence = _load_private_json(args.evidence, max_bytes=MAX_SCOPE_RECEIPT_BYTES)
         store = CompletenessStore(args.db)
         store.initialize()
         if "scope_receipts" in evidence or "parent_kind" in evidence:

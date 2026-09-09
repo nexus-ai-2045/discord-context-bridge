@@ -15,9 +15,67 @@ from discord_context_bridge.archive_inventory import (
     build_public_report,
     build_scope_receipts_inventory,
     enumerate_archive_pages,
+    write_private_scope_receipts,
 )
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.completeness_store import CompletenessStore
+
+
+def _sized_scope_receipt(size: int) -> dict:
+    payload = build_scope_receipts_inventory(
+        parent_target_key="fixture-parent", parent_kind="forum", scan_id="fixture-scan",
+        observed_at="2026-09-07T00:00:00+00:00",
+        active_filtered=build_active_filtered_result({"threads": []}, parent_target_key="fixture-parent"),
+        archived_results=[enumerate_archive_pages(
+            scope="public", fetch_page=lambda _: {"threads": [], "has_more": False}, max_pages=1,
+        )],
+        private_authorization_confirmed=False,
+    )
+    payload["fixture_padding"] = ""
+    base = len((json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+    # 文字数ではなく UTF-8 byte 数の境界を往復検証する。
+    padding_bytes = size - base
+    payload["fixture_padding"] = "あ" * (padding_bytes // 3) + "x" * (padding_bytes % 3)
+    return payload
+
+
+@pytest.mark.parametrize("size", [1_000_001, 10_000_000])
+def test_private_scope_receipt_producer_consumer_size_roundtrip(tmp_path, capsys, size):
+    evidence = tmp_path / "receipt.json"
+    write_private_scope_receipts(evidence, _sized_scope_receipt(size))
+    assert evidence.stat().st_size == size
+    assert cli_main([
+        "record-parent-inventory", "--db", str(tmp_path / "db.sqlite3"),
+        "--evidence", str(evidence), "--json",
+    ]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert "fixture-parent" not in json.dumps(report)
+
+
+def test_private_scope_receipt_over_limit_rejected_by_producer_and_consumer(tmp_path, capsys):
+    evidence = tmp_path / "receipt.json"
+    payload = _sized_scope_receipt(10_000_001)
+    with pytest.raises(ArchiveInventoryError, match="scope_receipts_too_large"):
+        write_private_scope_receipts(evidence, payload)
+    assert not evidence.exists()
+    evidence.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    assert cli_main([
+        "record-parent-inventory", "--db", str(tmp_path / "db.sqlite3"),
+        "--evidence", str(evidence), "--json",
+    ]) != 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert "fixture-parent" not in json.dumps(report)
+
+
+def test_generic_private_json_limit_remains_one_megabyte(tmp_path):
+    from discord_context_bridge.cli import _load_private_json
+
+    evidence = tmp_path / "generic.json"
+    evidence.write_text(json.dumps({"padding": "x" * 1_000_000}), encoding="utf-8")
+    with pytest.raises(ValueError, match="private_json_too_large"):
+        _load_private_json(evidence)
 
 
 def _thread(thread_id: str, timestamp: str) -> dict[str, object]:
