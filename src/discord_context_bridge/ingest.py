@@ -41,7 +41,7 @@ from typing import Any
 from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
     _append_text_snapshots_transaction,
-    _snapshot_stream_id,
+    _snapshot_stream_history,
     _validate_text_snapshot_chain,
     acquisition_context_for_source,
     canonical_event_hash,
@@ -341,9 +341,7 @@ def _build_message_events(
     captured_at_hint: str,
 ) -> list[dict[str, Any]]:
     """apply 時は writer lock 内で読み直した正本から batch 全体を構築する。"""
-    existing_records = [
-        record for record in records if _snapshot_stream_id(record) == target_key
-    ]
+    existing_records = _snapshot_stream_history(records, target_key)
     seen_message_id_hashes: dict[tuple[str, str], Any] = {}
     seen_identity_hashes: dict[tuple[Any, ...], Any] = {}
     for record in existing_records:

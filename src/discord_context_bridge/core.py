@@ -373,7 +373,8 @@ def _import_chained_snapshot(source: dict[str, Any], path: Path, *, url: str, ta
             if existing == source and source.get("url") == url and source.get("target_key") == target_key:
                 return existing
         sequence, previous_hash = _validate_text_snapshot_chain(snapshots).get(target_key, (0, ""))
-        previous = next((row for row in reversed(snapshots) if _snapshot_stream_id(row) == target_key), None)
+        history = _snapshot_stream_history(snapshots, target_key)
+        previous = history[-1] if history else None
         previous_content_hash = str(previous.get("content_hash") or "") if previous else None
         candidate = dict(source)
         candidate.update(
@@ -1441,12 +1442,15 @@ def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
 
 
 def _validate_snapshot_stream_binding(snapshot: dict[str, Any]) -> None:
-    """chain対象のstreamとcanonical targetが同一であることを検証する。"""
+    """chain対象のevent IDとcanonical stream bindingを検証する。"""
 
     if not _is_chained_text_snapshot(snapshot):
         return
     if snapshot.get("schema") != "discord_context_bridge_text_snapshot_observation.v1":
         raise CheckpointCorruptError("snapshot chain schema is invalid")
+    event_id = snapshot.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise CheckpointCorruptError("snapshot event id must be a nonempty string")
     stream_id = str(snapshot.get("stream_id") or "")
     target_key = str(snapshot.get("target_key") or "")
     if not stream_id or not target_key or stream_id != target_key:
@@ -1496,12 +1500,15 @@ def _is_chained_text_snapshot(snapshot: dict[str, Any]) -> bool:
     )
 
 
-def _validate_text_snapshot_chain(
-    snapshots: list[dict[str, Any]],
-) -> dict[str, tuple[int, str]]:
-    """既存の stream head を検証し、stream ごとの sequence と hash を返す。"""
+def _same_snapshot_json(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Pythonのbool/int/float同値性ではなく、永続JSON表現でreplayを照合する。"""
+    return json.dumps(left, ensure_ascii=False, sort_keys=True) == json.dumps(
+        right, ensure_ascii=False, sort_keys=True
+    )
 
-    heads: dict[str, tuple[int, str]] = {}
+
+def _logical_text_snapshot_rows(snapshots: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    """物理行は保持し、旧writerの完全同一canonical replayだけを論理履歴から除く。"""
     event_ids: dict[str, dict[str, Any]] = {}
     for snapshot in snapshots:
         _validate_snapshot_stream_binding(snapshot)
@@ -1509,13 +1516,27 @@ def _validate_text_snapshot_chain(
         if event_id:
             existing = event_ids.get(event_id)
             if existing is not None:
-                if existing != snapshot:
+                if not _same_snapshot_json(existing, snapshot):
                     raise CheckpointCorruptError("snapshot event id is bound to different content")
                 if _is_chained_text_snapshot(snapshot):
-                    raise CheckpointCorruptError("snapshot ledger contains a duplicate event id")
+                    continue
                 # 旧writerの同一raw event再追記は改変せず物理観測数として数える。
             event_ids[event_id] = snapshot
+        yield snapshot
 
+
+def _snapshot_stream_history(snapshots: list[dict[str, Any]], target_key: str) -> list[dict[str, Any]]:
+    """validatorと各producerで共用するtarget単位の論理履歴。"""
+    return [row for row in _logical_text_snapshot_rows(snapshots) if _snapshot_stream_id(row) == target_key]
+
+
+def _validate_text_snapshot_chain(
+    snapshots: list[dict[str, Any]],
+) -> dict[str, tuple[int, str]]:
+    """既存の stream head を検証し、stream ごとの sequence と hash を返す。"""
+
+    heads: dict[str, tuple[int, str]] = {}
+    for snapshot in _logical_text_snapshot_rows(snapshots):
         stream_id = _snapshot_stream_id(snapshot)
         if not stream_id:
             if _is_chained_text_snapshot(snapshot):
@@ -1586,7 +1607,7 @@ def _append_text_snapshots_transaction(
             _validate_snapshot_stream_binding(snapshot)
             event_id = str(snapshot.get("event_id") or "")
             if event_id and event_id in by_event_id:
-                if by_event_id[event_id] != snapshot:
+                if not _same_snapshot_json(by_event_id[event_id], snapshot):
                     raise EventConflictError("snapshot event id is already bound to other content")
                 continue
             stream_id = _snapshot_stream_id(snapshot)
@@ -2417,7 +2438,7 @@ def snapshot_visible_text(
     content_hash = stable_text_hash(content)
 
     def build_snapshot(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
-        target_snapshots = [item for item in snapshots if item.get("target_key") == target_key]
+        target_snapshots = _snapshot_stream_history(snapshots, target_key)
         previous = target_snapshots[-1] if target_snapshots else None
         previous_hash = str(previous.get("content_hash") or "") if previous else None
         previous_stream_sequence, previous_event_hash = _validate_text_snapshot_chain(snapshots).get(
@@ -2467,7 +2488,7 @@ def snapshot_visible_text(
         return snapshot
 
     _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
-    snapshot_count = sum(1 for item in read_back if item.get("target_key") == target_key)
+    snapshot_count = sum(1 for item in read_back if _snapshot_stream_id(item) == target_key)
     previous_hash = snapshot["previous_content_hash"]
     changed = bool(snapshot["changed"])
     return {
@@ -2480,7 +2501,7 @@ def snapshot_visible_text(
         "target_key": target_key,
         "content_hash": content_hash,
         "previous_content_hash": previous_hash,
-        "observation_index_for_target": snapshot_count,
+        "observation_index_for_target": snapshot["stream_sequence"],
         "snapshot_count_for_target": snapshot_count,
         "private_local_only": True,
         "external_share_allowed": False,

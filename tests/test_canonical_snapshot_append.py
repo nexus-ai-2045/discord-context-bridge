@@ -67,6 +67,113 @@ def test_replaying_same_event_is_idempotent(tmp_path):
     assert core.load_text_snapshots(path) == [event]
 
 
+@pytest.mark.parametrize("replay_position", ["adjacent", "after_successor"])
+@pytest.mark.parametrize("route", ["snapshot", "import", "ingest"])
+def test_old_canonical_replays_preserve_bytes_and_logical_head(tmp_path, replay_position, route):
+    path = tmp_path / "ledger.ndjson"
+    url = "https://example.invalid/replay"
+    core.snapshot_visible_text(text="first", url=url, path=path)
+    core.snapshot_visible_text(text="latest", url=url, path=path)
+    first, second = core.load_text_snapshots(path)
+    rows = [first, first, second] if replay_position == "adjacent" else [first, second, first]
+    original = "".join(core.json.dumps(row) + "\n" for row in rows).encode()
+    path.write_bytes(original)
+    if route == "snapshot":
+        result = core.snapshot_visible_text(text="latest", url=url, path=path)
+        assert result["duplicate_content"] is True
+        assert result["observation_index_for_target"] == 3
+        assert result["snapshot_count_for_target"] == 4
+    elif route == "import":
+        source = tmp_path / "import.ndjson"
+        core.snapshot_visible_text(text="latest", url=url, path=source)
+        core.append_snapshot_like_record(
+            path, core.load_text_snapshots(source)[0], url=url, target_key=core.stable_text_hash(url),
+        )
+    else:
+        from discord_context_bridge.ingest import ingest_capture
+
+        result = ingest_capture({
+            "schema": "dcb.raw_capture.v1", "target_key": core.stable_text_hash(url),
+            "source_url": url, "messages": [{"body_text": "latest"}],
+        }, snapshot_store=path, registry_store=tmp_path / "targets.ndjson", apply=True)
+        assert result["events_appended"] == 1
+    assert path.read_bytes().startswith(original)
+    saved = core.load_text_snapshots(path)
+    assert len(saved) == 4
+    assert saved[-1]["stream_sequence"] == 3
+    assert saved[-1]["previous_event_hash"] == second["event_hash"]
+    assert saved[-1]["previous_content_hash"] == second["content_hash"]
+    if route != "ingest":
+        assert saved[-1]["duplicate_content"] is True
+    assert core._validate_text_snapshot_chain(saved)[core.stable_text_hash(url)][0] == 3
+    before = path.read_bytes()
+    assert core.append_text_snapshot(first, path) is False
+    assert path.read_bytes() == before
+
+
+def test_conflicting_canonical_replay_is_rejected_without_writes(tmp_path):
+    path = tmp_path / "ledger.ndjson"
+    url = "https://example.invalid/replay"
+    core.snapshot_visible_text(text="first", url=url, path=path)
+    first = core.load_text_snapshots(path)[0]
+    conflicting = dict(first, text="tampered")
+    conflicting["event_hash"] = core.canonical_event_hash(conflicting)
+    path.write_text(core.json.dumps(first) + "\n" + core.json.dumps(conflicting) + "\n")
+    before = path.read_bytes()
+    with pytest.raises(CheckpointCorruptError):
+        core.snapshot_visible_text(text="next", url=url, path=path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("updates", [
+    {"stream_sequence": True}, {"stream_sequence": 1.0},
+    {"private_local_only": 1}, {"acquisition_context": {"fixture": 1}},
+])
+@pytest.mark.parametrize("persisted", [False, True])
+def test_canonical_replay_comparison_distinguishes_json_types(tmp_path, updates, persisted):
+    path = tmp_path / "ledger.ndjson"
+    url = "https://example.invalid/replay-types"
+    seed = tmp_path / "seed.ndjson"
+    core.snapshot_visible_text(text="seed", url=url, path=seed)
+    row = dict(core.load_text_snapshots(seed)[0], acquisition_context={"fixture": True})
+    row["event_hash"] = core.canonical_event_hash(row)
+    core.append_text_snapshot(row, path)
+    invalid = dict(row, **updates)
+    assert invalid == row  # Python equalityだけではJSON型の改変を検出できない。
+    assert core.canonical_event_hash(invalid) != row["event_hash"]
+    if persisted:
+        path.write_text(core.json.dumps(row) + "\n" + core.json.dumps(invalid) + "\n")
+    before = path.read_bytes()
+    with pytest.raises((CheckpointCorruptError, capture_store.EventConflictError)):
+        if persisted:
+            core.snapshot_visible_text(text="next", url=url, path=path)
+        else:
+            core.append_text_snapshot(invalid, path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("event_id", [1, True, 0, False, 1.5, [], {}, [1], {"id": 1}, None, ""])
+@pytest.mark.parametrize("route", ["append", "import", "existing"])
+def test_canonical_event_id_must_be_nonempty_string(tmp_path, event_id, route):
+    seed = tmp_path / "seed.ndjson"
+    url = "https://example.invalid/identity"
+    core.snapshot_visible_text(text="seed", url=url, path=seed)
+    invalid = dict(core.load_text_snapshots(seed)[0], event_id=event_id)
+    invalid["event_hash"] = core.canonical_event_hash(invalid)
+    path = tmp_path / "ledger.ndjson"
+    if route == "existing":
+        path.write_text(core.json.dumps(invalid) + "\n")
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(CheckpointCorruptError):
+        if route == "append":
+            core.append_text_snapshot(invalid, path)
+        elif route == "import":
+            core.append_snapshot_like_record(path, invalid, url=url, target_key=core.stable_text_hash(url))
+        else:
+            core.snapshot_visible_text(text="next", url=url, path=path)
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
 def test_stale_expected_head_is_rejected(tmp_path):
     path = tmp_path / "text-snapshots.ndjson"
     core.snapshot_visible_text(text="first", url="https://example.invalid/a", path=path)
