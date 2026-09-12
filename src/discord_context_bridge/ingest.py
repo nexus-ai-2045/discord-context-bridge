@@ -40,8 +40,10 @@ from typing import Any
 
 from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
+    _append_text_snapshots_transaction,
+    _snapshot_stream_history,
+    _validate_text_snapshot_chain,
     acquisition_context_for_source,
-    append_text_snapshot,
     canonical_event_hash,
     load_text_snapshots,
     normalize_message_text,
@@ -296,9 +298,50 @@ def ingest_capture(
 
     target_key, key_scheme = _target_identity(target_key_hint, url, title, stream_id_hint, messages)
 
-    existing_records = [
-        record for record in load_text_snapshots(snapshot_store) if record.get("target_key") == target_key
-    ]
+    def build_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _build_message_events(
+            records, messages, target_key=target_key, url=url, title=title,
+            source_hint=source_hint, captured_at_hint=captured_at_hint,
+        )
+
+    if apply:
+        # registry を先に確定し、失敗時は ledger を変更しない。後続 transaction
+        # の失敗時は registry entry のみ残り得るが、観測の保存成功とは扱わない。
+        register_target(
+            target_key=target_key, key_scheme=key_scheme, url=url or None,
+            channel_label=title or None, source="capture", source_ref=source_ref or None,
+            path=registry_store,
+        )
+        appended, new_events, _ = _append_text_snapshots_transaction(build_events, Path(snapshot_store))
+    else:
+        new_events = build_events(load_text_snapshots(snapshot_store))
+        appended = 0
+
+    return {
+        "schema": "dcb.ingest_result.v1",
+        "ok": True,
+        "dry_run": not apply,
+        "adapter": _safe_adapter_label(schema),
+        "events_appended": appended,
+        "events_pending": len(new_events) if not apply else 0,
+        "duplicates": sum(bool(event["duplicate_content"]) for event in new_events),
+        "target_key": target_key,
+        "outbound_actions": "disabled",
+    }
+
+
+def _build_message_events(
+    records: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    target_key: str,
+    url: str,
+    title: str,
+    source_hint: str,
+    captured_at_hint: str,
+) -> list[dict[str, Any]]:
+    """apply 時は writer lock 内で読み直した正本から batch 全体を構築する。"""
+    existing_records = _snapshot_stream_history(records, target_key)
     seen_message_id_hashes: dict[tuple[str, str], Any] = {}
     seen_identity_hashes: dict[tuple[Any, ...], Any] = {}
     for record in existing_records:
@@ -314,11 +357,9 @@ def ingest_capture(
             )
             seen_identity_hashes[identity] = record.get("content_hash")
 
-    stream_sequence = len(existing_records)
+    # raw の upstream sequence/hash と canonical head の扱いを共通validatorに揃える。
+    stream_sequence, previous_event_hash = _validate_text_snapshot_chain(records).get(target_key, (0, ""))
     last_record = existing_records[-1] if existing_records else None
-    previous_event_hash = (
-        str(last_record.get("event_hash") or canonical_event_hash(last_record)) if last_record else ""
-    )
     previous_content_hash = str(last_record.get("content_hash") or "") if last_record else None
 
     # payload 側の captured_at (capture 時刻) を ingest 時刻で上書きすると、
@@ -329,7 +370,6 @@ def ingest_capture(
     capture_timestamp = captured_at_hint or utc_now()
     ingest_timestamp = utc_now()
     new_events: list[dict[str, Any]] = []
-    duplicates = 0
 
     for message in messages:
         body_text = redact_sensitive_storage_text(message["body_text"])
@@ -345,9 +385,6 @@ def ingest_capture(
             duplicate_message_id = False
             identity = (target_key, ordinal, message["author_label"], message["visible_timestamp"])
             duplicate_content = seen_identity_hashes.get(identity) == content_hash
-
-        if duplicate_content:
-            duplicates += 1
 
         stream_sequence += 1
         event: dict[str, Any] = {
@@ -401,31 +438,4 @@ def ingest_capture(
 
         new_events.append(event)
 
-    if apply:
-        # target 台帳を先に確定する。台帳側の schema / path / permission エラーが
-        # snapshot 追記後に発生すると、registry に解決不能な observation だけが
-        # ledger に残る部分更新になる。target entry が先に残るだけなら後続 ingest
-        # で安全に再利用できるため、registry を precondition として扱う。
-        register_target(
-            target_key=target_key,
-            key_scheme=key_scheme,
-            url=url or None,
-            channel_label=title or None,
-            source="capture",
-            source_ref=source_ref or None,
-            path=registry_store,
-        )
-        for event in new_events:
-            append_text_snapshot(event, snapshot_store)
-
-    return {
-        "schema": "dcb.ingest_result.v1",
-        "ok": True,
-        "dry_run": not apply,
-        "adapter": _safe_adapter_label(schema),
-        "events_appended": len(new_events) if apply else 0,
-        "events_pending": len(new_events) if not apply else 0,
-        "duplicates": duplicates,
-        "target_key": target_key,
-        "outbound_actions": "disabled",
-    }
+    return new_events
