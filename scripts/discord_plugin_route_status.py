@@ -88,7 +88,7 @@ def build_status(channel_dir: Path) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="@discord / Computer Use route の安全な状態を一覧する。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--json", action="store_true", help="JSON で出力する。")
     return parser
 

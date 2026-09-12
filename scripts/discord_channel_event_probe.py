@@ -64,7 +64,7 @@ def build_probe(channel_dir: Path) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="@discord channel dir に text event が届いているか安全に確認する。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--json", action="store_true")
     return parser
 

@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="@discord bot channel route から渡された private text を本文なしで文脈化する。"
     )
     parser.add_argument("--input", type=Path, help="private adapter が保存した一時テキスト。本文は出力しない。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--channel", default="private-ingest", help="実IDではなく安全な仮ラベル")
     parser.add_argument("--draft", default="", help="任意。返信前 gate にかける下書き。")

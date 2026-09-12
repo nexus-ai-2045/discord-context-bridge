@@ -227,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-command", help="Discord 可視テキストを stdout に出すローカルコマンド。")
     parser.add_argument("--source-timeout", type=float, default=20.0)
     parser.add_argument("--source-label", default="source-command", help="実IDではなく安全な仮ラベル。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--read-latest", action="store_true", help="保存済み latest text event のメタデータだけ確認する。")
     parser.add_argument("--json", action="store_true")
     return parser

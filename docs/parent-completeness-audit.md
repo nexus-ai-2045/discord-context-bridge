@@ -43,22 +43,79 @@ python -m discord_context_bridge.cli init-completeness-db `
   --db ".local/discord-completeness.sqlite3" --json
 ```
 
-棚卸し証拠JSONは次の形です。
+## 正式RESTによる棚卸し
+
+`discord_archived_thread_inventory.py` は既存のbot token providerを再利用し、Discord正式APIを
+GETだけで読みます。`--parent-kind` を指定すると、親完全性監査が直接受け取れるscope receiptを
+private JSONへ保存します。標準出力は件数と終端状態だけで、token、Discord ID、URL、保存path、
+スレッド名を表示しません。
+
+```powershell
+python scripts/discord_archived_thread_inventory.py `
+  --url "<Discord親チャンネルURL>" `
+  --parent-kind forum `
+  --output ".local/discord-context-bridge/parent-scope-receipts.json" `
+  --json
+```
+
+announcement/forum/mediaでは `active_filtered` と `archived_public`、textではさらに
+`archived_private` をcursor終端まで取得します。active routeはguild全体の応答から対象の
+`parent_id` だけを残します。private routeの成功応答は `manage_threads` 権限の確認証拠です。
+実行前に `GET /channels/{channel_id}` のtrustedな `id`、`guild_id`、`type` をURL由来の対象へ
+結び付けて親種別を分類し、対象または `--parent-kind` と一致しなければ停止します。
+fixtureでも同じchannel metadataを必須にします。
+`joined_private` は参加済みthreadの補助調査に限り、全private取得の証拠にはしません。
+429は指定回数内だけ再試行し、401/403では別credentialやuser tokenへ迂回せず停止します。
+
+棚卸し証拠JSONの正本は `parent_kind` と scope別 receipt です。`locked` は独立scopeではなく、
+各scopeの `locked_count` 属性として数えます。announcement/forum/media は `active_filtered` と
+`archived_public`、text はそれらに `archived_private` を加えたものだけを必須scopeとします。
 
 ```json
 {
   "parent_target_key": "private-parent-key",
   "scan_id": "scan-001",
   "observed_at": "2026-07-28T10:00:00+09:00",
-  "thread_ids": ["private-thread-id"],
-  "scopes": {
-    "active": true,
-    "archived_public": true,
-    "archived_private": true
-  },
-  "pagination_exhausted": true
+  "parent_kind": "forum",
+  "scope_receipts": {
+    "active_filtered": {
+      "route": "GET /guilds/{guild_id}/threads/active",
+      "parent_target_key": "private-parent-key",
+      "active_parent_filter_applied": true,
+      "page_count": 1,
+      "terminal_reached": true,
+      "terminal_cursor": null,
+      "thread_ids": ["private-active-thread-id"],
+      "locked_count": 0
+    },
+    "archived_public": {
+      "route": "GET /channels/{channel_id}/threads/archived/public",
+      "parent_target_key": "private-parent-key",
+      "active_parent_filter_applied": false,
+      "page_count": 2,
+      "terminal_reached": true,
+      "terminal_cursor": "private-terminal-cursor",
+      "thread_ids": ["private-archived-thread-id"],
+      "locked_count": 1
+    }
+  }
 }
 ```
+
+text親の `archived_private` receipt は routeを
+`GET /channels/{channel_id}/threads/archived/private` とし、さらに
+`"authorization":{"capability":"manage_threads","confirmed":true}` を必須にします。
+これは参加済みprivate threadだけを返す別routeを、全private列挙の証拠と誤認しないためです。
+保存時にscopeごとの集合digestを計算し、route・親binding・filter・page/cursor終端・件数と
+一体のreceiptとしてDBに保存します。ID、cursor、URLは監査出力へ返しません。
+
+`observed_at` は生成時・取込み時ともタイムゾーン付き日時を必須とし、UTCへ正規化します。
+不正形式やタイムゾーンのない時刻では、完全な棚卸しとして保存しません。
+各スレッドのscope所属は `inventory_threads.scope` に保存し、監査時に所属集合から
+scopeごとの件数とdigestを再計算します。保存receipt同士が一致するだけでは合格しません。
+旧DBへの初期化はnullable列を追加するだけで、過去の所属を推測しません。所属のない
+非空走査は `inventory_saved_evidence_mismatch` で停止するため、正規証拠を新しいscanとして
+再取込みするか再走査してください。過去の走査と子証明書は、この不整合を理由に削除しません。
 
 同じ対象を時間を分けて2回以上走査し、少なくとも最新2回を保存します。
 
@@ -82,7 +139,7 @@ python -m discord_context_bridge.cli record-child-certificate `
 
 `audit-parent-completeness` は次のアルゴリズムを順に適用します。
 
-1. `pagination_exhaustion`: active、archived public、archived private の列挙を終端まで進める。
+1. `pagination_exhaustion`: 親種別ごとの必須scopeを、それぞれ固有routeで終端まで進める。
 2. `stable_rescan`: 最新2走査のスレッド集合と件数が一致する。
 3. `set_reconciliation`: 最新棚卸し集合と子証明書集合が一致する。
 4. `strict_child_full_capture`: 全子が `strict_full_capture_v1` を通過する。
@@ -98,3 +155,7 @@ python -m discord_context_bridge.cli audit-parent-completeness `
 `parent_full_capture_confirmed=true` は全条件が同時に成立した時だけ返します。一つでも
 欠ける場合は `partial` または `blocked` とし、推測で補完しません。Discord上で走査を
 実行する取得アダプター自体は別責務であり、この監査は保存済み証拠だけを判定します。
+
+旧schemaの `scopes` と単一 `pagination_exhausted` は読み取り互換のため残しますが、
+scope receiptが存在しない旧scanは `inventory_scope_receipts_missing` となり、再走査なしで
+`full` へ昇格しません。migrationは既存行を書き換えない加算型です。

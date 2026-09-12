@@ -135,15 +135,35 @@ def _full_completeness_db(tmp_path: Path, target: str = PARENT_TARGET) -> Path:
     database = tmp_path / "capture.sqlite3"
     store = CompletenessStore(database)
     store.initialize()
-    scopes = {"active": True, "archived_public": True, "archived_private": True}
+    scope_receipts = {
+        "active_filtered": {
+            "route": "GET /guilds/{guild_id}/threads/active",
+            "parent_target_key": target,
+            "active_parent_filter_applied": True,
+            "page_count": 1,
+            "terminal_reached": True,
+            "terminal_cursor": None,
+            "thread_ids": ["thread-1"],
+            "locked_count": 0,
+        },
+        "archived_public": {
+            "route": "GET /channels/{channel_id}/threads/archived/public",
+            "parent_target_key": target,
+            "active_parent_filter_applied": False,
+            "page_count": 1,
+            "terminal_reached": True,
+            "terminal_cursor": None,
+            "thread_ids": [],
+            "locked_count": 0,
+        },
+    }
     for index in (1, 2):
         store.record_inventory_scan(
             parent_target_key=target,
             scan_id=f"scan-{index}",
             observed_at=f"2026-09-01T00:0{index}:00+00:00",
-            thread_ids=["thread-1"],
-            scopes=scopes,
-            pagination_exhausted=True,
+            parent_kind="forum",
+            scope_receipts=scope_receipts,
         )
     store.record_child_certificate(target, "thread-1", _full_certificate("capture-1"))
     return database

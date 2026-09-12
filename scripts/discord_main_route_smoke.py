@@ -104,7 +104,7 @@ def failure_reason(route_status: dict[str, Any], ingest: dict[str, Any]) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="@discord main route を本文なしで smoke する。")
     parser.add_argument("--input", type=Path, help="bot channel server / private adapter からの一時テキスト。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel", default="main-route-smoke", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--draft", default="前提を確認します。")
