@@ -17,6 +17,7 @@ from discord_context_bridge.archive_inventory import (
     build_scope_receipts_inventory,
     enumerate_archive_pages,
     write_private_scope_receipts,
+    write_private_inventory,
 )
 from discord_context_bridge.cli import main as cli_main
 from discord_context_bridge.completeness_store import CompletenessStore
@@ -89,6 +90,23 @@ def test_private_scope_receipt_over_limit_rejected_by_producer_and_consumer(tmp_
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is False
     assert "fixture-parent" not in json.dumps(report)
+
+
+def test_private_writers_survive_without_fchmod(tmp_path, monkeypatch):
+    """Windows には os.fchmod がないため、欠落しても inventory 正本を書けること。"""
+    import discord_context_bridge.archive_inventory as archive_inventory
+
+    monkeypatch.delattr(archive_inventory.os, "fchmod", raising=False)
+    receipts = tmp_path / "receipt.json"
+    metadata = tmp_path / "meta.json"
+    write_private_scope_receipts(receipts, _sized_scope_receipt(2000))
+    write_private_inventory(
+        metadata,
+        [{"scope": "public", "pagination_exhausted": True, "threads": []}],
+        parent_target_key="fixture-parent",
+    )
+    assert receipts.is_file() and receipts.stat().st_size > 0
+    assert metadata.is_file() and metadata.stat().st_size > 0
 
 
 def test_generic_private_json_limit_remains_one_megabyte(tmp_path):

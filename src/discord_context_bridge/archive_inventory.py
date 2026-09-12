@@ -163,7 +163,8 @@ def write_private_inventory(
         raise ArchiveInventoryError("archive_inventory_too_large")
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(encoded)
             handle.flush()
@@ -357,7 +358,8 @@ def write_private_scope_receipts(path: Path, payload: Mapping[str, Any]) -> None
         raise ArchiveInventoryError("scope_receipts_too_large")
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(encoded)
             handle.flush()

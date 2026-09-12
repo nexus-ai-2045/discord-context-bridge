@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-timeout", type=float, default=20.0)
     parser.add_argument("--source-label", default="e2e-source-command", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--use-channel-event", action="store_true", help="channel inbox の latest text event を入力として使う。")
-    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.DEFAULT_CHANNEL_DIR)
+    parser.add_argument("--channel-dir", type=Path, default=discord_bot_route_preflight.default_channel_dir())
     parser.add_argument("--guild", default="discord-bot-route", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--channel", default="e2e-route-check", help="実IDではなく安全な仮ラベル。")
     parser.add_argument("--draft", default="前提を確認します。")

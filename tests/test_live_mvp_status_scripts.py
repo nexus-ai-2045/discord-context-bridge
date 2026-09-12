@@ -94,6 +94,14 @@ def test_route_wrapper_channel_path_preserves_windows_syntax(monkeypatch, script
     assert script.build_parser().parse_args(["--channel-dir", "override"]).channel_dir == Path("override")
 
 
+@pytest.mark.parametrize("script", [discord_live_text_source, discord_channel_event_probe, e2e_discord_route_check])
+def test_inbox_scripts_respect_channel_dir_environment(tmp_path, monkeypatch, script):
+    configured = ready_channel_dir(tmp_path)
+    monkeypatch.setattr(discord_bot_route_preflight, "DEFAULT_CHANNEL_DIR", tmp_path / "unconfigured")
+    monkeypatch.setenv(CHANNEL_DIR_ENV, str(configured))
+    assert script.build_parser().parse_args([]).channel_dir == configured
+
+
 def write_safe_channel_env(channel_dir: Path) -> Path:
     env_path = channel_dir / ".env"
     token_key = "DISCORD_" + "BOT_TOKEN"
