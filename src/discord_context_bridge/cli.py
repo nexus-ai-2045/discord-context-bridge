@@ -19,7 +19,8 @@ from .process_runner import minimal_child_env, run_process
 from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
 from .cache_inventory import build_cache_inventory
-from .desktop_cache import probe_discord_desktop_cache
+from .desktop_cache import probe_discord_desktop_cache, resolve_discord_user_data_dir
+from .desktop_cache_records import export_desktop_cache_records
 from .local_config import (
     LocalConfigError,
     build_configure_local_cache,
@@ -613,6 +614,29 @@ def build_parser() -> argparse.ArgumentParser:
     desktop_cache.add_argument("--max-scan-seconds", type=float, default=30.0, help="1 cycleの走査秒数上限")
     desktop_cache.add_argument("--json", action="store_true")
     desktop_cache.set_defaults(handler=_cmd_desktop_cache_probe)
+
+    desktop_records = sub.add_parser(
+        "desktop-cache-export-records",
+        help="Discord Desktop cacheのmessages応答をvisible_message_record.v1 NDJSONへ変換する (S1へは書かない)",
+    )
+    desktop_records.add_argument("--out-dir", type=Path, required=True, help="変換結果の出力先。出力には表示しません")
+    # `--cache-root` / `--snapshot-store` は他コマンドで shared snapshot root / S1 を指し、
+    # main() が未指定時に既定 S1 へ自動補完するため、ここでは別名 (別 dest) にする。
+    desktop_records.add_argument(
+        "--cache-data-dir", type=Path, help="Discord Desktop の Cache/Cache_Data を直接指定する。出力には表示しません"
+    )
+    desktop_records.add_argument("--user-data-dir", type=Path, help="Discord user-data-dir。出力には表示しません")
+    desktop_records.add_argument("--config-path", type=Path, default=default_config_path())
+    desktop_records.add_argument(
+        "--snapshot-store-hint",
+        type=Path,
+        help="既存 text-snapshots.ndjson の URL から channel→server 対応を補う (読み取りのみ。未指定なら読まない)",
+    )
+    desktop_records.add_argument("--include-dm", action="store_true", help="DM channel も出力に含める (既定は除外)")
+    desktop_records.add_argument("--include-labels", action="store_true", help="private consoleにserver labelを含める")
+    desktop_records.add_argument("--max-files", type=int, default=200_000, help="読むcache file上限")
+    desktop_records.add_argument("--json", action="store_true")
+    desktop_records.set_defaults(handler=_cmd_desktop_cache_export_records)
 
     handoff = sub.add_parser("handoff-packet", help="本文なしで次担当へ渡す handoff packet を作る")
     handoff.add_argument("--thread-key", default="manual-thread", help="review registry から参照する安全な thread key")
@@ -1937,6 +1961,45 @@ def _cmd_desktop_cache_probe(args: argparse.Namespace) -> int:
         print(f"platform: {payload['platform']}")
         print(f"user_data_dir_source: {payload['user_data_dir']['source']}")
         print(f"tag_count: {(payload.get('metadata') or {}).get('tag_count', 0)}")
+        print("raw_text_returned: false")
+        print("path_output: omitted")
+        print("outbound: disabled")
+    return 0 if payload["ok"] else 2
+
+
+def _cmd_desktop_cache_export_records(args: argparse.Namespace) -> int:
+    cache_root = args.cache_data_dir
+    if cache_root is None:
+        explicit_user_data_dir = args.user_data_dir or configured_discord_user_data_dir(
+            config_path=args.config_path
+        )
+        resolved = resolve_discord_user_data_dir(explicit=explicit_user_data_dir)
+        cache_root = (resolved.path / "Cache" / "Cache_Data") if resolved.path else Path("__unresolved__")
+    payload = export_desktop_cache_records(
+        cache_root=cache_root,
+        out_dir=args.out_dir,
+        snapshot_store_hint=args.snapshot_store_hint,
+        include_dm=args.include_dm,
+        include_labels=args.include_labels,
+        max_files=args.max_files,
+    )
+    if args.json:
+        print(_json(payload))
+    else:
+        print(f"state: {payload['state']}")
+        print(f"ok: {str(payload['ok']).lower()}")
+        messages = payload.get("messages") or {}
+        print(f"messages_emitted: {messages.get('emitted', 0)}")
+        print(f"messages_excluded: {messages.get('excluded', 0)}")
+        for reason, count in (payload.get("exclusions") or {}).items():
+            print(f"  excluded[{reason}]: {count}")
+        for server in payload.get("servers") or []:
+            label = f" ({server['label']})" if server.get("label") else ""
+            print(f"server {server['server_key']}{label}: messages={server['message_count']} channels={server['channel_count']}")
+        unknown = payload.get("server_unknown") or {}
+        print(f"server_unknown: channels={unknown.get('channel_count', 0)} messages={unknown.get('message_count', 0)}")
+        print(f"record_files: {len(payload.get('outputs') or [])}")
+        print("snapshot_store_written: false")
         print("raw_text_returned: false")
         print("path_output: omitted")
         print("outbound: disabled")

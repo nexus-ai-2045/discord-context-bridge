@@ -1,0 +1,211 @@
+{
+  "_comment": "Discord Desktop Cache_Data の API 応答を模した偽データ。ID・名前・本文はすべて架空。",
+  "entries": [
+    {
+      "name": "0000000000000001_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/21111111111111111/messages?limit=50",
+      "date": "Mon, 07 Sep 2026 10:00:00 GMT",
+      "payload": [
+        {
+          "id": "51111111111111114",
+          "channel_id": "21111111111111111",
+          "type": 7,
+          "content": "",
+          "timestamp": "2026-09-01T00:03:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111111", "username": "newcomer", "global_name": null},
+          "attachments": [],
+          "embeds": []
+        },
+        {
+          "id": "51111111111111113",
+          "channel_id": "21111111111111111",
+          "type": 0,
+          "content": "",
+          "timestamp": "2026-09-01T00:02:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [{"id": "71111111111111111", "filename": "fixture.png", "size": 10}],
+          "embeds": []
+        },
+        {
+          "id": "51111111111111112",
+          "channel_id": "21111111111111111",
+          "type": 19,
+          "content": "fixture reply body",
+          "timestamp": "2026-09-01T00:01:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111113", "username": "bob", "global_name": null},
+          "attachments": [],
+          "embeds": [],
+          "message_reference": {
+            "type": 0,
+            "channel_id": "21111111111111111",
+            "guild_id": "11111111111111111",
+            "message_id": "51111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "0000000000000002_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/21111111111111111/messages?limit=50&around=51111111111111111",
+      "date": "Mon, 07 Sep 2026 09:00:00 GMT",
+      "payload": [
+        {
+          "id": "51111111111111111",
+          "channel_id": "21111111111111111",
+          "type": 0,
+          "content": "fixture root body",
+          "timestamp": "2026-09-01T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "0000000000000003_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/21111111111111111/messages?before=51111111111111113&limit=50",
+      "date": "Mon, 07 Sep 2026 08:00:00 GMT",
+      "payload": [
+        {
+          "id": "51111111111111111",
+          "channel_id": "21111111111111111",
+          "type": 0,
+          "content": "fixture root body",
+          "timestamp": "2026-09-01T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "0000000000000004_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/21111111111111111/threads/search?archived=true",
+      "date": "Mon, 07 Sep 2026 08:30:00 GMT",
+      "payload": {
+        "threads": [
+          {
+            "id": "31111111111111111",
+            "parent_id": "21111111111111111",
+            "guild_id": "11111111111111111",
+            "type": 11,
+            "name": "fixture thread"
+          }
+        ]
+      }
+    },
+    {
+      "name": "0000000000000005_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/31111111111111111/messages?limit=50",
+      "date": "Mon, 07 Sep 2026 10:30:00 GMT",
+      "payload": [
+        {
+          "id": "52222222222222221",
+          "channel_id": "31111111111111111",
+          "type": 0,
+          "content": "fixture thread body",
+          "timestamp": "2026-09-02T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111113", "username": "bob", "global_name": null},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "0000000000000006_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/41111111111111111/messages?limit=50",
+      "date": "Mon, 07 Sep 2026 11:00:00 GMT",
+      "payload": [
+        {
+          "id": "53333333333333331",
+          "channel_id": "41111111111111111",
+          "type": 0,
+          "content": "fixture orphan body",
+          "timestamp": "2026-09-03T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "0000000000000007_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/users/@me/channels",
+      "date": "Mon, 07 Sep 2026 07:00:00 GMT",
+      "payload": [
+        {
+          "id": "81111111111111111",
+          "type": 1,
+          "recipients": [{"id": "61111111111111113", "username": "bob"}]
+        }
+      ]
+    },
+    {
+      "name": "0000000000000008_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/81111111111111111/messages?limit=50",
+      "date": "Mon, 07 Sep 2026 11:30:00 GMT",
+      "payload": [
+        {
+          "id": "54444444444444441",
+          "channel_id": "81111111111111111",
+          "type": 0,
+          "content": "fixture dm body",
+          "timestamp": "2026-09-04T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111113", "username": "bob", "global_name": null},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "0000000000000009_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/streams/guild%3A12222222222222222%3A91111111111111111%3A61111111111111112/preview",
+      "date": "Mon, 07 Sep 2026 07:30:00 GMT",
+      "payload": {"url": "https://example.invalid/preview.png"}
+    },
+    {
+      "name": "000000000000000a_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/91111111111111111/messages?limit=50",
+      "date": "Mon, 07 Sep 2026 12:00:00 GMT",
+      "payload": [
+        {
+          "id": "55555555555555552",
+          "channel_id": "91111111111111111",
+          "type": 0,
+          "content": "fixture second guild body (edited)",
+          "timestamp": "2026-09-05T00:00:00.000000+00:00",
+          "edited_timestamp": "2026-09-05T01:00:00.000000+00:00",
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    },
+    {
+      "name": "000000000000000b_0",
+      "key": "1/0/_dk_https://discord.com https://discord.com https://discord.com/api/v9/channels/91111111111111111/messages?before=55555555555555553&limit=50",
+      "date": "Mon, 07 Sep 2026 06:00:00 GMT",
+      "payload": [
+        {
+          "id": "55555555555555552",
+          "channel_id": "91111111111111111",
+          "type": 0,
+          "content": "fixture second guild body",
+          "timestamp": "2026-09-05T00:00:00.000000+00:00",
+          "edited_timestamp": null,
+          "author": {"id": "61111111111111112", "username": "alice", "global_name": "Alice"},
+          "attachments": [],
+          "embeds": []
+        }
+      ]
+    }
+  ]
+}
