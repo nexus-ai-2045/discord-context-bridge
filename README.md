@@ -1,106 +1,70 @@
 # Discord Context Bridge
 
-Discordで見えている会話を、AIが安全に扱える文脈へ変換する
-local-firstのブリッジです。
+Discordで読める会話をローカルに保存し、AIが安全に理解・確認できる文脈へ変換します。
 
-- 会話の目的・前提・流れを整理する
-- 返信案を送信前にレビューする
-- 保存済みsnapshotの範囲と鮮度を確認する
-- CLI、runtime skill/plugin、MCPから同じ安全境界で使う
+![Discord Context Bridgeの流れ](https://raw.githubusercontent.com/nexus-ai-2045/discord-context-bridge/main/docs/assets/readme-flow.svg)
+
+| 見つける | 保存する | 理解する | 判断する |
+|---|---|---|---|
+| Discordで対象を選ぶ | privateな追記型台帳へ残す | 目的・前提・決定事項を整理する | 人間が返信や次の行動を決める |
 
 > [!IMPORTANT]
-> public coreはDiscordへ直接送信しません。
-> token、cookie、webhook、実ID、参加者名、raw本文を公開出力に含めません。
+> Discord Context Bridge（DCB）のpublic coreは、Discordへ投稿しません。token、cookie、webhook、実ID、参加者名、会話本文を公開出力へ含めません。
 
-## 30秒で分かる流れ
+## できること
 
-```mermaid
-flowchart LR
-  visible["Discordの可視テキスト"] --> intake["bridge-intake"]
-  intake --> ledger["local snapshot"]
-  intake --> context["文脈パスポート"]
-  context --> review["返信前レビュー"]
-  review --> human["人間が送信判断"]
+- 会話の目的、前提、決定事項を整理する
+- 返信案を送る前にレビューする
+- 保存済み会話の範囲と鮮度を確認する
+- CLI、runtime skill/plugin、MCPから同じ安全境界で使う
 
-  review -. "public coreでは実行しない" .-> send["送信・reaction・edit・delete"]
-```
+## 最短で使う
 
-## どの入口を使うか
+| 手順 | 操作 | 結果 |
+|---:|---|---|
+| 1 | Python 3.11以上でインストールする | CLIが利用可能になる |
+| 2 | Discordの可視テキストをprivateなファイルへ用意する | tokenやcookieを使わず入力できる |
+| 3 | `bridge-intake`へURLとファイルを渡す | 保存・取得範囲確認・文脈整理が一度に進む |
 
-| 使い方 | 向いている場面 | 入口 |
-|---|---|---|
-| CLI | ローカルで取り込み・確認する | `discord-context-bridge` |
-| runtime skill/plugin | Codexなどのエージェントから安全に呼ぶ | `discord-context-bridge` skill |
-| MCP stdio | MCPクライアントへローカル接続する | `discord-context-bridge-mcp` |
-| MCP HTTP | 認証付きHTTP connectorとして使う | `discord-context-bridge-mcp-http` |
+インストール: `python -m pip install .`
 
-すべて同じread-only／metadata-only境界に従います。MCPにも送信toolはありません。
+詳しい引数とWindows例は[詳細リファレンス](docs/full-reference.md)の「最短の使い方」を参照してください。
 
-## インストール
+## やりたいことから選ぶ
 
-Python 3.11以上が必要です。
-
-```bash
-python -m pip install .
-```
-
-MCPも使う場合:
-
-```bash
-python -m pip install ".[mcp]"
-```
-
-開発checkoutから直接試す場合は、以下の例のように`PYTHONPATH=src`を付けます。
-
-## 最短の使い方
-
-message found後の推奨入口は`bridge-intake`です。snapshot保存、coverage確認、
-文脈パスポート、任意の返信ガイドを1コマンドで進めます。
-
-```bash
-PYTHONPATH=src python -m discord_context_bridge.cli \
-  bridge-intake \
-  --url 'https://discord.com/channels/<guild>/<channel>/<message>' \
-  --input /path/to/visible-discord-text.txt \
-  --draft "まず前提を確認してから返事します。" \
-  --understanding-confirmed \
-  --json
-```
-
-Windows PowerShell:
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m discord_context_bridge.cli `
-  bridge-intake `
-  --url "https://discord.com/channels/<guild>/<channel>/<message>" `
-  --input "C:\private\visible-discord-text.txt" `
-  --understanding-confirmed `
-  --json
-```
-
-`stdout`はmetadata-onlyです。raw本文は指定したlocal/private領域に閉じます。
-
-## 主なコマンド
-
-| やりたいこと | コマンド |
+| やりたいこと | 入口 |
 |---|---|
-| 可視テキストをまとめて取り込む | `bridge-intake` |
-| 可視テキストだけを取り込む | `import-visible-text` |
-| 会話の目的・前提・流れを見る | `context-passport` |
-| 返信に必要な最低文脈を判定する | `reply-context-plan` |
-| 下書きをレビューする | `review-draft` / `guide-reply` |
-| 保存範囲と鮮度を見る | `coverage-report` / `report-latest` |
-| URL完全一致のlocal cacheを見る | `cache-inventory` |
-| 保存先をdry-runで確認する | `configure-local-cache` |
-| 送信直前のgateを作る | `stage-discord-send` |
-| 運用状況をまとめる | `send-operation-status` |
+| 取り込みから文脈整理まで一括実行する | `bridge-intake` |
+| 可視テキストだけ取り込む | `import-visible-text` |
+| 会話の目的・前提・流れを確認する | `context-passport` |
+| 返信に必要な文脈を判定する | `reply-context-plan` |
+| 返信案をレビューする | `review-draft` / `guide-reply` |
+| 保存範囲と鮮度を確認する | `coverage-report` / `report-latest` |
+| ローカルcacheを確認する | `cache-inventory` |
 
-全コマンドと判断状態は[詳細リファレンス](docs/full-reference.md)を参照してください。
+## 保存モデル
+
+| データ | 役割 |
+|---|---|
+| 追記型ledger | 取得した観測履歴の正本 |
+| projection | ledgerから再構築する最新状態 |
+| digest | 文脈パスポートや返信ガイドなどの閲覧物 |
+
+同じ本文を再取得しても観測記録を追記し、`content_hash`や`changed`で差分を表します。保存先とcross-device運用は[運用契約](docs/operating-contract.md)を参照してください。
+
+## 安全境界
+
+- Discordへの送信、reaction、edit、deleteを実行しない
+- raw本文、認証情報、実ID、参加者名、ローカル絶対パスを公開しない
+- `raw Discord text`と`local path`はprivate領域に閉じ、`outbound_actions`は既定で無効にする
+- `send_message()`は無効化し、`pr_scope_guard.py`でpublic／private差分を検査する
+- Chrome profileからuser token、cookie、localStorageを抽出しない
+- OCR、screenshot、headless browserを本文取得の既定経路にしない
+- 公開、外部共有、repository visibility変更には人間レビューと明示承認を求める
 
 ### Discord Desktop 通知 metadata probe
 
-通知probeは本文取得ではなく、通知の有無だけを見る補助経路です。
+通知probeは本文を読まず、通知の有無だけを確認する補助経路です。
 
 - schema: `discord_notification_delta.v1`
 - Trigger condition: 人間がDiscord通知を1件発生させる
@@ -110,94 +74,27 @@ python -m discord_context_bridge.cli `
 
 ## MCP
 
-stdio:
-
-```bash
-discord-context-bridge-mcp
-```
-
-認証付きHTTP:
-
-```bash
-export DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN='<bearer-token>'
-discord-context-bridge-mcp-http \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --path /mcp \
-  --store /private/path/discord-context-events.ndjson
-```
-
-- Bearer認証は既定で必須です。
-- event storeの起動前監査も既定で有効です。
-- localhost限定で明示的に使う場合だけ`--allow-unauthenticated`でopt-outできます。
-
-## 保存モデル
-
-履歴の正本はappend-only ledgerです。Markdownやlatest reportは派生viewです。
-
-| 層 | 役割 |
+| 入口 | 用途 |
 |---|---|
-| ledger | 観測を追記し、既存行を書き換えない |
-| projection | 保存済みledgerから最新状態を組み立てる |
-| digest | 文脈パスポートや返信ガイドとして人が読む |
+| `discord-context-bridge` | CLIから取り込み・確認する |
+| runtime skill/plugin | Codexなどのエージェントから呼び出す |
+| `discord-context-bridge-mcp` | MCPクライアントへstdio接続する |
+| `discord-context-bridge-mcp-http` | 認証付きHTTPで接続する |
 
-同じ本文を再取得した場合も観測を追記し、`content_hash`や`changed`で差分を表します。
-詳しくは[運用契約](docs/operating-contract.md)と
-[report-latestの設計](docs/report-latest-architecture-context.md)を参照してください。
+すべてread-only／metadata-only境界に従います。MCPにもDiscord送信toolはありません。HTTP接続はBearer認証が既定で必須です。
 
-## 安全境界
+## 開発と運用
 
-- Discord送信、reaction、edit、deleteをpublic coreから実行しない
-- raw本文、token、cookie、webhook、実ID、参加者名、local absolute pathを公開しない
-- `raw Discord text`と`local path`はprivate領域に閉じ、`outbound_actions`は既定で無効にする
-- `send_message()`は無効化し、`pr_scope_guard.py`でpublic／private差分を検査する
-- Bot REST backfillはbot tokenをprivate providerから読み、値を出力・保存しない
-- Chrome profileからuser tokenやcookieを抽出しない
-- OCR／screenshot／visionをDiscord本文取得の既定経路にしない
-- 外部共有、repository visibility変更、公開操作は人間レビューと明示承認を必須にする
-
-詳しい不変条件は[運用契約](docs/operating-contract.md)、
-経路選択は[routes](docs/routes.md)を参照してください。
-
-## 運用チェック
-
-```bash
-python scripts/ops_check.py --profile fast
-python scripts/ops_check.py --profile full
-python scripts/verify_ssot_projection.py --json
-python scripts/bump_version.py --check
-```
-
-公開リリース前:
-
-```bash
-python scripts/ops_check.py --profile release
-python scripts/gh_guard.py --json --history-ref HEAD
-```
-
-公開判断は[Public Release Checklist](PUBLIC_RELEASE_CHECKLIST.md)を正本にします。
-
-## ドキュメント
+基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。runtime skillは`capability/manifest.yaml`と`docs/operating-contract.md`から生成し、生成済み`SKILL.md`は直接編集しません。
 
 | 資料 | 内容 |
 |---|---|
-| [詳細リファレンス](docs/full-reference.md) | CLI・cache・PDCA・運用手順の詳細 |
+| [詳細リファレンス](docs/full-reference.md) | CLIと運用手順 |
 | [運用契約](docs/operating-contract.md) | runtime共通の安全境界 |
-| [取得経路](docs/routes.md) | main／control／fallbackの使い分け |
-| [送信テスト手順](docs/discord-send-operation-runbook.md) | stagingからcloseoutまで |
+| [取得経路](docs/routes.md) | 取得経路とfallback |
 | [Codex ingress](docs/codex-discord-ingress.md) | Codexから読む入口 |
-| [Chrome境界](docs/codex-chrome-extension-capability-inventory.md) | 既存タブとfill-onlyの扱い |
-| [ロードマップ](ROADMAP.md) | 今後の大きな流れ |
-| [Issue一覧](ISSUE_LIST.md) | active TODOの正本 |
-
-## 開発方針
-
-基本言語は日本語です。利用者向け文書とPR本文も日本語を既定にします。runtime skillは
-`capability/manifest.yaml`と`docs/operating-contract.md`から生成し、
-生成済み`SKILL.md`を直接編集しません。
+| [将来アーキテクチャ案](docs/future-proof-architecture.md) | 採用前の耐久性設計案 |
+| [ロードマップ](ROADMAP.md) | 今後の計画 |
+| [Issue一覧](ISSUE_LIST.md) | active TODO |
 
 ライセンスは[MIT License](LICENSE)です。
-
-## Architecture notes
-
-- Proposed architecture durability notes: [docs/future-proof-architecture.md](docs/future-proof-architecture.md)

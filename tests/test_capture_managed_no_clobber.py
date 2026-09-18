@@ -4,6 +4,10 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="secure dir-fd attachment writes are POSIX-only"
+)
+
 import discord_context_bridge.capture.service as service_module
 from discord_context_bridge.capture.service import (
     merge_persisted_capture_window,

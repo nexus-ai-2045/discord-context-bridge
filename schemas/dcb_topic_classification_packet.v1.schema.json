@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_topic_classification_packet.v1.schema.json",
+  "title": "DCB private Spark topic classification packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packet_id", "model_route", "prompt_version", "private_local_only", "contains_raw_discord_text", "external_send_approved", "review_policy", "source_fingerprint", "taxonomy", "items", "instructions"],
+  "properties": {
+    "schema": {"const": "dcb.topic_classification_packet.v1"},
+    "packet_id": {"type": "string", "minLength": 1},
+    "model_route": {"const": "gpt-5.3-codex-spark"},
+    "prompt_version": {"const": "dcb-topic-candidate-v1"},
+    "private_local_only": {"const": true},
+    "contains_raw_discord_text": {"const": true},
+    "external_send_approved": {"const": false},
+    "review_policy": {"const": "proposal_only_human_promotion_required"},
+    "source_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "taxonomy": {"type": "array", "items": {"type": "object"}},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observation_id", "stream_ref", "observed_at", "content_hash", "text"],
+        "properties": {
+          "observation_id": {"type": "string", "pattern": "^observation-[a-f0-9]{12}$"},
+          "stream_ref": {"type": "string", "pattern": "^stream-[a-f0-9]{12}$"},
+          "observed_at": {"type": "string"},
+          "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "instructions": {"type": "object"}
+  }
+}

@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+requires_posix_path_semantics = pytest.mark.skipif(
+    os.name == "nt", reason="symlink and unlink-open-file probes are POSIX-only"
+)
+
 from discord_context_bridge.capture import store as store_module
 from discord_context_bridge.capture.store import (
     CaptureCheckpointStore,
@@ -42,6 +46,7 @@ def test_event_ledger_append_and_load_round_trip(tmp_path: Path) -> None:
     assert store.load_events(capture_id) == [event]
 
 
+@requires_posix_path_semantics
 def test_event_ledger_does_not_follow_linked_parent(tmp_path: Path) -> None:
     capture_id = "capture-safe-a"
     store = CaptureCheckpointStore(tmp_path / "store")
@@ -56,6 +61,7 @@ def test_event_ledger_does_not_follow_linked_parent(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+@requires_posix_path_semantics
 def test_event_ledger_does_not_follow_linked_target(tmp_path: Path) -> None:
     capture_id = "capture-safe-a"
     store = CaptureCheckpointStore(tmp_path / "store")
@@ -97,6 +103,7 @@ def test_transition_lock_is_exclusive_and_reusable(tmp_path: Path) -> None:
         pass
 
 
+@requires_posix_path_semantics
 def test_transition_lock_does_not_follow_linked_parent(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
     outside = tmp_path / "outside"
@@ -111,6 +118,7 @@ def test_transition_lock_does_not_follow_linked_parent(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+@requires_posix_path_semantics
 def test_transition_lock_rejects_nonregular_target(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
     path = store.root / "locks" / "capture-safe-a.lock"
@@ -121,6 +129,7 @@ def test_transition_lock_rejects_nonregular_target(tmp_path: Path) -> None:
             pass
 
 
+@requires_posix_path_semantics
 def test_transition_lock_detects_target_rebinding(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
     path = store.root / "locks" / "capture-safe-a.lock"

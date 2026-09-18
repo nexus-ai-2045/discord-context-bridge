@@ -13,26 +13,20 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from discord_context_bridge import configured_bot_token_provider  # noqa: E402
-
+from discord_context_bridge import configured_bot_token_provider
+from discord_context_bridge.cli import JapaneseArgumentParser
+from discord_context_bridge.credentials import _channel_env_path
 
 DEFAULT_CHANNEL_DIR = Path.home() / ".claude" / "channels" / "discord"
 
 
+def default_channel_dir() -> Path:
+    """credential loader と同じ環境変数・既定 path 解決を再利用する。"""
+    return _channel_env_path(os.environ, None).parent
+
+
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def read_env_status(env_path: Path) -> dict[str, Any]:
-    if not env_path.exists():
-        return {"exists": False, "token_set": False}
-    token_key = "DISCORD_" + "BOT_TOKEN"
-    token_set = False
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        if line.startswith(token_key + "=") and line.split("=", 1)[1].strip():
-            token_set = True
-            break
-    return {"exists": True, "token_set": token_set}
 
 
 def default_access() -> dict[str, Any]:
@@ -72,16 +66,17 @@ def read_access_status(access_path: Path) -> dict[str, Any]:
 
 
 def build_preflight(channel_dir: Path) -> dict[str, Any]:
-    env_status = read_env_status(channel_dir / ".env")
-    provider_status = configured_bot_token_provider()
+    provider_status = configured_bot_token_provider(
+        channel_env_path=channel_dir / ".env"
+    )
     access_status = read_access_status(channel_dir / "access.json")
     blockers: list[str] = []
     warnings: list[str] = []
-    token_configured = bool(env_status["token_set"] or provider_status["token_set"])
-    provider = "channel_env" if env_status["token_set"] else provider_status["provider"]
+    token_configured = bool(provider_status["token_set"])
+    provider = str(provider_status["provider"])
 
     if not token_configured:
-        blockers.append("bot_token_missing")
+        blockers.append(str(provider_status.get("failure_stage") or "bot_token_missing"))
     if not access_status.get("readable", True):
         blockers.append("access_json_invalid")
     if access_status.get("dm_policy") == "pairing":
@@ -115,11 +110,12 @@ def build_preflight(channel_dir: Path) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="@discord bot route の設定状態を secret なしで確認する。")
+    parser = JapaneseArgumentParser(description="@discord bot routeの設定状態をsecretなしで確認します。")
     parser.add_argument(
         "--channel-dir",
         type=Path,
-        default=Path(os.environ.get("DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR", DEFAULT_CHANNEL_DIR)),
+        default=default_channel_dir(),
+        help="Discord channel設定directory",
     )
     return parser
 

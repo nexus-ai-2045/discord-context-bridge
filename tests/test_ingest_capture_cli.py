@@ -2,14 +2,19 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
-import ingest_capture  # noqa: E402
+import ingest_capture
 
-from discord_context_bridge.core import load_text_snapshots, stable_text_hash  # noqa: E402
-
+from discord_context_bridge import core
+from discord_context_bridge.core import (
+    load_text_snapshots,
+    stable_text_hash,
+)
 
 PAYLOAD = {
     "schema": "dcb.visible_message_record.v1",
@@ -24,6 +29,43 @@ PAYLOAD = {
     "captured_at": "2026-01-01T00:00:00Z",
     "outbound_actions": "disabled",
 }
+
+
+@pytest.mark.parametrize("binding", ["stream_only", "target_with_upstream_stream"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_cli_ingest_uses_canonical_legacy_history_head(tmp_path, capsys, binding, batch_size):
+    target = PAYLOAD["target_key"]
+    raw = {
+        "schema": "dcb.visible_message_record.v1",
+        "stream_id": target if binding == "stream_only" else "upstream-only-stream",
+        "stream_sequence": 9999,
+        "event_hash": "upstream-durable-hash",
+        "message_id": PAYLOAD["message_id"],
+        "content_hash": stable_text_hash(PAYLOAD["body_text"]),
+    }
+    if binding != "stream_only":
+        raw["target_key"] = target
+    store = tmp_path / "text-snapshots.ndjson"
+    store.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+    original_bytes = store.read_bytes()
+    incoming = tmp_path / "capture.ndjson"
+    incoming.write_text("\n".join(json.dumps(PAYLOAD) for _ in range(batch_size)) + "\n", encoding="utf-8")
+    rc = ingest_capture.main([
+        "--input", str(incoming), "--snapshot-store", str(store),
+        "--registry-store", str(tmp_path / "targets.ndjson"), "--apply", "--json",
+    ])
+    output = capsys.readouterr().out
+    assert rc == 0
+    report = json.loads(output)
+    assert report["events_appended"] == batch_size
+    assert report["duplicates"] == batch_size
+    rows = load_text_snapshots(store)
+    assert store.read_bytes().startswith(original_bytes)
+    assert rows[1]["previous_event_hash"] == raw["event_hash"]
+    assert [row["stream_sequence"] for row in rows[1:]] == list(range(2, batch_size + 2))
+    assert core._validate_text_snapshot_chain(rows)[target][0] == batch_size + 1
+    assert "PRIVATE BODY" not in output
+    assert "upstream-only-stream" not in output
 
 
 def test_dry_run_cli_reports_without_writing(tmp_path, capsys):

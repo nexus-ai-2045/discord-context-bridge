@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from .archive_inventory import MAX_SCOPE_RECEIPT_BYTES
 from .process_runner import minimal_child_env, run_process
 from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
@@ -30,6 +31,11 @@ from .local_config import (
 )
 from .obsidian_projection import export_obsidian_projection
 from .knowledge_projection import export_knowledge_projection
+from .topic_classification import (
+    build_topic_classification_packet,
+    build_topic_human_review_packet,
+    import_topic_classification_result,
+)
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .capture.loop import build_capture_status_projection
 from .capture.orchestrator import capture_watermark_digest
@@ -45,6 +51,13 @@ from .capture.service import (
 )
 from .capture.message_ledger import build_strict_full_capture_evidence_from_projections
 from .capture.receipts import persist_strict_full_capture_receipt
+from .capture.parallel_closeout import (
+    evaluate_legacy_parallel_run,
+    evaluate_legacy_parallel_run_from_store,
+    persist_legacy_parallel_closeout,
+    persist_parallel_producer_drain_receipt,
+    persist_parallel_run_stop_receipt,
+)
 from .capture.store import (
     CaptureCheckpointStore,
     CaptureStoreError,
@@ -306,6 +319,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="人間レビュー済み話題付与台帳（private local JSON）",
     )
     export_knowledge.set_defaults(handler=_cmd_export_knowledge_wiki)
+
+    topic_packet = sub.add_parser(
+        "build-topic-classification-packet",
+        help="未分類イベントからSpark向けprivate候補生成packetを作る",
+    )
+    topic_packet.add_argument("--snapshot-store", type=Path, required=True)
+    topic_packet.add_argument("--topic-registry", type=Path, required=True)
+    topic_packet.add_argument("--output", type=Path, required=True)
+    topic_packet.add_argument("--proposal-ledger", type=Path)
+    topic_packet.add_argument("--max-items", type=int, default=100)
+    topic_packet.add_argument("--json", action="store_true")
+    topic_packet.set_defaults(handler=_cmd_build_topic_classification_packet)
+
+    topic_import = sub.add_parser(
+        "import-topic-classification-result",
+        help="Spark候補を検証しappend-onlyレビュー待ち台帳へ取り込む",
+    )
+    topic_import.add_argument("--packet", type=Path, required=True)
+    topic_import.add_argument("--result", type=Path, required=True)
+    topic_import.add_argument("--proposal-ledger", type=Path, required=True)
+    topic_import.add_argument("--json", action="store_true")
+    topic_import.set_defaults(handler=_cmd_import_topic_classification_result)
+
+    topic_review = sub.add_parser(
+        "build-topic-human-review-packet",
+        help="分類候補と原文をprivate人間レビューpacketへまとめる",
+    )
+    topic_review.add_argument("--packet", type=Path, required=True)
+    topic_review.add_argument("--proposal-ledger", type=Path, required=True)
+    topic_review.add_argument("--output", type=Path, required=True)
+    topic_review.add_argument("--json", action="store_true")
+    topic_review.set_defaults(handler=_cmd_build_topic_human_review_packet)
 
     fast_path = sub.add_parser(
         "url-intake-fast-path",
@@ -931,6 +976,52 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parent.add_argument("--json", action="store_true")
     audit_parent.set_defaults(handler=_cmd_audit_parent_completeness)
 
+    parallel_closeout = sub.add_parser(
+        "closeout-parallel-run",
+        help="legacy並列取得runを正規証拠からmetadata-onlyで終端判定する",
+    )
+    parallel_closeout.add_argument("--run-dir", type=Path, required=True)
+    parallel_closeout.add_argument(
+        "--completeness-db",
+        type=Path,
+        help="canonical parent completeness SQLite store",
+    )
+    parallel_closeout.add_argument(
+        "--parent-target-key",
+        help="run-metadataのprivacy-safe digestに結合された親target key",
+    )
+    parallel_closeout.add_argument(
+        "--finalize",
+        action="store_true",
+        help="証拠不足runをfullにせずblocked_closedとして確定する",
+    )
+    parallel_closeout.add_argument("--json", action="store_true")
+    parallel_closeout.set_defaults(handler=_cmd_closeout_parallel_run)
+
+    producer_drain = sub.add_parser(
+        "record-parallel-producer-drain",
+        help="worker/importer自身のterminal eventをcreate-onlyで記録する",
+    )
+    producer_drain.add_argument("--run-dir", type=Path, required=True)
+    producer_drain.add_argument("--producer", required=True)
+    producer_drain.add_argument("--event-id", required=True)
+    producer_drain.add_argument("--json", action="store_true")
+    producer_drain.set_defaults(handler=_cmd_record_parallel_producer_drain)
+
+    run_stop = sub.add_parser(
+        "record-parallel-run-stop",
+        help="全producer drainを集約したterminal eventをcreate-onlyで記録する",
+    )
+    run_stop.add_argument("--run-dir", type=Path, required=True)
+    run_stop.add_argument("--event-id", required=True)
+    run_stop.add_argument(
+        "--stopped-reason",
+        choices=["completed", "producer_failed", "operator_cancelled", "superseded"],
+        required=True,
+    )
+    run_stop.add_argument("--json", action="store_true")
+    run_stop.set_defaults(handler=_cmd_record_parallel_run_stop)
+
     return parser
 
 
@@ -1206,6 +1297,57 @@ def _cmd_export_knowledge_wiki(args: argparse.Namespace) -> int:
             f"{result['elapsed_ms']} ms"
         )
     return 0 if result["ok"] else 2
+
+
+def _topic_command(handler, args: argparse.Namespace) -> int:
+    try:
+        result = handler()
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        result = {
+            "schema": "dcb.topic_classification_operation.v1",
+            "ok": False,
+            "reason": "classification_artifact_invalid",
+            "private_local_only": True,
+            "outbound_actions": "disabled",
+            "paths_returned": False,
+        }
+    print(_json(result) if args.json else ("完了" if result["ok"] else "安全に停止しました。"))
+    return 0 if result["ok"] else 2
+
+
+def _cmd_build_topic_classification_packet(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: build_topic_classification_packet(
+            snapshot_store=args.snapshot_store,
+            topic_registry=args.topic_registry,
+            output_path=args.output,
+            proposal_ledger=args.proposal_ledger,
+            max_items=args.max_items,
+        ),
+        args,
+    )
+
+
+def _cmd_import_topic_classification_result(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: import_topic_classification_result(
+            packet_path=args.packet,
+            result_path=args.result,
+            proposal_ledger=args.proposal_ledger,
+        ),
+        args,
+    )
+
+
+def _cmd_build_topic_human_review_packet(args: argparse.Namespace) -> int:
+    return _topic_command(
+        lambda: build_topic_human_review_packet(
+            packet_path=args.packet,
+            proposal_ledger=args.proposal_ledger,
+            output_path=args.output,
+        ),
+        args,
+    )
 
 
 def latest_match_metadata(path: Path, *, url: str, target_key: str) -> dict[str, Any]:
@@ -2512,14 +2654,16 @@ def _cmd_init_completeness_db(args: argparse.Namespace) -> int:
     )
     return 0
 
-def _load_private_json(path: Path) -> dict[str, Any]:
+def _load_private_json(path: Path, *, max_bytes: int = 1_000_000) -> dict[str, Any]:
     """Load a private local JSON evidence file without echoing path or raw content."""
 
-    raw = path.read_text(encoding="utf-8")
+    with path.open("rb") as handle:
+        encoded = handle.read(max_bytes + 1)
+    if len(encoded) > max_bytes:
+        raise ValueError("private_json_too_large")
+    raw = encoded.decode("utf-8")
     if not raw.strip():
         raise ValueError("private_json_empty")
-    if len(raw.encode("utf-8")) > 1_000_000:
-        raise ValueError("private_json_too_large")
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("private_json_object_required")
@@ -2530,17 +2674,34 @@ def _load_private_json(path: Path) -> dict[str, Any]:
 
 def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
     try:
-        evidence = _load_private_json(args.evidence)
+        evidence = _load_private_json(args.evidence, max_bytes=MAX_SCOPE_RECEIPT_BYTES)
         store = CompletenessStore(args.db)
         store.initialize()
-        store.record_inventory_scan(
-            parent_target_key=str(evidence["parent_target_key"]),
-            scan_id=str(evidence["scan_id"]),
-            observed_at=str(evidence["observed_at"]),
-            thread_ids=[str(value) for value in evidence["thread_ids"]],
-            scopes=dict(evidence["scopes"]),
-            pagination_exhausted=evidence["pagination_exhausted"],
-        )
+        if "scope_receipts" in evidence or "parent_kind" in evidence:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                parent_kind=str(evidence["parent_kind"]),
+                scope_receipts=dict(evidence["scope_receipts"]),
+            )
+            thread_count = len(
+                {
+                    str(thread_id)
+                    for receipt in evidence["scope_receipts"].values()
+                    for thread_id in receipt.get("thread_ids", [])
+                }
+            )
+        else:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                thread_ids=[str(value) for value in evidence["thread_ids"]],
+                scopes=dict(evidence["scopes"]),
+                pagination_exhausted=evidence["pagination_exhausted"],
+            )
+            thread_count = len(evidence["thread_ids"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         payload = {
             "language": "ja",
@@ -2558,7 +2719,7 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
             "schema": "discord_completeness_store_operation.v1",
             "ok": True,
             "operation": "record_parent_inventory",
-            "thread_count": len(evidence["thread_ids"]),
+            "thread_count": thread_count,
             "path_output": "omitted",
             "identifiers_returned": False,
             "outbound_actions": "disabled",
@@ -2602,6 +2763,107 @@ def _cmd_audit_parent_completeness(args: argparse.Namespace) -> int:
     payload = store.audit_parent(args.parent_target_key)
     print(_json(payload))
     return 0 if payload["parent_full_capture_confirmed"] else 2
+
+
+def _cmd_closeout_parallel_run(args: argparse.Namespace) -> int:
+    try:
+        if bool(args.completeness_db) != bool(args.parent_target_key):
+            raise ValueError("completeness db and parent target key must be paired")
+        if args.completeness_db:
+            payload = evaluate_legacy_parallel_run_from_store(
+                args.run_dir,
+                completeness_db=args.completeness_db,
+                parent_target_key=args.parent_target_key,
+                finalize=args.finalize,
+            )
+        else:
+            payload = evaluate_legacy_parallel_run(
+                args.run_dir,
+                finalize=args.finalize,
+            )
+        should_persist = payload["terminal_state"] == "full_closed" or (
+            args.finalize and payload["terminal_state"] == "blocked_closed"
+        )
+        if should_persist:
+            payload = persist_legacy_parallel_closeout(
+                args.run_dir,
+                completeness_db=args.completeness_db,
+                parent_target_key=args.parent_target_key,
+                finalize=args.finalize,
+            )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        payload = {
+            "language": "ja",
+            "schema": "dcb.parallel-run-operational-closeout.v1",
+            "status": "blocked",
+            "terminal_state": "running",
+            "full_capture_confirmed": False,
+            "persistence_confirmed": False,
+            "blockers": ["parallel_run_closeout_failed"],
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    print(_json(payload))
+    return 0 if payload["full_capture_confirmed"] else 2
+
+
+def _cmd_record_parallel_producer_drain(args: argparse.Namespace) -> int:
+    try:
+        persist_parallel_producer_drain_receipt(
+            args.run_dir,
+            producer=args.producer,
+            event_id=args.event_id,
+        )
+        ok = True
+        blockers: list[str] = []
+    except (OSError, TypeError, ValueError):
+        ok = False
+        blockers = ["parallel_producer_drain_rejected"]
+    print(
+        _json(
+            {
+                "schema": "dcb.parallel-producer-drain-operation.v1",
+                "ok": ok,
+                "blockers": blockers,
+                "raw_text_returned": False,
+                "participant_names_returned": False,
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0 if ok else 2
+
+
+def _cmd_record_parallel_run_stop(args: argparse.Namespace) -> int:
+    try:
+        persist_parallel_run_stop_receipt(
+            args.run_dir,
+            event_id=args.event_id,
+            stopped_reason=args.stopped_reason,
+        )
+        ok = True
+        blockers: list[str] = []
+    except (OSError, TypeError, ValueError):
+        ok = False
+        blockers = ["parallel_run_stop_rejected"]
+    print(
+        _json(
+            {
+                "schema": "dcb.parallel-run-stop-operation.v1",
+                "ok": ok,
+                "blockers": blockers,
+                "raw_text_returned": False,
+                "participant_names_returned": False,
+                "path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+        )
+    )
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":

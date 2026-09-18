@@ -2782,6 +2782,7 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "url-intake-fast-path smoke",
         "send-pdca-preflight smoke",
         "discord-url-measure smoke",
+        "アーカイブ棚卸しsmoke",
         "ローカルスモーク",
     }
     assert "テスト" not in checks

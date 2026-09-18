@@ -13,6 +13,19 @@ _URL_RE = re.compile(
 _KINDS = {"unknown", "channel", "forum_parent", "thread", "message"}
 
 
+def parse_guild_channel_url(url: str) -> tuple[str, str] | None:
+    """共有host契約で親棚卸し用のguild/channelを抽出する。種別は別途検証する。"""
+    match = _URL_RE.fullmatch(url.strip())
+    if match is None:
+        return None
+    guild, channel, nested, message = match.groups()
+    if nested is not None or message is not None:
+        return None
+    if any(value is None or re.fullmatch(r"[0-9]+", value) is None for value in (guild, channel)):
+        return None
+    return guild, channel
+
+
 def classify_discord_url(
     url: str,
     *,

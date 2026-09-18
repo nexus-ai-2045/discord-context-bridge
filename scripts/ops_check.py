@@ -377,6 +377,16 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             [sys.executable, "scripts/capture_loop_metadata_smoke.py", "--json"],
             env=env,
         ),
+        "parallel closeout metadata smoke": lambda: run_command(
+            "parallel closeout metadata smoke",
+            [sys.executable, "scripts/parallel_closeout_metadata_smoke.py", "--json"],
+            env=env,
+        ),
+        "アーカイブ棚卸しsmoke": lambda: run_command(
+            "アーカイブ棚卸しsmoke",
+            [sys.executable, "scripts/archived_thread_inventory_smoke.py", "--json"],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.profile == "fast":
@@ -391,6 +401,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "url-intake-fast-path smoke",
                 "send-pdca-preflight smoke",
                 "discord-url-measure smoke",
+                "アーカイブ棚卸しsmoke",
                 "ローカルスモーク",
             )
         }

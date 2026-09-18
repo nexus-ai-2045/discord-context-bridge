@@ -170,7 +170,7 @@ def test_process_runner_rejects_explicit_secret_like_environment(name: str):
 
 @pytest.fixture
 def short_process_tree_timing() -> dict[str, float]:
-    timeout = 1.0 if os.name == "nt" else 0.3
+    timeout = 1.0
     return {
         "timeout": timeout,
         "grandchild_write_delay": timeout + 0.3,

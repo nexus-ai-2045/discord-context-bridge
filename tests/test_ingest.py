@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 from discord_context_bridge.ingest import ingest_capture
@@ -10,6 +13,66 @@ from discord_context_bridge.core import (
     utc_now,
 )
 from discord_context_bridge.target_registry import load_target_registry, resolve_target
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+@pytest.mark.parametrize("repeated", [False, True])
+def test_concurrent_batches_build_and_append_under_one_writer_lock(tmp_path, monkeypatch, seeded, repeated):
+    import discord_context_bridge.ingest as module
+    from discord_context_bridge.capture.store import SequenceConflictError
+
+    barrier = Barrier(2)
+    original_register = module.register_target
+
+    def register_then_rendezvous(**kwargs):
+        result = original_register(**kwargs)
+        barrier.wait(timeout=10)
+        return result
+
+    store = tmp_path / "text-snapshots.ndjson"
+    if seeded:
+        seed = dict(RAW_CAPTURE, messages=[{"message_id": "seed", "body_text": "seed"}])
+        ingest_capture(seed, snapshot_store=store, registry_store=tmp_path / "seed-targets.ndjson", apply=True)
+    monkeypatch.setattr(module, "register_target", register_then_rendezvous)
+
+    def ingest_batch(index):
+        payload = dict(RAW_CAPTURE)
+        batch_id = 0 if repeated else index
+        payload["messages"] = [
+            {"message_id": f"batch-{batch_id}-{ordinal}", "body_text": f"body-{batch_id}-{ordinal}"}
+            for ordinal in range(3)
+        ]
+        return ingest_capture(
+            payload, snapshot_store=store, registry_store=tmp_path / f"targets-{index}.ndjson", apply=True
+        )
+
+    def attempt_batch(index):
+        try:
+            return ingest_batch(index)
+        except SequenceConflictError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt_batch, range(2)))
+
+    # 非待機 lock の競合拒否は許容するが、batch の部分追記は許容しない。
+    records = load_text_snapshots(store)
+    assert len(records) == int(seeded) + 3 * sum(result is not None for result in results)
+    monkeypatch.setattr(module, "register_target", original_register)
+    results = [result if result is not None else ingest_batch(index) for index, result in enumerate(results)]
+
+    assert [result["events_appended"] for result in results] == [3, 3]
+    records = load_text_snapshots(store)
+    assert [row["stream_sequence"] for row in records] == list(range(1, 7 + int(seeded)))
+    batches = [row["message_id"].split("-")[1] for row in records[int(seeded):]]
+    if repeated:
+        assert batches == ["0"] * 6
+        assert sorted(result["duplicates"] for result in results) == [0, 3]
+    else:
+        assert batches in (["0"] * 3 + ["1"] * 3, ["1"] * 3 + ["0"] * 3)
+    for index, row in enumerate(records):
+        assert row["event_hash"] == canonical_event_hash(row)
+        assert row["previous_event_hash"] == (records[index - 1]["event_hash"] if index else "")
 
 
 RAW_CAPTURE = {

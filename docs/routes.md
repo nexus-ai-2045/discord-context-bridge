@@ -1,4 +1,4 @@
-# Discord Context Bridge routes
+# Discord Context Bridgeの経路
 
 この文書は、Discord Context Bridge の取得・制御・fallback 経路を混ぜないための路線図です。
 目的は Discord を直接見続けることではなく、こちら側で文脈カード、返信前 gate、quick verdict を扱うことです。
@@ -25,7 +25,7 @@ ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が
 `not_configured` / `control_plane_not_ready` / `dependency_missing` の reason を返し、
 スコープを広げる場合はユーザーの明示承認を取る。
 
-## status command
+## 状態確認command
 
 ```bash
 python3 scripts/discord_plugin_route_status.py --json
@@ -35,12 +35,18 @@ python3 scripts/discord_plugin_route_status.py --json
 `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` がある場合、Keychain / credential store など repo 外の承認済み secret provider として扱います。
 status command は provider 種別だけを返し、token 値、command stdout、vault内部情報は返しません。
 
+bot tokenの選択順は、process環境変数、`DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND`、
+`DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR/.env` の順です。channelの `.env` はshellとして実行せず、
+mode `0600` の通常fileからbot token用の完全一致keyを1件だけ読みます。
+symlink、権限が広いfile、重複key、不正なtoken値はfail-closedにします。preflightと実取得は
+同じprovider判定を使うため、設定済み表示だけが成功して実取得で欠落する状態を許しません。
+
 - `route_class=main`: 本線。文脈カード / 返信前 gate に流してよい。
 - `route_class=control`: 設定・許可の制御面。本文取得ではない。
 - `route_class=visual_fallback`: 画面確認用。自動送信や本文抽出には使わない。
 - `route_class=last_fallback`: 最終 fallback。明示 region と安全境界が必須。
 
-## main route smoke
+## main経路のsmoke
 
 `main` route の運用保証は、status と private ingest をまとめて確認します。
 
@@ -69,7 +75,7 @@ python3 scripts/discord_channel_event_probe.py --json
 `failure_stage=no_text_event_source` の場合、bot channel server / private adapter から smoke に渡せる本文イベントが
 まだ届いていない状態です。`source_empty` や parser failure とは分けて扱います。
 
-## E2E check
+## E2E確認
 
 fixture / private text と実イベント probe をまとめて見る場合は E2E check を使います。
 
@@ -82,7 +88,7 @@ python3 scripts/e2e_discord_route_check.py \
 実イベント到達まで完了条件に含める場合は `--require-channel-event` を付けます。
 この時に `blocked_stage=no_text_event_source` なら、ingest や parser ではなく text event 未着が原因です。
 
-## stoplines
+## 停止境界
 
 - Discord send / reaction / delete はしない。
 - token / cookie / webhook / browser profile を出力しない。

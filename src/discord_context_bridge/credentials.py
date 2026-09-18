@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import shlex
+import stat
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any
 
 from .core import rest_backfill_config_safety
 
 BOT_TOKEN_ENV = "DISCORD_" + "BOT_TOKEN"
 TOKEN_COMMAND_ENV = "DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND"
+CHANNEL_DIR_ENV = "DISCORD_CONTEXT_BRIDGE_CHANNEL_DIR"
+DEFAULT_CHANNEL_ENV = Path.home() / ".claude" / "channels" / "discord" / ".env"
+_MAX_CHANNEL_ENV_BYTES = 64 * 1024
+_TOKEN_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,92 @@ class BotTokenLoadResult:
         return payload
 
 
+def _channel_env_path(
+    source: Mapping[str, str], channel_env_path: Path | str | None
+) -> Path:
+    if channel_env_path is not None:
+        return Path(channel_env_path)
+    configured_dir = source.get(CHANNEL_DIR_ENV, "").strip()
+    return Path(configured_dir) / ".env" if configured_dir else DEFAULT_CHANNEL_ENV
+
+
+def _load_token_from_channel_env(path: Path) -> BotTokenLoadResult:
+    """shell評価せず、通常fileの特定token keyだけを読む。"""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return BotTokenLoadResult(
+            ok=False, provider="missing", failure_stage="bot_token_missing"
+        )
+    except OSError:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_unreadable"
+        )
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_not_regular_file"
+        )
+    if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o600:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_mode_0600_required"
+        )
+    if metadata.st_size > _MAX_CHANNEL_ENV_BYTES:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_too_large"
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            current = os.fstat(handle.fileno())
+            if not stat.S_ISREG(current.st_mode):
+                return BotTokenLoadResult(
+                    ok=False,
+                    provider="channel_env",
+                    failure_stage="channel_env_not_regular_file",
+                )
+            if os.name != "nt" and stat.S_IMODE(current.st_mode) != 0o600:
+                return BotTokenLoadResult(
+                    ok=False,
+                    provider="channel_env",
+                    failure_stage="channel_env_mode_0600_required",
+                )
+            text = handle.read(_MAX_CHANNEL_ENV_BYTES + 1)
+    except (OSError, UnicodeError):
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_unreadable"
+        )
+    if len(text.encode("utf-8")) > _MAX_CHANNEL_ENV_BYTES:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_too_large"
+        )
+
+    token_values: list[str] = []
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key == BOT_TOKEN_ENV:
+            candidate = value.strip()
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"'}:
+                candidate = candidate[1:-1]
+            token_values.append(candidate)
+    if not token_values or not token_values[0]:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="bot_token_missing"
+        )
+    if len(token_values) != 1:
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_duplicate_token_key"
+        )
+    token = token_values[0]
+    if not _TOKEN_VALUE_PATTERN.fullmatch(token):
+        return BotTokenLoadResult(
+            ok=False, provider="channel_env", failure_stage="channel_env_token_value_invalid"
+        )
+    return BotTokenLoadResult(ok=True, provider="channel_env", token=token)
+
+
 def split_secret_command(command: str) -> list[str]:
     if os.name == "nt":
         ctypes.windll.shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
@@ -55,18 +149,37 @@ def split_secret_command(command: str) -> list[str]:
     return shlex.split(command, posix=True)
 
 
-def configured_bot_token_provider(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def configured_bot_token_provider(
+    env: Mapping[str, str] | None = None,
+    *,
+    channel_env_path: Path | str | None = None,
+) -> dict[str, Any]:
     source = env if env is not None else os.environ
     env_token_set = bool(source.get(BOT_TOKEN_ENV, "").strip())
     command_set = bool(source.get(TOKEN_COMMAND_ENV, "").strip())
-    provider = "env" if env_token_set else "secret_command" if command_set else "missing"
+    if env_token_set:
+        channel_result = BotTokenLoadResult(ok=False, provider="not_checked")
+        provider = "env"
+        ok = True
+    elif command_set:
+        channel_result = BotTokenLoadResult(ok=False, provider="not_checked")
+        provider = "secret_command"
+        ok = True
+    else:
+        channel_result = _load_token_from_channel_env(
+            _channel_env_path(source, channel_env_path)
+        )
+        provider = channel_result.provider
+        ok = channel_result.ok
     return {
         "schema": "discord_bot_token_provider_status.v1",
-        "ok": env_token_set or command_set,
+        "ok": ok,
         "provider": provider,
         "env_token_set": env_token_set,
         "secret_command_set": command_set,
-        "token_set": env_token_set or command_set,
+        "channel_env_token_set": channel_result.ok,
+        "token_set": ok,
+        "failure_stage": channel_result.failure_stage if not ok else "",
         "value_returned": False,
         "token_output": "omitted",
         "command_output": "omitted",
@@ -77,6 +190,7 @@ def load_bot_token_from_provider(
     *,
     env: Mapping[str, str] | None = None,
     timeout_seconds: float = 10,
+    channel_env_path: Path | str | None = None,
 ) -> BotTokenLoadResult:
     source = env if env is not None else os.environ
     env_token = source.get(BOT_TOKEN_ENV, "").strip()
@@ -85,7 +199,7 @@ def load_bot_token_from_provider(
 
     command = source.get(TOKEN_COMMAND_ENV, "").strip()
     if not command:
-        return BotTokenLoadResult(ok=False, provider="missing", failure_stage="bot_token_missing")
+        return _load_token_from_channel_env(_channel_env_path(source, channel_env_path))
 
     command_safety = rest_backfill_config_safety(command)
     if not command_safety["ok"]:

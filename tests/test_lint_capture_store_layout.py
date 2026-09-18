@@ -11,6 +11,37 @@ if str(ROOT / "scripts") not in sys.path:
 import lint_capture_store_layout as lint  # noqa: E402
 
 
+def test_canonical_snapshot_writer_lock_is_allowed(tmp_path):
+    from discord_context_bridge.capture.store import CaptureCheckpointStore
+
+    with CaptureCheckpointStore(tmp_path).transition_lock("canonical-text-snapshots"):
+        assert lint.collect_violations(tmp_path) == []
+    assert lint.collect_violations(tmp_path) == []
+
+
+def test_per_ledger_snapshot_writer_locks_are_allowed(tmp_path):
+    from discord_context_bridge import core
+    from discord_context_bridge.capture.store import CaptureCheckpointStore
+
+    lock_id = core._text_snapshot_lock_id(tmp_path / "archive.ndjson")
+    with CaptureCheckpointStore(tmp_path).transition_lock(lock_id):
+        assert lint.collect_violations(tmp_path) == []
+    assert lint.collect_violations(tmp_path) == []
+
+
+def test_other_lock_paths_remain_disallowed(tmp_path):
+    paths = [
+        "locks/other.lock",
+        "locks/nested/canonical-text-snapshots-0123456789abcdef.lock",
+        "locks/canonical-text-snapshots-0123456789abcdef.lock.backup",
+    ]
+    for relative in paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\0")
+    assert {v["path"] for v in lint.collect_violations(tmp_path)} == set(paths)
+
+
 def _write_ndjson(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:

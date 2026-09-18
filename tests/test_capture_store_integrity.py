@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+requires_symlink_privilege = pytest.mark.skipif(
+    os.name == "nt", reason="symlink integrity probe requires Windows developer mode or privilege"
+)
+
 from discord_context_bridge.capture import store as store_module
 from discord_context_bridge.capture.store import (
     CaptureCheckpointStore,
@@ -51,6 +55,7 @@ def _legacy_full_receipt(capture_id: str) -> dict[str, object]:
     }
 
 
+@requires_symlink_privilege
 def test_attachment_ledger_round_trip_rejects_linked_store_directory(tmp_path: Path) -> None:
     capture_id = "capture-safe-a"
     store = CaptureCheckpointStore(tmp_path / "store")
@@ -67,6 +72,7 @@ def test_attachment_ledger_round_trip_rejects_linked_store_directory(tmp_path: P
     assert list(outside.iterdir()) == []
 
 
+@requires_symlink_privilege
 def test_receipt_invalidation_cannot_follow_link_outside_store(tmp_path: Path) -> None:
     capture_id = "capture-safe-a"
     store = CaptureCheckpointStore(tmp_path / "store")
@@ -97,6 +103,7 @@ def test_sensitive_store_writes_fail_closed_without_safe_primitives(
         )
 
 
+@requires_symlink_privilege
 def test_managed_object_read_does_not_follow_final_symlink(tmp_path: Path) -> None:
     store = CaptureCheckpointStore(tmp_path / "store")
     outside = tmp_path / "outside.bin"

@@ -210,7 +210,9 @@ def _write_all(descriptor: int, content: bytes) -> None:
         offset += written
 
 
-def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+def _legacy_append_store_relative_chunks(
+    root: Path, path: Path, chunks: Any
+) -> None:
     checked = _legacy_store_path(root, path, create_parent=True)
     descriptor: int | None = None
     original_size = 0
@@ -224,27 +226,47 @@ def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) 
         if (
             not stat.S_ISREG(opened.st_mode)
             or not stat.S_ISREG(named.st_mode)
+            or opened.st_nlink != 1
+            or named.st_nlink != 1
             or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
         ):
             raise CheckpointCorruptError(
                 "managed store object is not a bound regular file"
             )
         original_size = opened.st_size
+        total_written = 0
         try:
-            _write_all(descriptor, content)
+            for content in chunks:
+                if not isinstance(content, bytes):
+                    raise TypeError("managed store append chunks must be bytes")
+                current = os.fstat(descriptor)
+                current_named = _legacy_path_stat(checked)
+                if (
+                    current.st_nlink != 1
+                    or current_named.st_nlink != 1
+                    or (current.st_dev, current.st_ino) != (current_named.st_dev, current_named.st_ino)
+                ):
+                    raise CheckpointCorruptError("managed store append requires exclusive file")
+                _write_all(descriptor, content)
+                total_written += len(content)
             os.fsync(descriptor)
             after = os.fstat(descriptor)
             named_after = _legacy_path_stat(checked)
             _legacy_store_path(root, path, create_parent=False)
             if (
-                after.st_size != original_size + len(content)
+                after.st_size != original_size + total_written
+                or after.st_nlink != 1
+                or named_after.st_nlink != 1
                 or (after.st_dev, after.st_ino)
                 != (named_after.st_dev, named_after.st_ino)
             ):
                 raise CheckpointCorruptError(
                     "managed store object changed during append"
                 )
-        except (CheckpointCorruptError, OSError) as error:
+        except Exception as error:
+            if os.fstat(descriptor).st_nlink != 1:
+                # 外部から共有されたinodeをtruncateすると別writerの更新を消し得る。
+                raise CheckpointCorruptError("managed store append requires exclusive recovery") from error
             try:
                 os.ftruncate(descriptor, original_size)
                 os.fsync(descriptor)
@@ -260,6 +282,10 @@ def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) 
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _legacy_append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+    _legacy_append_store_relative_chunks(root, path, (content,))
 
 
 def _legacy_atomic_store_json(root: Path, path: Path, encoded: bytes) -> None:
@@ -482,6 +508,8 @@ def _opened_store_file_matches(
     return (
         stat.S_ISREG(opened.st_mode)
         and stat.S_ISREG(named.st_mode)
+        and opened.st_nlink == 1
+        and named.st_nlink == 1
         and opened.st_dev == named.st_dev
         and opened.st_ino == named.st_ino
         and _store_bindings_match(root, directory_fds, bindings)
@@ -503,9 +531,23 @@ def _open_store_relative_regular(
         open_flags = flags | os.O_NOFOLLOW
         if hasattr(os, "O_NONBLOCK"):
             open_flags |= os.O_NONBLOCK
-        descriptor = os.open(
-            parts[-1], open_flags, 0o600, dir_fd=directory_fds[-1]
-        )
+        if open_flags & os.O_CREAT and not open_flags & os.O_EXCL:
+            # 同時初期作成を排他的createと既存openに分離する。
+            # macOSではO_CREAT|O_NOFOLLOWの同時openがENOENTになり得る。
+            try:
+                descriptor = os.open(
+                    parts[-1], open_flags | os.O_EXCL, 0o600,
+                    dir_fd=directory_fds[-1],
+                )
+            except FileExistsError:
+                descriptor = os.open(
+                    parts[-1], open_flags & ~os.O_CREAT, 0o600,
+                    dir_fd=directory_fds[-1],
+                )
+        else:
+            descriptor = os.open(
+                parts[-1], open_flags, 0o600, dir_fd=directory_fds[-1]
+            )
         if not _opened_store_file_matches(
             root, directory_fds, bindings, parts[-1], descriptor
         ):
@@ -525,9 +567,9 @@ def _open_store_relative_regular(
         raise
 
 
-def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+def _append_store_relative_chunks(root: Path, path: Path, chunks: Any) -> None:
     if not _secure_store_ops_supported():
-        _legacy_append_store_relative_bytes(root, path, content)
+        _legacy_append_store_relative_chunks(root, path, chunks)
         return
     descriptor, directory_fds, bindings, name = _open_store_relative_regular(
         root,
@@ -537,16 +579,18 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
     try:
         before = os.fstat(descriptor)
         try:
-            offset = 0
-            while offset < len(content):
-                written = os.write(descriptor, content[offset:])
-                if written <= 0:
-                    raise OSError("managed store append made no progress")
-                offset += written
+            total_written = 0
+            for content in chunks:
+                if not isinstance(content, bytes):
+                    raise TypeError("managed store append chunks must be bytes")
+                if not _opened_store_file_matches(root, directory_fds, bindings, name, descriptor):
+                    raise CheckpointCorruptError("managed store append requires exclusive file")
+                _write_all(descriptor, content)
+                total_written += len(content)
             os.fsync(descriptor)
             after = os.fstat(descriptor)
             if (
-                after.st_size != before.st_size + len(content)
+                after.st_size != before.st_size + total_written
                 or not _opened_store_file_matches(
                     root, directory_fds, bindings, name, descriptor
                 )
@@ -555,7 +599,9 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
                     "managed store object changed during append"
                 )
             os.fsync(directory_fds[-1])
-        except (CheckpointCorruptError, OSError) as error:
+        except Exception as error:
+            if os.fstat(descriptor).st_nlink != 1:
+                raise CheckpointCorruptError("managed store append requires exclusive recovery") from error
             try:
                 os.ftruncate(descriptor, before.st_size)
                 os.fsync(descriptor)
@@ -571,6 +617,10 @@ def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None
     finally:
         os.close(descriptor)
         _close_store_directory_chain(directory_fds)
+
+
+def _append_store_relative_bytes(root: Path, path: Path, content: bytes) -> None:
+    _append_store_relative_chunks(root, path, (content,))
 
 
 def _atomic_store_json(root: Path, path: Path, payload: Mapping[str, Any]) -> None:

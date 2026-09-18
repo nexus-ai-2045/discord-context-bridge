@@ -23,6 +23,23 @@ def _snapshot(path):
     )
 
 
+def _init_git_repo(path):
+    subprocess.run(["git", "init", "--quiet", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "add", "--all"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(path),
+            "-c", "user.name=DCB Test",
+            "-c", "user.email=dcb-test@example.invalid",
+            "commit", "--quiet", "-m", "test fixture",
+        ],
+        check=True,
+    )
+    return subprocess.check_output(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+
 def test_run_writes_sanitized_receipt_and_is_idempotent(tmp_path):
     source = tmp_path / "snapshots.ndjson"
     _snapshot(source)
@@ -275,8 +292,154 @@ def test_task_verifier_checks_operational_settings():
         "StartBoundary",
         "execution_time_limit",
         "match_details",
+        "ready_to_apply",
+        "snapshot_store_present",
+        "person_registry_present",
+        "topic_registry_present",
+        "stable_checkout",
+        "git_present",
+        "expected_commit_format",
+        "expected_commit_present",
+        "expected_commit_in_head_history",
+        "direct_exit_propagation",
+        "data_paths_outside_repo",
+        "data_paths_without_reparse",
+        "operational_paths_distinct",
+        "Test-PathHasReparse",
+        "Test-DistinctCanonicalPaths",
     ):
         assert expected in script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler dry-run")
+def test_task_setup_dry_run_reports_preflight_detectors(tmp_path):
+    repo_root = tmp_path / "stable-repo"
+    private_root = tmp_path / "private-data"
+    (repo_root / "scripts").mkdir(parents=True)
+    (repo_root / "scripts" / "run_knowledge_wiki_projection.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+    expected_commit = _init_git_repo(repo_root)
+    private_root.mkdir()
+    snapshot = private_root / "text-snapshots.ndjson"
+    _snapshot(snapshot)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_knowledge_wiki_projection_task.ps1"
+    completed = subprocess.run(
+        [
+            "pwsh", "-NoProfile", "-File", str(script),
+            "-PythonPath", sys.executable,
+            "-RepoRoot", str(repo_root),
+            "-SnapshotStore", str(snapshot),
+            "-OutputRoot", str(private_root / "wiki"),
+            "-ReceiptPath", str(private_root / "ops" / "latest.json"),
+            "-LockPath", str(private_root / "ops" / "run.lock"),
+            "-ExpectedCommit", expected_commit,
+            "-TaskName", "DCB-Knowledge-Wiki-Projection-Test-DryRun",
+            "-Json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["action"] == "dry_run"
+    assert payload["changed"] is False
+    assert payload["ready_to_apply"] is True
+    assert all(payload["detectors"].values())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler dry-run")
+def test_task_setup_resolves_relative_data_paths_against_repo_root_and_checks_registries(tmp_path):
+    repo_root = tmp_path / "stable-repo"
+    private_root = tmp_path / "private-data"
+    invocation_root = tmp_path / "unrelated-cwd"
+    (repo_root / "scripts").mkdir(parents=True)
+    (repo_root / "scripts" / "run_knowledge_wiki_projection.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+    expected_commit = _init_git_repo(repo_root)
+    private_root.mkdir()
+    invocation_root.mkdir()
+    _snapshot(private_root / "text-snapshots.ndjson")
+    (private_root / "people.json").write_text("{}\n", encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_knowledge_wiki_projection_task.ps1"
+    command = [
+        "pwsh", "-NoProfile", "-File", str(script),
+        "-PythonPath", sys.executable,
+        "-RepoRoot", str(repo_root),
+        "-SnapshotStore", r"..\private-data\text-snapshots.ndjson",
+        "-OutputRoot", r"..\private-data\wiki",
+        "-ReceiptPath", r"..\private-data\ops\latest.json",
+        "-LockPath", r"..\private-data\ops\run.lock",
+        "-ExpectedCommit", expected_commit,
+        "-PersonRegistry", r"..\private-data\people.json",
+        "-TopicRegistry", r"..\private-data\missing-topics.json",
+        "-TaskName", "DCB-Knowledge-Wiki-Projection-Test-Relative",
+        "-Json",
+    ]
+
+    blocked = subprocess.run(command, cwd=invocation_root, capture_output=True, text=True, check=False)
+    assert blocked.returncode == 0
+    blocked_payload = json.loads(blocked.stdout)
+    assert blocked_payload["ready_to_apply"] is False
+    assert blocked_payload["detectors"]["person_registry_present"] is True
+    assert blocked_payload["detectors"]["topic_registry_present"] is False
+    assert blocked_payload["detectors"]["snapshot_store_present"] is True
+    assert blocked_payload["detectors"]["data_paths_outside_repo"] is True
+
+    apply_blocked = subprocess.run(
+        [*command, "-Apply"], cwd=invocation_root, capture_output=True, text=True, check=False
+    )
+    assert apply_blocked.returncode == 2
+    apply_blocked_payload = json.loads(apply_blocked.stdout)
+    assert apply_blocked_payload["action"] == "apply_blocked"
+    assert apply_blocked_payload["changed"] is False
+
+    (private_root / "missing-topics.json").write_text("{}\n", encoding="utf-8")
+    ready = subprocess.run(command, cwd=invocation_root, capture_output=True, text=True, check=False)
+    assert ready.returncode == 0
+    ready_payload = json.loads(ready.stdout)
+    assert ready_payload["ready_to_apply"] is True
+    assert all(ready_payload["detectors"].values())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler dry-run")
+def test_task_setup_blocks_when_expected_commit_is_not_in_checkout(tmp_path):
+    repo_root = tmp_path / "stable-repo"
+    private_root = tmp_path / "private-data"
+    (repo_root / "scripts").mkdir(parents=True)
+    (repo_root / "scripts" / "run_knowledge_wiki_projection.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8"
+    )
+    _init_git_repo(repo_root)
+    private_root.mkdir()
+    snapshot = private_root / "text-snapshots.ndjson"
+    _snapshot(snapshot)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "setup_knowledge_wiki_projection_task.ps1"
+    command = [
+        "pwsh", "-NoProfile", "-File", str(script),
+        "-PythonPath", sys.executable,
+        "-RepoRoot", str(repo_root),
+        "-SnapshotStore", str(snapshot),
+        "-OutputRoot", str(private_root / "wiki"),
+        "-ReceiptPath", str(private_root / "ops" / "latest.json"),
+        "-LockPath", str(private_root / "ops" / "run.lock"),
+        "-ExpectedCommit", "0" * 40,
+        "-TaskName", "DCB-Knowledge-Wiki-Projection-Test-Commit",
+        "-Json",
+    ]
+    dry_run = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert dry_run.returncode == 0
+    payload = json.loads(dry_run.stdout)
+    assert payload["ready_to_apply"] is False
+    assert payload["detectors"]["expected_commit_format"] is True
+    assert payload["detectors"]["expected_commit_present"] is False
+    assert payload["detectors"]["expected_commit_in_head_history"] is False
+
+    apply = subprocess.run([*command, "-Apply"], capture_output=True, text=True, check=False)
+    assert apply.returncode == 2
+    assert json.loads(apply.stdout)["action"] == "apply_blocked"
 
 
 def test_runner_works_directly_from_source_checkout(tmp_path):
