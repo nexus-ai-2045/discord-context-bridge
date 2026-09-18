@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `desktop-cache-export-records` を追加しました。Discord Desktop cache (Cache_Data) に残る `channels/{id}/messages` 応答を読み取り専用で `dcb.visible_message_record.v1` の NDJSON (1 target = 1 ファイル、target_key は `target_key_for_url`) へ変換し、`scripts/ingest_capture.py --input` で S1 へ取り込める形で出力します。本文が空のメッセージ・system message・server 不明 channel・DM は理由別件数を報告して除外し、S1 には書きません。
 - Knowledge Wiki projectionの日次運用runnerとWindows Task Scheduler設定スクリプトを追加しました。同時起動防止、metadata-only実行receipt、dry-run、設定照合を備え、人物・話題判断は人間レビューのまま維持します。
 
 ## 0.11.0 - 2026-07-28
