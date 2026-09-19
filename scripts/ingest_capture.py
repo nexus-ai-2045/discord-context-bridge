@@ -6,6 +6,7 @@
 - `dcb.raw_capture.v1`
 - `dcb.visible_message_record.v1`
 - `dcb.incremental_visible_message.v1`
+- `discord_context_bridge_text_snapshot_observation.v1` (ADR-0164 legacy backfill)
 
 `--input` に JSON または NDJSON ファイルを渡すと、検証してメッセージ単位で
 `text-snapshots.ndjson` (既定) へ ingest する。拡張子が `.ndjson` の場合、
