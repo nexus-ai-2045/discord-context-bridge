@@ -55,5 +55,6 @@ def test_discord_url_measure_blocks_visible_fallback_without_cache(tmp_path: Pat
     assert payload["ok"] is False
     assert payload["cache"]["target_cache_present"] is False
     assert payload["route"]["decision"] == "ask_browser_fallback"
-    assert payload["route"]["chrome_fallback"]["auto_open"] is False
+    assert payload["route"]["browser_fallback"]["route"] == "in_app_browser"
+    assert payload["route"]["browser_fallback"]["auto_open"] is False
     assert payload["safety_boundary"]["outbound_actions"] == "disabled"

@@ -17,6 +17,7 @@
 - `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
 - Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
+- Codex内部ブラウザ（`in_app_browser`）を可視ブラウザ経路の既定にする。API / inbox / private adapter が利用できない場合は、DCB preflight後に内部ブラウザの既存タブを使う。Chrome拡張は内部ブラウザが利用できない場合の二次fallbackとして扱い、自動で開かない。
 - Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。
 - Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
@@ -39,7 +40,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 ## 標準フロー
 
 1. Discord URL ingress を `codex_discord_ingress_smoke.py` で safe metadata として確認する。
-2. API / bot inbox / private adapter / visible fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。
+2. API / bot inbox / private adapter / Codex内部ブラウザ / Chrome二次fallback の DCB 内順序で本文取得経路を確認する。clipboard はユーザーが明示した場合だけ使う。
 3. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
 4. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
 5. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致だけで full としない。

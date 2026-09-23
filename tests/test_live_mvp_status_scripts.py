@@ -1714,12 +1714,13 @@ def test_route_retry_decider_retries_api_routes_before_browser_fallback(tmp_path
 
     assert payload["ok"] is False
     assert payload["decision"] == "ask_browser_fallback"
-    assert payload["chrome_fallback"]["auto_open"] is False
-    assert payload["chrome_fallback"]["requires_user_go"] is True
+    assert payload["browser_fallback"]["route"] == "in_app_browser"
+    assert payload["browser_fallback"]["auto_open"] is False
+    assert payload["browser_fallback"]["requires_user_go"] is True
     assert payload["routes"]["gateway_live_event"]["attempted"] == 4
     assert payload["routes"]["rest_backfill"]["attempted"] == 4
     assert len(calls) == 8
-    assert "Chrome / visible fallback に切り替えますか" in payload["fallback_prompt"]
+    assert "Codex内部ブラウザのvisible fallbackに切り替えますか" in payload["fallback_prompt"]
     assert "synthetic-secret" not in rendered
     assert "123456789012345678" not in rendered
 
