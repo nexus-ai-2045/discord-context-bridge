@@ -1565,8 +1565,10 @@ def _valid_revocation_pair(
     if (
         not isinstance(previous_url, str)
         or not isinstance(invalid_url, str)
+        or invalid_url == previous_url
         or _discord_thread_identity(previous_url) is None
         or _discord_thread_identity(previous_url) != _discord_thread_identity(invalid_url)
+        or previous.get("event_type") != "discord.visible_text.snapshot_observed"
     ):
         return False
     previous_sequence = previous.get("stream_sequence")
@@ -1581,14 +1583,19 @@ def _valid_revocation_pair(
         or not isinstance(invalid.get("event_id"), str)
         or not invalid.get("event_id")
         or invalid.get("stream_id") != target_key_for_url(invalid_url)
+        or invalid.get("stream_id") == target_key_for_url(previous_url)
         or invalid.get("expected_previous_stream_sequence") != previous_sequence
         or invalid_sequence != previous_sequence + 1
         or invalid.get("previous_event_hash") != previous.get("event_hash")
         or invalid.get("previous_content_hash") != previous.get("content_hash")
-        or invalid.get("content_hash") != stable_text_hash(str(invalid.get("text") or ""))
+        or not isinstance(invalid.get("text"), str)
+        or invalid.get("content_hash") != stable_text_hash(invalid["text"])
         or not isinstance(invalid_hash, str)
-        or len(invalid_hash) != 64
+        or not re.fullmatch(r"[0-9a-f]{64}", invalid_hash)
         or invalid_hash == canonical_event_hash(invalid)
+        or invalid.get("private_local_only") is not True
+        or invalid.get("external_share_allowed") is not False
+        or invalid.get("outbound_actions") != "disabled"
     ):
         return False
     main_key = target_key_for_url(previous_url)
