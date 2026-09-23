@@ -99,14 +99,15 @@ def _read_payload(path: Path) -> dict[str, Any] | list[dict[str, Any]] | None:
     return None
 
 
-def _extract_target_key_field(payload: dict[str, Any] | list[dict[str, Any]]) -> str:
+def _extract_target_keys(payload: dict[str, Any] | list[dict[str, Any]]) -> set[str]:
+    """全行の非空 target_key を返す。先頭行だけを見ると、複数 target の batch で
+    2行目以降の不一致を見逃して書き込んでしまう (codex review PR #71)。"""
     rows = payload if isinstance(payload, list) else [payload]
-    for row in rows:
-        if isinstance(row, dict):
-            value = str(row.get("target_key") or "").strip()
-            if value:
-                return value
-    return ""
+    return {
+        value
+        for row in rows
+        if isinstance(row, dict) and (value := str(row.get("target_key") or "").strip())
+    }
 
 
 def _unreadable_result(apply: bool) -> dict[str, Any]:
@@ -151,8 +152,8 @@ def build_result(
 
     if url.strip():
         expected_target_key = stable_text_hash(url.strip())
-        record_target_key = _extract_target_key_field(payload)
-        if record_target_key and record_target_key != expected_target_key:
+        record_target_keys = _extract_target_keys(payload)
+        if record_target_keys and record_target_keys != {expected_target_key}:
             return _url_mismatch_result(apply)
 
     return ingest_capture(
