@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 8d0f17f5a2b17b9fd01577bc184e03380690bd20
+ssot_commit: 060892ba6774acc3de76a500ab42f418cdd58f13
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 8b239ebaf9916937b9b3adb08b2330da9b5db39738cdb76c5fbab4fc858761fe
-contract_checksum: 83763c09b9871a89ab4bc4e7aac4187de2e7e8618599d5a51e43c5f0e95598e1
-generated_at: 2026-08-23T12:27:20+00:00
+manifest_checksum: 8f407bb8048d59ff7f1b2290581d1b9a1d5f364a4eb9f36d52df9039c559eba3
+contract_checksum: fefc3cf474e7fb60fb1656825a7236d8b1f130e4d0bf1e4708699fb32f4f3625
+generated_at: 2026-09-23T14:08:18+00:00
 runtime_target: codex
 ---
 
@@ -124,6 +124,9 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - 可視本文を読めた場合、append-only ledger、`capture`、`manifest` を保存する前に「取得完了」と言わない。
 - 同一内容の再取得でも、観測した事実は ledger に追記する。重複排除は保存停止ではなく `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
 - 追記 ledger の 1 行は immutable event として扱う。訂正が必要な場合は既存行を書き換えず、補正・再取得・metadata 補足を新しい observation として追記する。
+- 公式観測の必須対象結合やイベントハッシュが壊れている場合、その行を無視して通常の追記を再開しない。原行の物理バイト列を保全し、正規履歴の最後の有効記録と不正行の物理行ハッシュを結び付けた `discord.snapshot_store.invalid_observation_revoked` を、非公開の正式記録として専用の排他・事前検証・再読経路から追記する。この記録は観測本文ではなく失効証拠であり、本文件数・取得範囲に算入しない。
+- 失効記録の形式は `dcb.invalid_observation_revocation.v1` とする。正規保存先の `url`、`target_key`、`stream_id`、`subject`、次の `stream_sequence`、`expected_previous_stream_sequence`、`previous_event_hash` に加え、`revoked_row_sha256`、`revoked_record_sha256`、`revoked_event_id`、`revoked_stored_event_hash`、`revoked_calculated_event_hash`、`revoked_stream_id`、`revoked_url`、`reason`、自身の `event_hash` を必須にする。`revoked_row_sha256` は原`JSONL`行の終端改行を除く物理バイト列、`revoked_record_sha256` は原記録の全項目を正規直列化したものをそれぞれハッシュ化する。`revoked_stream_id` は原行の保存値とし、原行の `url` から再計算した対象キーとの一致を別に検証する。`content_hash` と `previous_content_hash` は正規直前行の本文ハッシュを引き継ぎ、失効記録が本文の差分や取得件数を増やさないようにする。`CloudEvents` 形式の `type`、`specversion`、`time`、`dataschema` も自身の記録と一致させる。外部送信は無効とし、同じ不正行への二重失効、別対象のすり替え、原行の変更、前後関係の欠落は検証失敗とする。失効済みでも正規の再取得が確認されるまで、その観測対象の取得範囲は未完了とする。
+- 不正行が別の `URL` 表記の孤立履歴として誤追記された場合は、両 `URL` が同じ論理スレッドを指すことと、正規履歴の直前記録への連鎖を別々に検証する。失効は破損行を本文証拠から外して正規履歴の追記を再開する操作、再取得は同じ論理スレッドの正規履歴に本文を新たに保存する操作であり、両者を同一の完了証拠として扱わない。別の論理スレッドの行はこの修復経路で受理しない。元行の内容や識別子は非公開の手元保存先に限り、表示出力は件数と安全な状態ラベルだけにする。
 - `stream_id` は target 単位の履歴を再生するキー、`stream_sequence` は target 内の順序、`event_id` は観測行そのものの一意識別子として使う。
 - `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
@@ -236,6 +239,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 ## Commands
 
+- `python3 scripts/revoke_invalid_snapshot_observation.py --snapshot-store <private-store>`: 不正な公式観測の原行保全・失効event追記可否をprivate storeで事前検証する。--applyは個別の復旧判断後だけ使う
 - `python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json`: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
 - `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
