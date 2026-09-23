@@ -106,6 +106,9 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - 可視本文を読めた場合、append-only ledger、`capture`、`manifest` を保存する前に「取得完了」と言わない。
 - 同一内容の再取得でも、観測した事実は ledger に追記する。重複排除は保存停止ではなく `content_hash` / `previous_content_hash` / `changed` / `duplicate_content` で表す。
 - 追記 ledger の 1 行は immutable event として扱う。訂正が必要な場合は既存行を書き換えず、補正・再取得・metadata 補足を新しい observation として追記する。
+- 公式観測の必須対象結合やイベントハッシュが壊れている場合、その行を無視して通常の追記を再開しない。原行の物理バイト列を保全し、正規履歴の最後の有効記録と不正行の物理行ハッシュを結び付けた `discord.snapshot_store.invalid_observation_revoked` を、非公開の正式記録として専用の排他・事前検証・再読経路から追記する。この記録は観測本文ではなく失効証拠であり、本文件数・取得範囲に算入しない。
+- 失効記録の形式は `dcb.invalid_observation_revocation.v1` とする。正規保存先の `url`、`target_key`、`stream_id`、`subject`、次の `stream_sequence`、`expected_previous_stream_sequence`、`previous_event_hash` に加え、`revoked_row_sha256`、`revoked_record_sha256`、`revoked_event_id`、`revoked_stored_event_hash`、`revoked_calculated_event_hash`、`revoked_stream_id`、`revoked_url`、`reason`、自身の `event_hash` を必須にする。`revoked_row_sha256` は原`JSONL`行の終端改行を除く物理バイト列、`revoked_record_sha256` は原記録の全項目を正規直列化したものをそれぞれハッシュ化する。`revoked_stream_id` は原行の保存値とし、原行の `url` から再計算した対象キーとの一致を別に検証する。`content_hash` と `previous_content_hash` は正規直前行の本文ハッシュを引き継ぎ、失効記録が本文の差分や取得件数を増やさないようにする。`CloudEvents` 形式の `type`、`specversion`、`time`、`dataschema` も自身の記録と一致させる。外部送信は無効とし、同じ不正行への二重失効、別対象のすり替え、原行の変更、前後関係の欠落は検証失敗とする。失効済みでも正規の再取得が確認されるまで、その観測対象の取得範囲は未完了とする。
+- 不正行が別の `URL` 表記の孤立履歴として誤追記された場合は、両 `URL` が同じ論理スレッドを指すことと、正規履歴の直前記録への連鎖を別々に検証する。失効は破損行を本文証拠から外して正規履歴の追記を再開する操作、再取得は同じ論理スレッドの正規履歴に本文を新たに保存する操作であり、両者を同一の完了証拠として扱わない。別の論理スレッドの行はこの修復経路で受理しない。元行の内容や識別子は非公開の手元保存先に限り、表示出力は件数と安全な状態ラベルだけにする。
 - `stream_id` は target 単位の履歴を再生するキー、`stream_sequence` は target 内の順序、`event_id` は観測行そのものの一意識別子として使う。
 - `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
