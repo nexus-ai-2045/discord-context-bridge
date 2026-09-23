@@ -16,7 +16,7 @@ IAB_URL = "https://discord.com/channels/12345678901234567/23456789012345678/thre
 CHROME_URL = "https://discord.com/channels/12345678901234567/34567890123456789"
 
 
-def _bad_store(path, *, bad_url=CHROME_URL):
+def _bad_store(path, *, bad_url=CHROME_URL, bad_stream_id=None):
     core.snapshot_visible_text(text="first", url=IAB_URL, path=path)
     core.snapshot_visible_text(text="second", url=IAB_URL, path=path)
     original = path.read_bytes()
@@ -25,7 +25,7 @@ def _bad_store(path, *, bad_url=CHROME_URL):
     bad.update(
         event_id="bad-foreign-event",
         url=bad_url,
-        stream_id=core.target_key_for_url(bad_url),
+        stream_id=bad_stream_id or core.target_key_for_url(bad_url),
         stream_sequence=3,
         expected_previous_stream_sequence=2,
         previous_event_hash=prior["event_hash"],
@@ -63,6 +63,37 @@ def test_revocation_rejects_wrong_logical_thread_without_append(tmp_path):
     with pytest.raises(CheckpointCorruptError):
         core.revoke_invalid_snapshot_observation(path)
     assert path.read_bytes() == original
+
+
+def test_revocation_rejects_malformed_row_on_same_url(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    _bad_store(path, bad_url=IAB_URL)
+    original = path.read_bytes()
+    with pytest.raises(CheckpointCorruptError):
+        core.revoke_invalid_snapshot_observation(path, dry_run=True)
+    assert path.read_bytes() == original
+
+
+def test_revocation_rejects_different_url_with_canonical_stream_id(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    _bad_store(path, bad_stream_id=core.target_key_for_url(IAB_URL))
+    original = path.read_bytes()
+    with pytest.raises(CheckpointCorruptError):
+        core.revoke_invalid_snapshot_observation(path, dry_run=True)
+    assert path.read_bytes() == original
+
+
+def test_revocation_rejects_invalid_timestamp_even_with_matching_event_hash(tmp_path):
+    path = tmp_path / "text-snapshots.ndjson"
+    _bad_store(path)
+    core.revoke_invalid_snapshot_observation(path)
+    rows = core.load_text_snapshots(path)
+    proof = rows[-1]
+    for field in ("time", "captured_at", "observed_at", "ingested_at"):
+        proof[field] = "not-a-timestamp"
+    proof["event_hash"] = core.canonical_event_hash(proof)
+    with pytest.raises(CheckpointCorruptError):
+        core._validate_text_snapshot_chain(rows)
 
 
 def test_revocation_rejects_physical_row_mutation_after_receipt(tmp_path):
