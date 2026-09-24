@@ -27,6 +27,7 @@ from .local_config import (
     configured_discord_user_data_dir,
     default_config_path,
     default_cross_device_snapshot_store,
+    local_config_error_payload,
     resolve_shared_snapshot_root,
 )
 from .obsidian_projection import export_obsidian_projection
@@ -70,7 +71,6 @@ from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_REVIEW_STORE,
     DEFAULT_ATTACHMENT_LEDGER,
-    DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
     DEFAULT_STORE,
     audit_context_store,
     audit_event_store,
@@ -2614,16 +2614,7 @@ def main(argv: list[str] | None = None) -> int:
         _promote_cwd_local_snapshot_args(args)
         return int(args.handler(args))
     except LocalConfigError as exc:
-        payload = {
-            "language": "ja",
-            "schema": "discord_context_bridge_local_config_error.v1",
-            "ok": False,
-            "state": "blocked",
-            "reason": str(exc),
-            "message": "ローカルcache設定を読めません。JSON形式と読取権限を確認してください。",
-            "path_output": "omitted",
-            "outbound_actions": "disabled",
-        }
+        payload = local_config_error_payload(exc)
         print(_json(payload) if getattr(args, "json", False) else payload["message"])
         return 2
 

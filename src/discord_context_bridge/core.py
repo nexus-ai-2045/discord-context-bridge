@@ -2100,6 +2100,13 @@ def _resolve_cache_root(cache_root: Path | None) -> Path:
 
 
 def discover_discord_local_cache(url: str, *, cache_root: Path | None = None) -> dict[str, Any]:
+    """Report metadata about the local raw cache for a Discord channel URL.
+
+    When ``cache_root`` is omitted, the shared snapshot root is resolved at call
+    time (env ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default). In that case a malformed or
+    unreadable local config raises ``local_config.LocalConfigError``.
+    """
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
         return {
@@ -2192,6 +2199,13 @@ def build_cache_first_intake(
     cache_root: Path | None = None,
     book_output: Path | None = None,
 ) -> dict[str, Any]:
+    """Build a private book from the local raw cache or saved snapshots.
+
+    When ``cache_root`` is omitted, the shared snapshot root is resolved at call
+    time (env ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default). In that case a malformed or
+    unreadable local config raises ``local_config.LocalConfigError``.
+    """
     from .acquisition_gate import build_acquisition_completion_gate
 
     base = plan_discord_url_read(url)

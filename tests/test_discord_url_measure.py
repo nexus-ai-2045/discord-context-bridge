@@ -99,6 +99,7 @@ def test_cache_probe_canonical_env_does_not_match_without_discord_suffix(tmp_pat
 
     cache = discord_url_measure.build_cache_probe(URL)
 
+    assert discord_url_measure.default_snapshot_root() == shared_root / "discord"
     assert cache["target_cache_present"] is False
 
 
@@ -127,6 +128,18 @@ def test_canonical_env_takes_precedence_over_deprecated_alias(tmp_path: Path, mo
     cache = discord_url_measure.build_cache_probe(URL)
 
     assert cache["target_cache_present"] is True
+    err = capsys.readouterr().err
+    assert "using DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT" in err
+    assert str(tmp_path) not in err
+
+
+def test_no_conflict_warning_when_both_envs_agree(tmp_path: Path, monkeypatch, capsys):
+    _isolate_snapshot_env(monkeypatch, tmp_path)
+    shared_root = tmp_path / "shared-raw-snapshots"
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT", str(shared_root / "discord"))
+
+    assert discord_url_measure.default_snapshot_root() == shared_root / "discord"
     assert capsys.readouterr().err == ""
 
 
@@ -158,3 +171,26 @@ def test_main_without_snapshot_root_flag_reads_canonical_env(tmp_path: Path, mon
 
     assert payload["cache"]["target_cache_present"] is True
     assert payload["next_action"] == "use_local_cache_metadata"
+
+
+def test_main_reports_malformed_config_as_json_error(tmp_path: Path, monkeypatch, capsys):
+    _isolate_snapshot_env(monkeypatch, tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{bad-secret-marker", encoding="utf-8")
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_CONFIG", str(config_path))
+    channel_dir = tmp_path / "channel"
+    channel_dir.mkdir()
+
+    exit_code = discord_url_measure.main(
+        ["--url", URL, "--channel-dir", str(channel_dir), "--timeout", "0.01", "--interval", "0", "--json"]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code != 0
+    assert payload["schema"] == "discord_context_bridge_local_config_error.v1"
+    assert payload["ok"] is False
+    assert payload["reason"] == "local_config_unreadable"
+    assert payload["path_output"] == "omitted"
+    assert "bad-secret-marker" not in captured.out + captured.err
+    assert str(tmp_path) not in captured.out + captured.err

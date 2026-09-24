@@ -2380,6 +2380,25 @@ def test_discover_local_cache_without_cache_root_honors_config_file(tmp_path, mo
     assert payload["cache_root_present"] is True
 
 
+def test_omitted_cache_root_with_malformed_config_raises_local_config_error(tmp_path, monkeypatch):
+    from discord_context_bridge.core import discover_discord_local_cache
+    from discord_context_bridge.local_config import LocalConfigError
+
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{bad", encoding="utf-8")
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_CONFIG", str(config_path))
+    url = "https://discord.com/channels/7/8"
+
+    with pytest.raises(LocalConfigError):
+        discover_discord_local_cache(url)
+    with pytest.raises(LocalConfigError):
+        build_cache_first_intake(url=url, snapshot_store=tmp_path / "missing.ndjson")
+
+    # An explicit cache_root never consults the config file.
+    assert discover_discord_local_cache(url, cache_root=tmp_path / "explicit")["ok"] is False
+
+
 def test_discover_local_cache_explicit_cache_root_overrides_env(tmp_path, monkeypatch):
     from discord_context_bridge.core import discover_discord_local_cache
 

@@ -16,7 +16,12 @@ if str(SRC) not in sys.path:
 
 import codex_discord_ingress_smoke
 import discord_route_retry_decider
-from discord_context_bridge.local_config import SHARED_SNAPSHOT_ROOT_ENV, resolve_shared_snapshot_root
+from discord_context_bridge.local_config import (
+    SHARED_SNAPSHOT_ROOT_ENV,
+    LocalConfigError,
+    local_config_error_payload,
+    resolve_shared_snapshot_root,
+)
 
 
 # Deprecated alias. Unlike the canonical SHARED_SNAPSHOT_ROOT_ENV (the shared
@@ -39,6 +44,10 @@ def default_snapshot_root(
     2. env DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT (deprecated) -> <value> as-is
     3. config shared_snapshot_root -> <value>/discord
     4. OS default -> ~/Projects/Documents/discord/raw-snapshots/discord
+
+    When both env vars are set and disagree, the canonical one wins and a
+    path-free warning is printed to stderr. A malformed local config (only
+    consulted in step 3) raises ``LocalConfigError``.
     """
     env_value = env if env is not None else os.environ
     canonical = str(env_value.get(SHARED_SNAPSHOT_ROOT_ENV, "")).strip()
@@ -52,6 +61,14 @@ def default_snapshot_root(
                 file=sys.stderr,
             )
         return Path(legacy).expanduser()
+    if legacy and canonical and warn:
+        if Path(canonical).expanduser() / "discord" != Path(legacy).expanduser():
+            print(
+                f"warning: both {SHARED_SNAPSHOT_ROOT_ENV} and the deprecated {LEGACY_SNAPSHOT_ROOT_ENV} "
+                f"are set and point to different roots; using {SHARED_SNAPSHOT_ROOT_ENV}. "
+                f"Unset {LEGACY_SNAPSHOT_ROOT_ENV}.",
+                file=sys.stderr,
+            )
     resolved = resolve_shared_snapshot_root(config_path=config_path, env=env_value, home=home)
     return resolved.path / "discord"
 
@@ -213,9 +230,15 @@ def print_human(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        snapshot_root = args.snapshot_root if args.snapshot_root is not None else default_snapshot_root()
+    except LocalConfigError as exc:
+        error_payload = local_config_error_payload(exc)
+        print(_json(error_payload) if args.json else error_payload["message"])
+        return 2
     payload = build_measurement(
         url=args.url,
-        snapshot_root=args.snapshot_root,
+        snapshot_root=snapshot_root,
         chrome_opened=args.chrome_opened,
         current_title=args.current_title,
         human_state=args.human_state,
