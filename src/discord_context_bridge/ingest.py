@@ -8,6 +8,8 @@
   (実 capture artifact のフラットな 1 行 1 メッセージ shape。`message` object
   へのネストは持たない。NDJSON の複数行 (= 複数メッセージ) は `list[dict]` として
   1 回の呼び出しにまとめて渡せる)
+- `discord_context_bridge_text_snapshot_observation.v1`
+  (ADR-0164 Phase 2 の旧 observation。target ごとに分割して再連鎖する)
 
 入力を検証し、メッセージ単位の event (`event_type: "message_observation"`) として
 `text-snapshots.ndjson` へ追記する。event envelope は既存
@@ -58,7 +60,10 @@ SUPPORTED_SCHEMAS = {
     "dcb.raw_capture.v1",
     "dcb.visible_message_record.v1",
     "dcb.incremental_visible_message.v1",
+    "discord_context_bridge_text_snapshot_observation.v1",
 }
+
+LEGACY_OBSERVATION_SCHEMA = "discord_context_bridge_text_snapshot_observation.v1"
 
 # `message` object へネストせず、1 行そのものが 1 メッセージであるスキーマ。
 FLAT_MESSAGE_SCHEMAS = {
@@ -277,6 +282,23 @@ def ingest_capture(
     `apply=True` の時だけ `snapshot_store` へ追記し、`registry_store` を
     upsert する。
     """
+    # 単一 JSON object の旧 observation も1件の batch として同じ adapter に流す。
+    if isinstance(payload, dict) and payload.get("schema") == LEGACY_OBSERVATION_SCHEMA:
+        payload = [payload]
+    if (
+        isinstance(payload, list)
+        and payload
+        and all(isinstance(row, dict) for row in payload)
+        and {row.get("schema") for row in payload} == {LEGACY_OBSERVATION_SCHEMA}
+    ):
+        return _ingest_legacy_observations(
+            payload,
+            snapshot_store=Path(snapshot_store),
+            registry_store=Path(registry_store),
+            apply=apply,
+            source_ref=source_ref,
+        )
+
     if isinstance(payload, list):
         schema = _batch_schema_hint(payload)
         try:
@@ -328,6 +350,197 @@ def ingest_capture(
         "target_key": target_key,
         "outbound_actions": "disabled",
     }
+
+
+def _ingest_legacy_observations(
+    rows: list[dict[str, Any]],
+    *,
+    snapshot_store: Path,
+    registry_store: Path,
+    apply: bool,
+    source_ref: str,
+) -> dict[str, Any]:
+    """ADR-0164 Phase 2: 旧 observation を target ごとに再連鎖して取り込む。"""
+    required_strings = ("event_id", "target_key", "captured_at", "observed_at", "text")
+    try:
+        # 他の adapter と同じ件数上限 (_enforce_message_budget と同じ理由コード)。
+        _require(len(rows) <= MAX_MESSAGES, "message_limit_exceeded")
+    except IngestValidationError as exc:
+        return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+    for row in rows:
+        try:
+            _require(row.get("schema") == LEGACY_OBSERVATION_SCHEMA, "legacy_schema_mismatch")
+            for key in required_strings:
+                _require(isinstance(row.get(key), str) and bool(row[key]), f"legacy_{key}_required")
+            _require(
+                row.get("acquisition_context") is None
+                or isinstance(row.get("acquisition_context"), dict),
+                "legacy_acquisition_context_invalid",
+            )
+            _require(len(row["text"]) <= MAX_BODY_TEXT_CHARS, "message_body_limit_exceeded")
+        except IngestValidationError as exc:
+            return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+
+    legacy_ids = [row["event_id"] for row in rows]
+    if len(set(legacy_ids)) != len(legacy_ids):
+        return _error_result(
+            schema=LEGACY_OBSERVATION_SCHEMA,
+            apply=apply,
+            reason="legacy_duplicate_event_id_in_input",
+        )
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["target_key"], []).append(row)
+    try:
+        for target_rows in grouped.values():
+            # 旧 observation では title / URL が観測時点ごとに変化し得るため、
+            # 正本の stream identity だけを target 内で固定する。
+            _require_consistent_identity(target_rows, "stream_id")
+    except IngestValidationError:
+        return _error_result(
+            schema=LEGACY_OBSERVATION_SCHEMA,
+            apply=apply,
+            reason="legacy_target_identity_mismatch",
+        )
+
+    result_counts = {"skipped": 0}
+
+    def build_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        skipped_total = 0
+        for target_key, target_rows in grouped.items():
+            target_events, skipped = _build_legacy_observation_events(
+                records, target_rows, target_key=target_key
+            )
+            events.extend(target_events)
+            skipped_total += skipped
+        result_counts["skipped"] = skipped_total
+        return events
+
+    try:
+        # 取り込み済み ID の中身が変わっていないかを、registry を触る前に確かめる。
+        # 並行 writer に備え、transaction 内の build_events でも同じ照合をもう一度行う。
+        build_events(load_text_snapshots(snapshot_store))
+        if apply:
+            for target_key, target_rows in grouped.items():
+                first = target_rows[0]
+                register_target(
+                    target_key=target_key,
+                    key_scheme="url_hash_16",
+                    url=str(first.get("url") or "") or None,
+                    channel_label=str(first.get("title") or "") or None,
+                    source="capture",
+                    source_ref=source_ref or None,
+                    path=registry_store,
+                )
+            appended_total, _, _ = _append_text_snapshots_transaction(build_events, snapshot_store)
+            pending_total = 0
+        else:
+            pending_total = len(build_events(load_text_snapshots(snapshot_store)))
+            appended_total = 0
+    except IngestValidationError as exc:
+        return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+    skipped_total = result_counts["skipped"]
+
+    return {
+        "schema": "dcb.ingest_result.v1",
+        "ok": True,
+        "dry_run": not apply,
+        "adapter": LEGACY_OBSERVATION_SCHEMA,
+        "events_appended": appended_total,
+        "events_pending": pending_total if not apply else 0,
+        "skipped": skipped_total,
+        "skip_reasons": {"legacy_event_already_imported": skipped_total} if skipped_total else {},
+        "input_events": len(rows),
+        "targets_processed": len(grouped),
+        "duplicates": 0,
+        "target_key": None,
+        "outbound_actions": "disabled",
+    }
+
+
+def _build_legacy_observation_events(
+    records: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    target_key: str,
+) -> tuple[list[dict[str, Any]], int]:
+    # 旧 event_id → 取り込み済みの記録。同じ ID の再投入は、中身が同じ時だけ skip する。
+    imported: dict[str, dict[str, Any]] = {}
+    for record in records:
+        context = record.get("acquisition_context")
+        if isinstance(context, dict) and context.get("legacy_observation_event_id"):
+            imported.setdefault(str(context["legacy_observation_event_id"]), record)
+    stream_sequence, previous_event_hash = _validate_text_snapshot_chain(records).get(
+        target_key, (0, "")
+    )
+    history = _snapshot_stream_history(records, target_key)
+    previous_content_hash = str(history[-1].get("content_hash") or "") if history else None
+    ingested_at = utc_now()
+    events: list[dict[str, Any]] = []
+    skipped = 0
+
+    for row in rows:
+        legacy_event_id = row["event_id"]
+        # 正本に平文の認証情報を残さない (snapshot_visible_text / _build_message_events と同じ)。
+        text = redact_sensitive_storage_text(row["text"])
+        content_hash = stable_text_hash(text)
+        stored = imported.get(legacy_event_id)
+        if stored is not None:
+            # ID だけで同一とみなすと、中身が変わった再投入を「成功」と数えてしまう。
+            _require(
+                stored.get("target_key") == target_key
+                and stored.get("captured_at") == row["captured_at"]
+                and stored.get("observed_at") == row["observed_at"]
+                and stored.get("content_hash") == content_hash,
+                "legacy_replay_conflict",
+            )
+            skipped += 1
+            continue
+        stream_sequence += 1
+        acquisition_context = dict(row.get("acquisition_context") or {})
+        acquisition_context["legacy_observation_event_id"] = legacy_event_id
+        acquisition_context["backfill_adapter"] = "adr0164_phase2"
+        event: dict[str, Any] = {
+            "schema": LEGACY_OBSERVATION_SCHEMA,
+            "event_id": stable_text_hash(f"adr0164|{legacy_event_id}|{target_key}"),
+            "event_type": row.get("event_type") or "discord.visible_text.snapshot_observed",
+            "stream_id": target_key,
+            "stream_sequence": stream_sequence,
+            "expected_previous_stream_sequence": stream_sequence - 1,
+            "specversion": "1.0",
+            "type": row.get("type") or row.get("event_type") or "discord.visible_text.snapshot_observed",
+            "subject": target_key,
+            "time": row["captured_at"],
+            "datacontenttype": row.get("datacontenttype") or "text/plain; charset=utf-8",
+            "dataschema": LEGACY_OBSERVATION_SCHEMA,
+            "captured_at": row["captured_at"],
+            "observed_at": row["observed_at"],
+            "ingested_at": ingested_at,
+            "source": str(row.get("source") or ""),
+            "url": str(row.get("url") or ""),
+            "title": str(row.get("title") or ""),
+            "target_key": target_key,
+            "content_hash": content_hash,
+            "previous_content_hash": previous_content_hash,
+            "previous_event_hash": previous_event_hash,
+            "duplicate_content": content_hash == previous_content_hash,
+            "changed": content_hash != previous_content_hash,
+            "observation_index_for_target": stream_sequence,
+            "acquisition_context": acquisition_context,
+            "text": text,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        event["event_hash"] = canonical_event_hash(event)
+        events.append(event)
+        imported[legacy_event_id] = event
+        previous_event_hash = event["event_hash"]
+        previous_content_hash = content_hash
+
+    return events, skipped
 
 
 def _build_message_events(
