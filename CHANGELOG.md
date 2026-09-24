@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- ライブラリとして `discover_discord_local_cache` / `build_cache_first_intake` を `cache_root` 省略で呼んだ場合も、CLI と同じく `DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT` > config `shared_snapshot_root` > OS 既定 の順で shared snapshot root を解決するよう修正しました (従来は import 時の OS 既定に固定され、env / config が無視されていました)。`scripts/discord_url_measure.py` も同じ resolver を使い、解決した root に `discord` を付けて参照します。旧 env `DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT` は非推奨 alias として、正規 env が未設定の場合に限り値をそのまま (`discord` を付けずに) 使い、stderr に警告を出します。正規 env と旧 env が両方設定され指す root が異なる場合は正規 env を採用し、stderr に警告 (path なし) を出します。`cache_root` 省略時は config を読むため、config が壊れている場合は `LocalConfigError` を送出します (`discord_url_measure.py` は `discord_context_bridge_local_config_error.v1` を返して終了コード 2 で停止します)。
 - `desktop-cache-export-records` を追加しました。Discord Desktop cache (Cache_Data) に残る `channels/{id}/messages` 応答を読み取り専用で `dcb.visible_message_record.v1` の NDJSON (1 target = 1 ファイル、target_key は `target_key_for_url`) へ変換し、`scripts/ingest_capture.py --input` で S1 へ取り込める形で出力します。本文が空のメッセージ・system message・server 不明 channel・DM は理由別件数を報告して除外し、S1 には書きません。
 - Knowledge Wiki projectionの日次運用runnerとWindows Task Scheduler設定スクリプトを追加しました。同時起動防止、metadata-only実行receipt、dry-run、設定照合を備え、人物・話題判断は人間レビューのまま維持します。
 

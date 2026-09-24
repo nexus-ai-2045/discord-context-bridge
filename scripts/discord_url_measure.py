@@ -4,20 +4,73 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 import codex_discord_ingress_smoke
 import discord_route_retry_decider
-
-
-DEFAULT_SNAPSHOT_ROOT = Path(
-    os.environ.get(
-        "DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT",
-        str(Path.home() / "Projects" / "Documents" / "discord" / "raw-snapshots" / "discord"),
-    )
+from discord_context_bridge.local_config import (
+    SHARED_SNAPSHOT_ROOT_ENV,
+    LocalConfigError,
+    local_config_error_payload,
+    resolve_shared_snapshot_root,
 )
+
+
+# Deprecated alias. Unlike the canonical SHARED_SNAPSHOT_ROOT_ENV (the shared
+# raw-snapshots root), this variable historically pointed at the "discord"
+# subdirectory itself, so its value is used as-is without appending "discord".
+LEGACY_SNAPSHOT_ROOT_ENV = "DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT"
+
+
+def default_snapshot_root(
+    *,
+    env: Mapping[str, str] | None = None,
+    config_path: Path | None = None,
+    home: Path | None = None,
+    warn: bool = True,
+) -> Path:
+    """Resolve the Discord snapshot root (shared root + "/discord").
+
+    Precedence (after an explicit --snapshot-root / snapshot_root argument):
+    1. env DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT -> <value>/discord
+    2. env DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT (deprecated) -> <value> as-is
+    3. config shared_snapshot_root -> <value>/discord
+    4. OS default -> ~/Projects/Documents/discord/raw-snapshots/discord
+
+    When both env vars are set and disagree, the canonical one wins and a
+    path-free warning is printed to stderr. A malformed local config (only
+    consulted in step 3) raises ``LocalConfigError``.
+    """
+    env_value = env if env is not None else os.environ
+    canonical = str(env_value.get(SHARED_SNAPSHOT_ROOT_ENV, "")).strip()
+    legacy = str(env_value.get(LEGACY_SNAPSHOT_ROOT_ENV, "")).strip()
+    if legacy and not canonical:
+        if warn:
+            print(
+                f"warning: {LEGACY_SNAPSHOT_ROOT_ENV} is deprecated; "
+                f"set {SHARED_SNAPSHOT_ROOT_ENV} to the shared raw-snapshots root instead "
+                "(without the trailing 'discord' directory).",
+                file=sys.stderr,
+            )
+        return Path(legacy).expanduser()
+    if legacy and canonical and warn:
+        if Path(canonical).expanduser() / "discord" != Path(legacy).expanduser():
+            print(
+                f"warning: both {SHARED_SNAPSHOT_ROOT_ENV} and the deprecated {LEGACY_SNAPSHOT_ROOT_ENV} "
+                f"are set and point to different roots; using {SHARED_SNAPSHOT_ROOT_ENV}. "
+                f"Unset {LEGACY_SNAPSHOT_ROOT_ENV}.",
+                file=sys.stderr,
+            )
+    resolved = resolve_shared_snapshot_root(config_path=config_path, env=env_value, home=home)
+    return resolved.path / "discord"
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -39,7 +92,9 @@ def _target_snapshot_dir(url: str, snapshot_root: Path) -> Path | None:
     return snapshot_root / "servers" / guild / "channels" / channel
 
 
-def build_cache_probe(url: str, snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT) -> dict[str, Any]:
+def build_cache_probe(url: str, snapshot_root: Path | None = None) -> dict[str, Any]:
+    if snapshot_root is None:
+        snapshot_root = default_snapshot_root()
     target_dir = _target_snapshot_dir(url, snapshot_root)
     target_present = bool(target_dir and target_dir.exists())
     snapshot_dirs_count = 0
@@ -67,7 +122,7 @@ def build_cache_probe(url: str, snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT) -> 
 def build_measurement(
     *,
     url: str,
-    snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT,
+    snapshot_root: Path | None = None,
     chrome_opened: bool = False,
     current_title: str = "Discord",
     human_state: str = "ready",
@@ -134,7 +189,16 @@ def build_measurement(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discord URL を本文なしで実測し、cache / route / 次アクションを返す。")
     parser.add_argument("--url", required=True, help="測定対象URL。出力には表示しない")
-    parser.add_argument("--snapshot-root", type=Path, default=DEFAULT_SNAPSHOT_ROOT)
+    parser.add_argument(
+        "--snapshot-root",
+        type=Path,
+        default=None,
+        help=(
+            "Discord snapshot root (shared root + /discord)。省略時は "
+            "DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT > DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT (非推奨) "
+            "> config shared_snapshot_root > OS 既定 の順で解決"
+        ),
+    )
     parser.add_argument("--chrome-opened", action="store_true")
     parser.add_argument("--current-title", default="Discord", help="現在タブtitle。出力には表示しない")
     parser.add_argument("--human-state", choices=["navigating", "ready"], default="ready")
@@ -166,9 +230,15 @@ def print_human(payload: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        snapshot_root = args.snapshot_root if args.snapshot_root is not None else default_snapshot_root()
+    except LocalConfigError as exc:
+        error_payload = local_config_error_payload(exc)
+        print(_json(error_payload) if args.json else error_payload["message"])
+        return 2
     payload = build_measurement(
         url=args.url,
-        snapshot_root=args.snapshot_root,
+        snapshot_root=snapshot_root,
         chrome_opened=args.chrome_opened,
         current_title=args.current_title,
         human_state=args.human_state,

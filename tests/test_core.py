@@ -2341,6 +2341,107 @@ def test_cache_first_intake_builds_private_book_from_saved_snapshot(tmp_path):
     assert "private saved snapshot" in book_output.read_text(encoding="utf-8")
 
 
+def _isolate_shared_snapshot_root(monkeypatch, tmp_path: Path) -> None:
+    # Keep the real HOME / user config from leaking into root resolution.
+    monkeypatch.setenv("HOME", str(tmp_path / "isolated-home"))
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_CONFIG", str(tmp_path / "missing-config.json"))
+    monkeypatch.delenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", raising=False)
+
+
+def test_discover_local_cache_without_cache_root_honors_shared_root_env(tmp_path, monkeypatch):
+    from discord_context_bridge.core import discover_discord_local_cache
+
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    shared_root = tmp_path / "shared-raw-snapshots"
+    (shared_root / "discord" / "servers" / "7" / "channels" / "8" / "capture").mkdir(parents=True)
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+
+    payload = discover_discord_local_cache("https://discord.com/channels/7/8")
+
+    assert payload["ok"] is True
+    assert payload["cache_root_present"] is True
+    assert payload["exact_channel_cache_present"] is True
+    assert str(tmp_path) not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_discover_local_cache_without_cache_root_honors_config_file(tmp_path, monkeypatch):
+    from discord_context_bridge.core import discover_discord_local_cache
+
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    shared_root = tmp_path / "configured-raw-snapshots"
+    (shared_root / "discord" / "servers" / "7" / "channels" / "8").mkdir(parents=True)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"shared_snapshot_root": str(shared_root)}), encoding="utf-8")
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_CONFIG", str(config_path))
+
+    payload = discover_discord_local_cache("https://discord.com/channels/7/8")
+
+    assert payload["ok"] is True
+    assert payload["cache_root_present"] is True
+
+
+def test_omitted_cache_root_with_malformed_config_raises_local_config_error(tmp_path, monkeypatch):
+    from discord_context_bridge.core import discover_discord_local_cache
+    from discord_context_bridge.local_config import LocalConfigError
+
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{bad", encoding="utf-8")
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_CONFIG", str(config_path))
+    url = "https://discord.com/channels/7/8"
+
+    with pytest.raises(LocalConfigError):
+        discover_discord_local_cache(url)
+    with pytest.raises(LocalConfigError):
+        build_cache_first_intake(url=url, snapshot_store=tmp_path / "missing.ndjson")
+
+    # An explicit cache_root never consults the config file.
+    assert discover_discord_local_cache(url, cache_root=tmp_path / "explicit")["ok"] is False
+
+
+def test_discover_local_cache_explicit_cache_root_overrides_env(tmp_path, monkeypatch):
+    from discord_context_bridge.core import discover_discord_local_cache
+
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    env_root = tmp_path / "env-root"
+    (env_root / "discord" / "servers" / "7" / "channels" / "8").mkdir(parents=True)
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(env_root))
+
+    payload = discover_discord_local_cache(
+        "https://discord.com/channels/7/8",
+        cache_root=tmp_path / "explicit-missing-root",
+    )
+
+    assert payload["ok"] is False
+    assert payload["cache_root_present"] is False
+
+
+def test_cache_first_intake_without_cache_root_reads_raw_cache_from_env_root(tmp_path, monkeypatch):
+    _isolate_shared_snapshot_root(monkeypatch, tmp_path)
+    shared_root = tmp_path / "shared-raw-snapshots"
+    url = "https://discord.com/channels/7/8/9"
+    exact_dir = shared_root / "discord" / "servers" / "7" / "channels" / "8"
+    snapshot_visible_text(
+        text="member-f: raw cache under the env-configured shared root",
+        url=url,
+        path=exact_dir / "text-snapshots.ndjson",
+        source="chrome_visible_message_nodes",
+    )
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+
+    payload = build_cache_first_intake(
+        url=url,
+        snapshot_store=tmp_path / "missing-saved-snapshots.ndjson",
+    )
+
+    assert payload["ok"] is True
+    assert payload["cache"]["cache_root_present"] is True
+    assert payload["cache"]["exact_channel_cache_present"] is True
+    assert payload["cache"]["raw_cache_match_count"] == 1
+    assert payload["snapshot"]["source_selected"] == "raw_cache"
+    assert payload["raw_text_returned"] is False
+
+
 def test_cli_cache_first_intake_is_metadata_only(tmp_path, capsys):
     snapshot_store = tmp_path / "text-snapshots.ndjson"
     book_output = tmp_path / "books" / "target.md"
