@@ -18,12 +18,16 @@ from .capture.store import (
     _append_store_relative_chunks,
 )
 from .full_capture import build_capture_route_policy
+from .local_config import resolve_shared_snapshot_root
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
 DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
 DEFAULT_TEXT_SNAPSHOT_STORE = Path(".local/discord-context-bridge/text-snapshots.ndjson")
 DEFAULT_ATTACHMENT_LEDGER = Path(".local/discord-context-bridge/attachment-ledger.md")
+# OS default only, evaluated at import time. Kept for backward compatibility;
+# library defaults resolve the root at call time via
+# ``local_config.resolve_shared_snapshot_root`` (env > config > OS default).
 DEFAULT_SHARED_RAW_SNAPSHOT_ROOT = Path.home() / "Projects/Documents/discord/raw-snapshots"
 DEFAULT_REST_BACKFILL_RAW_OUTPUT = Path(".local/discord-context-bridge/inbox/raw/rest-backfill.ndjson")
 DEFAULT_REST_BACKFILL_MANIFEST = Path(".local/discord-context-bridge/inbox/manifests/rest-backfill.manifest.json")
@@ -2083,7 +2087,19 @@ def _cache_channel_dir(cache_root: Path, *, guild_id: str, channel_id: str) -> P
     return cache_root / "discord" / "servers" / guild_id / "channels" / channel_id
 
 
-def discover_discord_local_cache(url: str, *, cache_root: Path = DEFAULT_SHARED_RAW_SNAPSHOT_ROOT) -> dict[str, Any]:
+def _resolve_cache_root(cache_root: Path | None) -> Path:
+    """Return ``cache_root`` if given, else the configured shared snapshot root.
+
+    Precedence matches the CLI: explicit argument > env
+    ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default.
+    """
+    if cache_root is not None:
+        return cache_root
+    return resolve_shared_snapshot_root().path
+
+
+def discover_discord_local_cache(url: str, *, cache_root: Path | None = None) -> dict[str, Any]:
     base = plan_discord_url_read(url)
     if not base.get("ok_to_open"):
         return {
@@ -2095,6 +2111,7 @@ def discover_discord_local_cache(url: str, *, cache_root: Path = DEFAULT_SHARED_
             "path_output": "omitted",
             "outbound_actions": "disabled",
         }
+    cache_root = _resolve_cache_root(cache_root)
     guild_id = str(base.get("guild_id") or "")
     channel_id = str(base.get("channel_id") or "")
     exact_dir = _cache_channel_dir(cache_root, guild_id=guild_id, channel_id=channel_id)
@@ -2172,7 +2189,7 @@ def build_cache_first_intake(
     *,
     url: str,
     snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
-    cache_root: Path = DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
+    cache_root: Path | None = None,
     book_output: Path | None = None,
 ) -> dict[str, Any]:
     from .acquisition_gate import build_acquisition_completion_gate
@@ -2191,6 +2208,7 @@ def build_cache_first_intake(
             "outbound_actions": "disabled",
         }
     target_key = target_key_for_url(url)
+    cache_root = _resolve_cache_root(cache_root)
     discovery = discover_discord_local_cache(url, cache_root=cache_root)
     guild_id = str(base.get("guild_id") or "")
     channel_id = str(base.get("channel_id") or "")
