@@ -319,7 +319,7 @@ def build_decision(
         "chrome_fallback": {
             "route": "chrome_extension",
             "auto_open": False,
-            "requires_user_go": False,
+            "requires_user_go": True,
             "reason": "secondary_fallback_only",
         },
         "text_output": "omitted",
