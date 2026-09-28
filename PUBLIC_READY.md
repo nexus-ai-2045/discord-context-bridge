@@ -1,5 +1,7 @@
 # 公開準備状況
 
+> 以下の8月の検証値は履歴です。v0.11.1の現在の候補・検証・未確認は[PREFLIGHT.md](PREFLIGHT.md)と[公開チェックリスト](PUBLIC_RELEASE_CHECKLIST.md)を参照してください。本文の過去のpassを現在の公開承認として使いません。
+
 `discord-context-bridge` の公開前レビュー用記録です。この文書だけで公開可とは
 判定せず、`PUBLIC_RELEASE_CHECKLIST.md` と現在の GitHub 状態を併せて確認します。
 

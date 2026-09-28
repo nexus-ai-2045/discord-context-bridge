@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shlex
@@ -13,7 +14,12 @@ from types import ModuleType
 import pytest
 
 from discord_context_bridge import cli
-from discord_context_bridge.process_runner import ProcessResult, minimal_child_env, run_process
+from discord_context_bridge.process_runner import (
+    PROCESS_CLEANUP_TIMEOUT,
+    ProcessResult,
+    minimal_child_env,
+    run_process,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,7 +179,7 @@ def short_process_tree_timing() -> dict[str, float]:
     timeout = 1.0
     return {
         "timeout": timeout,
-        "grandchild_write_delay": timeout + 0.3,
+        "grandchild_write_delay": timeout + PROCESS_CLEANUP_TIMEOUT + 0.5,
         "verification_margin": 0.1,
     }
 
@@ -183,10 +189,12 @@ def test_process_runner_timeout_removes_grandchild(tmp_path, short_process_tree_
     marker = tmp_path / "grandchild-survived.txt"
     write_delay = short_process_tree_timing["grandchild_write_delay"]
     child_code = (
-        "import pathlib,time; "
-        f"pathlib.Path({str(ready)!r}).write_text('started', encoding='utf-8'); "
+        "import json,os,pathlib,time; "
+        f"pathlib.Path({str(ready)!r}).write_text("
+        "json.dumps({'pid': os.getpid(), 'started_at': time.time()}), encoding='utf-8'); "
         f"time.sleep({write_delay!r}); "
-        f"pathlib.Path({str(marker)!r}).write_text('survived', encoding='utf-8')"
+        f"pathlib.Path({str(marker)!r}).write_text('survived', encoding='utf-8'); "
+        "time.sleep(5)"
     )
     parent_code = (
         "import subprocess,sys,time; "
@@ -201,7 +209,41 @@ def test_process_runner_timeout_removes_grandchild(tmp_path, short_process_tree_
 
     assert result.failure_stage == "timeout"
     assert ready.exists()
-    verification_deadline = ready.stat().st_mtime + write_delay + short_process_tree_timing["verification_margin"]
+    child_receipt = json.loads(ready.read_text(encoding="utf-8"))
+    child_pid = child_receipt["pid"]
+    assert isinstance(child_pid, int) and child_pid > 0
+    # Verify actual process state at runner return. The sentinel checks a later
+    # deadline; a write during the declared cleanup window is not a leak.
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, child_pid)  # SYNCHRONIZE only
+        if handle:
+            try:
+                assert kernel32.WaitForSingleObject(handle, 0) == 0, "grandchild still active after cleanup"
+            finally:
+                kernel32.CloseHandle(handle)
+        else:
+            assert ctypes.get_last_error() == 87, "could not verify grandchild process state"
+    else:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(child_pid)],
+            capture_output=True,
+            text=True,
+            timeout=PROCESS_CLEANUP_TIMEOUT,
+            check=False,
+        )
+        assert state.returncode in (0, 1), state.stderr
+        assert not state.stdout.strip() or state.stdout.strip().startswith("Z"), "grandchild still active after cleanup"
+    verification_deadline = child_receipt["started_at"] + write_delay + short_process_tree_timing["verification_margin"]
     time.sleep(max(0.0, verification_deadline - time.time()))
     assert not marker.exists()
 

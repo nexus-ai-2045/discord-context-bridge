@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -235,7 +236,7 @@ class CompletenessStore:
         return connection
 
     def initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS parent_targets (
@@ -348,7 +349,7 @@ class CompletenessStore:
         if len(normalized_ids) != len(set(normalized_ids)):
             raise ValueError("duplicate_thread_id")
         normalized_observed_at = _normalized_time(observed_at)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT OR IGNORE INTO parent_targets(target_key) VALUES (?)",
                 (parent_target_key,),
@@ -404,7 +405,7 @@ class CompletenessStore:
         attachments_consistent = _require_bool(
             certificate.get("attachments_consistent"), "attachments_consistent"
         )
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             parent_exists = connection.execute(
                 "SELECT 1 FROM parent_targets WHERE target_key = ?",
                 (parent_target_key,),
@@ -521,7 +522,7 @@ class CompletenessStore:
         evidence_model = "missing"
         locked_count = 0
         latest_complete = False
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             scans = connection.execute(
                 """
                 SELECT * FROM inventory_scans

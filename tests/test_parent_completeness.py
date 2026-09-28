@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -52,6 +53,59 @@ def _record_canonical_stable(store: CompletenessStore, target: str, parent_kind:
             parent_kind=parent_kind,
             scope_receipts=_canonical_receipts(target, private=parent_kind == "text"),
         )
+
+
+class _TrackingCompletenessStore(CompletenessStore):
+    def __init__(self, path):
+        super().__init__(path)
+        self.connections = []
+
+    def _connect(self):
+        connection = super()._connect()
+        self.connections.append(connection)
+        return connection
+
+
+def _assert_connections_closed(store):
+    assert store.connections
+    for connection in store.connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_store_commits_and_closes_each_operation(tmp_path):
+    database = tmp_path / "capture.sqlite3"
+    store = _TrackingCompletenessStore(database)
+    store.initialize()
+    target = "fixture-parent"
+    _record_canonical_stable(store, target, "announcement")
+    store.record_child_certificate(target, "t1", _full_certificate("c1"))
+    store.record_child_certificate(target, "t2", _full_certificate("c2"))
+    assert store.audit_parent(target)["parent_full_capture_confirmed"] is True
+    _assert_connections_closed(store)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM inventory_scans").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM child_capture_certificates").fetchone()[0] == 2
+    # Windowsでも全handleが閉じられ、fixtureを置換できる。
+    database.rename(tmp_path / "closed.sqlite3")
+
+
+def test_store_rolls_back_and_closes_on_database_error(tmp_path):
+    database = tmp_path / "capture.sqlite3"
+    store = _TrackingCompletenessStore(database)
+    store.initialize()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "CREATE TRIGGER reject_fixture_scan BEFORE INSERT ON inventory_scans "
+            "BEGIN SELECT RAISE(ABORT, 'fixture scan rejected'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="fixture scan rejected"):
+        _record_canonical_stable(store, "fixture-parent", "announcement")
+    _assert_connections_closed(store)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM parent_targets").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM inventory_scans").fetchone()[0] == 0
+    database.rename(tmp_path / "rolled-back.sqlite3")
 
 
 def test_announcement_parent_requires_no_private_archive_scope(tmp_path):

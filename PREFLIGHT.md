@@ -2,6 +2,20 @@
 
 # 公開準備状況
 
+## v0.11.1候補（2026-09-29）
+
+- base main: `ff3df4ee0430cc3e2bb86750d71ec0e7d0486397`（PR #73統合済み）
+- reviewed code candidate: `5c51756e26c2d30cdcd627a9e788c1be9d1880f7`。この記録を追加する文書commitは検査対象code commitと区別する。
+- README: 現在の機能・制約を更新済み。読みやすさ検査と前回tag `v0.11.0`からの内容更新検査が成功。
+- code review: 内部ブラウザ既定・Windows検証・SQLite接続管理を独立レビューし、未解消指摘なし。
+- local verification: release profileの全pytest成功。Windowsの対象43件、process runner20件、SQLite53件成功。後続のlocal runtime driftとSQLite smoke失敗は、それぞれ公式skill同期と接続close修正後に再確認して成功。
+- dependency audit: 新規解決したcore＋optional MCPの30依存は既知脆弱性0件。現在の共有Python環境には古い依存が残るため、新規解決の監査結果を既存環境の安全保証に流用しない。
+- Windows private保存: fixtureの保存往復は確認済み、ACLは別確認。`permission_verification=not_verified`を成功へ丸めない。
+- remote CI: このrelease準備branchの同一HEAD CIはPR作成後に確認する。
+- public release: `v0.11.1` tag／GitHub Releaseは未作成。公開内容とREADMEの人間レビュー後、承認されたmain SHAで作成する。
+
+## 過去の検証記録（2026-08-14）
+
 - base main: 424a7da47446dc7a1e660346483c3444c7fbfe65 (PR #58 merge tip)
 - reviewed candidate: 4112ef0 (residual closeout、PREFLIGHT更新前のcode/docs tip)
 - 確認日時: 2026-08-14

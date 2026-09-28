@@ -1,6 +1,6 @@
 [project]
 name = "discord-context-bridge"
-version = "0.11.0"
+version = "0.11.1"
 description = "Discord の可視会話テキストを扱う local-first な文脈 bridge"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.28,<3"]
+mcp = ["mcp>=1.28.1,<3"]
 
 [project.scripts]
 discord-context-bridge = "discord_context_bridge.cli:main"

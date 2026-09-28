@@ -2,7 +2,7 @@
 
 Discordで読める会話をローカルに保存し、AIが安全に理解・確認できる文脈へ変換します。
 
-![Discord Context Bridgeの流れ](https://raw.githubusercontent.com/nexus-ai-2045/discord-context-bridge/main/docs/assets/readme-flow.svg)
+[![Discord Context Bridgeの流れ](https://raw.githubusercontent.com/nexus-ai-2045/discord-context-bridge/main/docs/assets/readme-flow.svg)](docs/operating-contract.md)
 
 | 見つける | 保存する | 理解する | 判断する |
 |---|---|---|---|
@@ -11,6 +11,10 @@ Discordで読める会話をローカルに保存し、AIが安全に理解・�
 > [!IMPORTANT]
 > Discord Context Bridge（DCB）のpublic coreは、Discordへ投稿しません。token、cookie、webhook、実ID、参加者名、会話本文を公開出力へ含めません。
 
+## 目的
+
+分散したDiscord会話を読み直す負担を減らし、返信や次の行動を決める時に、保存範囲・鮮度・参照の根拠を確認できるようにします。
+
 ## できること
 
 - 会話の目的、前提、決定事項を整理する
@@ -18,12 +22,24 @@ Discordで読める会話をローカルに保存し、AIが安全に理解・�
 - 保存済み会話の範囲と鮮度を確認する
 - CLI、runtime skill/plugin、MCPから同じ安全境界で使う
 
-## 最短で使う
+## v0.11.1の変更
+
+Codexでは、APIやprivate inboxが使えない時の可視取得に内部ブラウザを優先します。Chrome拡張は二次fallbackです。取得後の保存確認と人間承認の境界を維持し、ブラウザを自動起動しません。
+
+公開履歴は[GitHub Releases](https://github.com/nexus-ai-2045/discord-context-bridge/releases)、取得経路の契約は[運用契約](docs/operating-contract.md)を参照してください。
+
+## クイックスタート
+
+AIエージェントへ[このリポジトリ](https://github.com/nexus-ai-2045/discord-context-bridge)を渡し、「先に危険レビューしてください。削除、GitHub書込み（write）、公開範囲（visibility）、認証情報（secret）、未確認（unknown）を安全だと決めつけず、READMEと運用契約を読んで保存先と取得経路を確認してください。外部送信・設定変更・公開の前に人間レビューを通してください」と依頼してください。
+
+## 手動導入
+
+手動で使う場合は下表と詳細リファレンスを参照してください。
 
 | 手順 | 操作 | 結果 |
 |---:|---|---|
 | 1 | Python 3.11以上でインストールする | CLIが利用可能になる |
-| 2 | Discordの可視テキストをprivateなファイルへ用意する | tokenやcookieを使わず入力できる |
+| 2 | Codex内部ブラウザの可視DOM、またはprivateなファイルを入力にする | tokenやcookieを抽出せず入力できる |
 | 3 | `bridge-intake`へURLとファイルを渡す | 保存・取得範囲確認・文脈整理が一度に進む |
 
 インストール: `python -m pip install .`
@@ -60,6 +76,7 @@ Discordで読める会話をローカルに保存し、AIが安全に理解・�
 - `send_message()`は無効化し、`pr_scope_guard.py`でpublic／private差分を検査する
 - Chrome profileからuser token、cookie、localStorageを抽出しない
 - OCR、screenshot、headless browserを本文取得の既定経路にしない
+- Windowsの保存先はファイルアクセス権（ACL）を別途確認する。POSIXの権限数値だけでprivate保存を保証しない
 - 公開、外部共有、repository visibility変更には人間レビューと明示承認を求める
 
 ### Discord Desktop 通知 metadata probe
