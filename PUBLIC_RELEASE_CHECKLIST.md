@@ -33,7 +33,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
 - release準備ではREADMEの現在の機能・制約、`pyproject.toml`、`CHANGELOG.md`を更新して検証する。tagは承認された統合commitに対して公開時に作成する。既存version runnerの`--write`と`--tag`を、レビュー前のtag作成に使わない。
-- `python3 scripts/bump_version.py --check --require-current-tag` が release 前に成功している。
+- 公開前は `python3 scripts/bump_version.py --check`、tag公開後の再読取では `--check --require-current-tag` が成功している。検証のためだけに未承認tagを先に公開しない。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。
 - MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
