@@ -141,7 +141,7 @@ def write_private_inventory(
     *,
     parent_target_key: str,
 ) -> None:
-    """privateなスレッドメタデータをmode 0600でatomic保存する。"""
+    """スレッドメタデータをatomic保存する。POSIXは0600、Windows ACLは保存先契約。"""
 
     if not parent_target_key.strip():
         raise ArchiveInventoryError("inventory_binding_required")
@@ -348,7 +348,7 @@ def build_scope_receipts_inventory(
 
 
 def write_private_scope_receipts(path: Path, payload: Mapping[str, Any]) -> None:
-    """scope receipt正本をmode 0600でatomic保存する。"""
+    """scope receiptをatomic保存する。POSIXは0600、Windows ACLは保存先契約。"""
 
     if payload.get("schema") != "dcb.parent-thread-scope-receipts.v1":
         raise ArchiveInventoryError("scope_receipts_schema_invalid")

@@ -8,6 +8,7 @@
 
 - Codex内部ブラウザを可視取得の既定fallbackにしました。API / private inboxの取得順序と保存確認を維持し、Chrome拡張は人間承認が必要な二次fallbackとして扱います。旧Chrome既定の契約文言と生成runtime skillの矛盾を解消しました。
 - READMEを現在の取得経路へ更新し、図から契約の根拠へ辿れるようにしました。
+- Windowsの保存往復とPOSIXの権限検査を区別し、Windows ACL未検証を完了扱いにしない検証へ修正しました。プロセス回収テストは既存cleanup budgetに合わせて停止完了を確認します。
 
 ## v0.11.0公開分の追補（2026-09-25）
 

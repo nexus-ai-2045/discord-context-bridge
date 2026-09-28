@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
 import tempfile
 from contextlib import redirect_stdout
@@ -66,6 +67,14 @@ def run_smoke() -> dict[str, object]:
                 "--json",
             ]
         )
+        metadata = private_inventory.stat()
+        # Windowsのstat modeはDACLの証明にならない。fixture動作と権限保証を分ける。
+        permission_verification = (
+            "not_verified" if os.name == "nt"
+            else "passed" if stat.S_IMODE(metadata.st_mode) == 0o600
+            else "failed"
+        )
+        stored = json.loads(private_inventory.read_text(encoding="utf-8"))
         complete_ok = bool(
             exit_code == 0
             and report.get("pagination_exhausted") is True
@@ -74,7 +83,10 @@ def run_smoke() -> dict[str, object]:
             and report.get("path_output") == "omitted"
             and report.get("outbound_actions") == "disabled"
             and "must-not-leak" not in rendered
-            and stat.S_IMODE(private_inventory.stat().st_mode) == 0o600
+            and stat.S_ISREG(metadata.st_mode)
+            and permission_verification != "failed"
+            and stored.get("parent_target_key") == "2"
+            and len(stored.get("scopes", {}).get("public", {}).get("threads", [])) == 2
         )
 
         limited_exit, limited_report, limited_rendered = _invoke(
@@ -102,6 +114,8 @@ def run_smoke() -> dict[str, object]:
         return {
             "schema": "dcb.archived-thread-inventory-smoke.v1",
             "ok": complete_ok and fail_closed_ok,
+            "verification_scope": "fixture_behavior_only",
+            "permission_verification": permission_verification,
             "all_scopes_exhausted_ok": complete_ok,
             "page_limit_fail_closed_ok": fail_closed_ok,
             "raw_text_returned": False,

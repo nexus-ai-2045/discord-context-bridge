@@ -76,6 +76,7 @@ AIエージェントへ[このリポジトリ](https://github.com/nexus-ai-2045/
 - `send_message()`は無効化し、`pr_scope_guard.py`でpublic／private差分を検査する
 - Chrome profileからuser token、cookie、localStorageを抽出しない
 - OCR、screenshot、headless browserを本文取得の既定経路にしない
+- Windowsの保存先はファイルアクセス権（ACL）を別途確認する。POSIXの権限数値だけでprivate保存を保証しない
 - 公開、外部共有、repository visibility変更には人間レビューと明示承認を求める
 
 ### Discord Desktop 通知 metadata probe

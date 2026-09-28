@@ -18,6 +18,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 - maintainer machine の local absolute path が public docs / tests にない。
 - private `.env`、browser profile、database、cache、event store がない。
 - local context library は `.local/discord-context-bridge/context-library.json` などの非公開領域に置き、実データを commit しない。
+- `0600`はPOSIXの検査条件。Windowsは指定したprivateフォルダーのACLを別途確認する。fixtureの保存往復成功を、Windowsのアクセス権検証成功として扱わない。
 
 ## Language Boundary
 
@@ -31,7 +32,7 @@ Discord Context Bridge を public repository に出す前に、この checklist 
 ## Package Boundary
 
 - pyproject の version と CHANGELOG が今回の public capability を表している。
-- release version は `python3 scripts/bump_version.py --part patch|minor|major --write --tag` で採番し、`pyproject.toml`、`CHANGELOG.md`、`vX.Y.Z` tag を同時更新している。
+- release準備ではREADMEの現在の機能・制約、`pyproject.toml`、`CHANGELOG.md`を更新して検証する。tagは承認された統合commitに対して公開時に作成する。既存version runnerの`--write`と`--tag`を、レビュー前のtag作成に使わない。
 - `python3 scripts/bump_version.py --check --require-current-tag` が release 前に成功している。
 - Browser login と account automation は、この public nucleus の scope 外。
 - outbound sending は既定で disabled で、この package には実装経路がない。

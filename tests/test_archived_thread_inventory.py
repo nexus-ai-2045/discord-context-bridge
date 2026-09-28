@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sqlite3
 import stat
 import urllib.error
@@ -99,7 +100,8 @@ def test_private_writers_survive_without_fchmod(tmp_path, monkeypatch):
     monkeypatch.delattr(archive_inventory.os, "fchmod", raising=False)
     receipts = tmp_path / "receipt.json"
     metadata = tmp_path / "meta.json"
-    write_private_scope_receipts(receipts, _sized_scope_receipt(2000))
+    receipt_payload = _sized_scope_receipt(2000)
+    write_private_scope_receipts(receipts, receipt_payload)
     write_private_inventory(
         metadata,
         [{"scope": "public", "pagination_exhausted": True, "threads": []}],
@@ -107,6 +109,16 @@ def test_private_writers_survive_without_fchmod(tmp_path, monkeypatch):
     )
     assert receipts.is_file() and receipts.stat().st_size > 0
     assert metadata.is_file() and metadata.stat().st_size > 0
+    assert json.loads(receipts.read_text(encoding="utf-8")) == receipt_payload
+    assert json.loads(metadata.read_text(encoding="utf-8"))["parent_target_key"] == "fixture-parent"
+    # 既存ファイルのatomic置換でも内容と一時ファイルの後始末を確認する。
+    replacement = _sized_scope_receipt(2100)
+    write_private_scope_receipts(receipts, replacement)
+    write_private_inventory(metadata, [], parent_target_key="replacement-parent")
+    assert json.loads(receipts.read_text(encoding="utf-8")) == replacement
+    assert json.loads(metadata.read_text(encoding="utf-8"))["parent_target_key"] == "replacement-parent"
+    assert not list(tmp_path.glob(".receipt.json.*"))
+    assert not list(tmp_path.glob(".meta.json.*"))
 
 
 def test_generic_private_json_limit_remains_one_megabyte(tmp_path):
@@ -205,7 +217,24 @@ def _load_script(repo: Path):
     return module
 
 
-def test_fixture_cli_writes_private_inventory_mode_0600(tmp_path: Path, capsys) -> None:
+def test_fixture_smoke_reports_permission_verification_scope(monkeypatch) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(repo / "scripts"))
+    spec = importlib.util.spec_from_file_location(
+        "archived_thread_inventory_smoke", repo / "scripts" / "archived_thread_inventory_smoke.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.run_smoke()
+    assert result["ok"] is True
+    assert result["verification_scope"] == "fixture_behavior_only"
+    assert result["permission_verification"] == ("not_verified" if os.name == "nt" else "passed")
+    assert result["identifiers_returned"] is False
+    assert result["raw_text_returned"] is False
+
+
+def test_fixture_cli_writes_private_inventory_roundtrip(tmp_path: Path, capsys) -> None:
     repo = Path(__file__).resolve().parents[1]
     module = _load_script(repo)
     fixture = tmp_path / "fixture.json"
@@ -237,7 +266,9 @@ def test_fixture_cli_writes_private_inventory_mode_0600(tmp_path: Path, capsys) 
     assert exit_code == 0
     assert report["pagination_exhausted"] is True
     assert report["identifiers_returned"] is False
-    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert stat.S_ISREG(output.stat().st_mode)
+    if os.name != "nt":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
     private = json.loads(output.read_text(encoding="utf-8"))
     assert private["parent_target_key"] == "2"
     assert private["scopes"]["public"]["threads"][0]["id"] == "1"
@@ -435,7 +466,9 @@ def test_canonical_fixture_cli_saves_private_receipts_and_public_output_is_safe(
     assert stored["scope_receipts"]["active_filtered"]["thread_ids"] == [
         "private-active-id"
     ]
-    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert stat.S_ISREG(output.stat().st_mode)
+    if os.name != "nt":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("url", [
