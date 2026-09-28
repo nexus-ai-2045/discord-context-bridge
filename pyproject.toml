@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.28,<3"]
+mcp = ["mcp>=1.28.1,<3"]
 
 [project.scripts]
 discord-context-bridge = "discord_context_bridge.cli:main"
