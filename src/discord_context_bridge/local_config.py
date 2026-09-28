@@ -18,6 +18,20 @@ class LocalConfigError(ValueError):
     pass
 
 
+def local_config_error_payload(exc: LocalConfigError) -> dict[str, Any]:
+    """Metadata-only payload for an unreadable local config (no path or file contents)."""
+    return {
+        "language": "ja",
+        "schema": "discord_context_bridge_local_config_error.v1",
+        "ok": False,
+        "state": "blocked",
+        "reason": str(exc),
+        "message": "ローカルcache設定を読めません。JSON形式と読取権限を確認してください。",
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
 @dataclass(frozen=True)
 class ResolvedLocalPath:
     path: Path
