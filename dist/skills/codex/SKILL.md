@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 8be986750d22ead0d314e2d4f40b71579cda94f3
+ssot_commit: 504852b53a086dd92b7af4ea7543ea65c4fafa93
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 6478e89ccf45ccb10d6c176dfefad963e1290e636ab164578577c484087a19ac
-contract_checksum: 27fedfad10026063ef08027333439efda61a41638dd9eae91be8f80535a770ee
-generated_at: 2026-09-23T13:35:43+00:00
+contract_checksum: de81587d5a47d65e92e24175416b319660af07df21eb50a7d08c99db05b8bde4
+generated_at: 2026-09-28T17:47:08+00:00
 runtime_target: codex
 ---
 
@@ -37,7 +37,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
 - Codex内部ブラウザ（`in_app_browser`）を可視ブラウザ経路の既定にする。API / inbox / private adapter が利用できない場合は、DCB preflight後に内部ブラウザの既存タブを使う。Chrome拡張は内部ブラウザが利用できない場合の二次fallbackとして扱い、自動で開かない。
 - Chrome visible fallback では、本文読取や新規タブ作成より先に `browser.user.openTabs()` 相当の棚卸しを `chrome_visible_fallback_guard.py` に通す。対象URLの既存タブがあれば claim し、対象外の Discord タブしかない場合も既存Discordタブを claim して対象URLへ移動する。再利用可能な Discord タブがない場合だけ、既存Chromeウィンドウ内で新規タブを開く。
-- Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。既定は cic（claude-in-chrome）可視DOM、貼り付け/ファイル、Discord Desktop cache、macOS Accessibility とする。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
+- Discord 文脈取得では Playwright / headless browser / 新規 browser profile を既定経路にしない。Codexの可視ブラウザ経路は内部ブラウザを既定とし、他runtimeは利用可能な既存adapterを使う。貼り付け/ファイル、Discord Desktop cache、macOS Accessibilityも既存経路として保持する。Playwright はユーザー明示、または Discord 本文取得ではない周辺UIの限定調査だけに使う。
 - `discord-context-bridge` の Discord URL / 返信下書き workflow では、別プロジェクトの Discord bot、ai-party、ChatGPT connector、外部 MCP を自動探索しない。既定の順序で未設定なら DCB 内の fallback reason を返し、スコープを広げる時はユーザーの明示承認を取る。
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
