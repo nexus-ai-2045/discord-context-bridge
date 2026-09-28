@@ -171,6 +171,7 @@ def build_measurement(
             "decision": route["decision"],
             "selected_route": route["selected_route"],
             "chrome_fallback": route["chrome_fallback"],
+            "browser_fallback": route["browser_fallback"],
             "raw_discord_text_output": "omitted",
         },
         "next_action": next_action,

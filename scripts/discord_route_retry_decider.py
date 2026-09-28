@@ -236,7 +236,7 @@ def fallback_message(routes: dict[str, Any]) -> str:
         stage = route.get("failure_stage") or "unavailable"
         route_states.append(f"{name}:{stage}")
     tried = " / ".join(route_states)
-    return f"{tried} では Discord 本文を取得できませんでした。Chrome / visible fallback に切り替えますか？"
+    return f"{tried} では Discord 本文を取得できませんでした。Codex内部ブラウザのvisible fallbackに切り替えますか？"
 
 
 def build_decision(
@@ -295,7 +295,7 @@ def build_decision(
         "ok": decision != "ask_browser_fallback",
         "decision": decision,
         "selected_route": selected_route,
-        "route_priority": ["gateway_live_event", "rest_backfill", "bot_text_event_inbox", "chrome_visible_fallback"],
+        "route_priority": ["gateway_live_event", "rest_backfill", "bot_text_event_inbox", "in_app_browser_fallback", "chrome_visible_fallback"],
         "attempt_budget": {
             "api_route_attempts": max(1, attempts),
             "api_route_timeout_seconds": timeout,
@@ -310,10 +310,17 @@ def build_decision(
             "message": prompt,
             "requires_user_go": True,
         },
-        "chrome_fallback": {
+        "browser_fallback": {
+            "route": "in_app_browser",
             "auto_open": False,
             "requires_user_go": decision == "ask_browser_fallback",
             "reason": "api_or_inbox_route_unavailable" if decision == "ask_browser_fallback" else None,
+        },
+        "chrome_fallback": {
+            "route": "chrome_extension",
+            "auto_open": False,
+            "requires_user_go": True,
+            "reason": "secondary_fallback_only",
         },
         "text_output": "omitted",
         "outbound_actions": "disabled",
@@ -378,7 +385,7 @@ def print_human(payload: dict[str, Any]) -> None:
     print(f"selected_route: {payload['selected_route']}")
     if payload.get("fallback_prompt"):
         print(f"fallback_prompt: {payload['fallback_prompt']}")
-    print("chrome_auto_open: false")
+    print("browser_fallback: in_app_browser (auto_open=false)")
     print("text_output: omitted")
     print("outbound_actions: disabled")
 

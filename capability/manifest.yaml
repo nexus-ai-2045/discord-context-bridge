@@ -47,7 +47,7 @@ required_commands:
   - command: coverage-report
     purpose: Discord URL / target_key の coverage と freshness を本文なしで確認する
   - command: python3 scripts/chrome_visible_fallback_guard.py --json
-    purpose: Chrome visible fallback の前に既存Discordタブ棚卸しを評価し、対象タブclaimまたは既存Discordタブclaim+target navigationで新規タブ作成を迂回する
+    purpose: Codex内部ブラウザを既定経路として試した後、Chrome二次fallbackの前に既存Discordタブ棚卸しを評価する
   - command: import-visible-text
     purpose: 可視テキストをローカル event store に取り込む
   - command: context-passport
