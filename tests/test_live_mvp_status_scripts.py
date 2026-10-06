@@ -328,6 +328,7 @@ def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch,
     monkeypatch.delenv(BOT_TOKEN_ENV, raising=False)
     configure_test_secret_command(monkeypatch, "print(12345)")
     monkeypatch.setattr(discord_rest_backfill, "fetch_discord_messages", fake_fetch_discord_messages)
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(tmp_path))
     raw_output = tmp_path / "raw.ndjson"
     manifest_output = tmp_path / "manifest.json"
 
@@ -353,7 +354,8 @@ def test_rest_backfill_uses_secret_command_provider_without_leaking(monkeypatch,
     assert "secret-command private text" not in output
 
 
-def test_rest_backfill_fixture_writes_private_artifacts_without_stdout_text(tmp_path: Path, capsys):
+def test_rest_backfill_fixture_writes_private_artifacts_without_stdout_text(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(tmp_path))
     fixture = tmp_path / "messages.jsonl"
     fixture.write_text(
         json.dumps(

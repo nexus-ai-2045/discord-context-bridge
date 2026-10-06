@@ -151,7 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         print(_json(blocked_payload("discord_channel_url_required")))
         return 2
 
-    config_safety = rest_backfill_config_safety(" ".join(str(part) for part in [args.fixture_input or "", args.raw_output, args.manifest_output]))
+    config_safety = rest_backfill_config_safety(
+        fixture_input=args.fixture_input, raw_output=args.raw_output, manifest_output=args.manifest_output,
+    )
     if not config_safety["ok"]:
         payload = blocked_payload("unsafe_backfill_config")
         payload["config_safety"] = config_safety
