@@ -18,7 +18,7 @@ from .capture.store import (
     _append_store_relative_chunks,
 )
 from .full_capture import build_capture_route_policy
-from .local_config import resolve_shared_snapshot_root
+from .local_config import LocalConfigError, is_cross_device_working_store, resolve_shared_snapshot_root
 
 DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
 DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
@@ -2297,7 +2297,13 @@ def build_cache_first_intake(
     }
 
 
-def rest_backfill_config_safety(value: str) -> dict[str, Any]:
+def rest_backfill_config_safety(
+    value: str = "",
+    *,
+    fixture_input: Path | None = None,
+    raw_output: Path | None = None,
+    manifest_output: Path | None = None,
+) -> dict[str, Any]:
     """Classify unsafe REST backfill configuration without returning secrets."""
     text = value or ""
     blockers: list[str] = []
@@ -2311,6 +2317,50 @@ def rest_backfill_config_safety(value: str) -> dict[str, Any]:
         blockers.append("chrome_profile_or_storage_reference_in_config")
     if LOCAL_ABSOLUTE_PATH_RE.search(text) and ("chrome" in text.casefold() or "discord" in text.casefold()):
         blockers.append("credential_bearing_local_path_in_config")
+    paths = {"fixture_input": fixture_input, "raw_output": raw_output, "manifest_output": manifest_output}
+    if any(path is not None for path in paths.values()):
+        try:
+            roots = (
+                resolve_shared_snapshot_root().path.expanduser().resolve(),
+                Path.cwd().resolve() / ".local/discord-context-bridge",
+            )
+            for role, path in paths.items():
+                if path is None:
+                    continue
+                resolved = path.expanduser().resolve()
+                # Check both the supplied path and its target: an innocent alias must
+                # never turn credential storage into a fixture or output location.
+                for candidate in (path, resolved):
+                    path_text = str(candidate)
+                    credential_storage = re.search(
+                        r"(?:^|[\\/])(?:Local Storage|Session Storage|IndexedDB|leveldb|"
+                        r"Login Data|Web Data|Network|Keychains?|\.env(?:\.[^\\/]+)?|"
+                        r"storage[_-]state\.json)(?:[\\/]|$)",
+                        path_text, re.IGNORECASE,
+                    )
+                    app_storage = re.search(
+                        r"(?:Application Support[\\/](?:discord(?:canary|ptb)?|Google[\\/]Chrome)|"
+                        r"(?:AppData[\\/](?:Roaming|Local)|\.config)[\\/]"
+                        r"(?:discord(?:canary|ptb)?|google-chrome|chromium)|Chrome[\\/]User Data)",
+                        path_text, re.IGNORECASE,
+                    )
+                    if credential_storage or app_storage:
+                        blockers.append("credential_bearing_local_path_in_config")
+                    # Retain token/header/cookie/profile detection per argument,
+                    # excluding only the legacy absolute-path substring heuristic.
+                    scalar = rest_backfill_config_safety(path_text)
+                    blockers.extend(b for b in scalar["blockers"] if b != "credential_bearing_local_path_in_config")
+                if role == "fixture_input":
+                    if not resolved.is_file():
+                        blockers.append("fixture_input_file_required")
+                elif not (
+                    (is_cross_device_working_store(resolved, shared_root=roots[0]) and resolved != roots[0])
+                    or (resolved.is_relative_to(roots[1]) and resolved != roots[1])
+                ):
+                    blockers.append("private_output_root_required")
+        except (LocalConfigError, OSError, RuntimeError, ValueError):
+            blockers.append("private_path_resolution_failed")
+    blockers = list(dict.fromkeys(blockers))
     return {
         "schema": "discord_rest_backfill_config_safety.v1",
         "ok": not blockers,
