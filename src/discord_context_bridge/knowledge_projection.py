@@ -18,7 +18,7 @@ from .core import (
     TIMESTAMP_METADATA_RE,
     TIMESTAMP_RE,
     DiscordEvent,
-    load_text_snapshots,
+    load_content_snapshot_records,
 )
 
 
@@ -750,7 +750,7 @@ def export_knowledge_projection(
             "paths_returned": False,
             "dry_run": dry_run,
         }
-    records = load_text_snapshots(snapshot_store)
+    records = load_content_snapshot_records(snapshot_store)
     person_aliases, reviewed_person_alias_count = _load_person_registry(
         person_registry
     )

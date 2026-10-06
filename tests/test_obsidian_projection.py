@@ -5,6 +5,7 @@ from pathlib import Path
 
 from discord_context_bridge.cli import main
 from discord_context_bridge.obsidian_projection import export_obsidian_projection
+from discord_context_bridge import core
 
 
 def _write_snapshot(path: Path, *, sequence: int, text: str, content_hash: str) -> None:
@@ -55,6 +56,34 @@ def test_export_uses_latest_snapshot_and_creates_obsidian_views(tmp_path):
     assert "--output-root <OBSIDIAN_OUTPUT_ROOT>" in home
     assert (output_root / "Views" / "Discord取得一覧.base").exists()
     assert next(channel_root.glob("* 概要.md")).exists()
+
+
+def test_export_does_not_replace_body_with_revocation(tmp_path):
+    store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    url = "https://discord.com/channels/12345678901234567/23456789012345678/threads/34567890123456789"
+    alias = "https://discord.com/channels/12345678901234567/34567890123456789"
+    core.snapshot_visible_text(text="member-a: 有効な本文", url=url, path=store)
+    core.snapshot_visible_text(text="member-a: 最後の有効本文", url=url, path=store)
+    previous = core.load_text_snapshots(store)[-1]
+    bad = dict(previous)
+    bad.update(event_id="bad-obsidian-event", url=alias,
+               stream_id=core.target_key_for_url(alias), stream_sequence=3,
+               expected_previous_stream_sequence=2,
+               previous_event_hash=previous["event_hash"],
+               previous_content_hash=previous["content_hash"],
+               content_hash=core.stable_text_hash("無効な本文"), text="無効な本文")
+    for key in ("target_key", "subject", "dataschema", "type", "datacontenttype"):
+        bad.pop(key, None)
+    with store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(bad, ensure_ascii=False) + "\n")
+    core.revoke_invalid_snapshot_observation(store)
+
+    result = export_obsidian_projection(snapshot_store=store, output_root=output_root)
+    rendered = "\n".join(path.read_text(encoding="utf-8") for path in output_root.glob("Channels/**/*.md"))
+    assert result["projected_target_count"] == 1
+    assert "最後の有効本文" in rendered
+    assert "無効な本文" not in rendered
 
 
 def test_export_is_incremental_and_preserves_human_notes(tmp_path):
