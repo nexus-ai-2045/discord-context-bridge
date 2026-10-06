@@ -317,9 +317,15 @@ def snapshot_record_matches(record: dict[str, Any], *, url: str, target_key: str
 
 
 def matching_snapshot_records(path: Path, *, url: str, target_key: str) -> list[dict[str, Any]]:
+    records = load_snapshot_like_records(path)
+    if any(
+        record.get("event_type") == "discord.snapshot_store.invalid_observation_revoked"
+        for record in records
+    ):
+        records = load_content_snapshot_records(path)
     return [
         record
-        for record in load_snapshot_like_records(path)
+        for record in records
         if snapshot_record_matches(record, url=url, target_key=target_key)
     ]
 
@@ -1435,6 +1441,24 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
     return snapshots
 
 
+def load_content_snapshot_records(path: Path) -> list[dict[str, Any]]:
+    """正式ledgerを検証し、本文ではない失効証拠と失効対象を除いた観測を返す。"""
+    snapshots = load_text_snapshots(path)
+    if not any(
+        "expected_previous_stream_sequence" in row
+        or row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked"
+        for row in snapshots
+    ):
+        return snapshots
+    _validate_text_snapshot_chain(snapshots)
+    _verify_physical_revocation_hashes(path, snapshots)
+    excluded: set[int] = set()
+    for index, row in enumerate(snapshots):
+        if row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked":
+            excluded.update((index - 1, index))
+    return [row for index, row in enumerate(snapshots) if index not in excluded]
+
+
 def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
     if not _is_chained_text_snapshot(snapshot):
         return str(snapshot.get("target_key") or snapshot.get("stream_id") or "")
@@ -1665,6 +1689,7 @@ def _validate_text_snapshot_chain(
         if not stream_id:
             if _is_chained_text_snapshot(snapshot):
                 raise CheckpointCorruptError("snapshot stream binding is missing")
+            index += 1
             continue
         previous_sequence, previous_hash = heads.get(stream_id, (0, ""))
         next_sequence = previous_sequence + 1
@@ -2717,7 +2742,11 @@ def snapshot_visible_text(
         return snapshot
 
     _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
-    snapshot_count = sum(1 for item in read_back if _snapshot_stream_id(item) == target_key)
+    snapshot_count = sum(
+        1
+        for item in load_content_snapshot_records(Path(path))
+        if _snapshot_stream_id(item) == target_key
+    )
     previous_hash = snapshot["previous_content_hash"]
     changed = bool(snapshot["changed"])
     return {
