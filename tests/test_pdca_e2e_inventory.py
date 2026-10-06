@@ -104,7 +104,7 @@ def test_dry_run_lists_all_cases_without_url_or_paths(capsys) -> None:
     rendered = capsys.readouterr().out
     payload = json.loads(rendered)
     assert result == 0
-    assert payload["case_count"] == 8
+    assert payload["case_count"] == 9
     assert {case["case_id"] for case in payload["cases"]} >= {
         "fixture_13_step",
         "ops_fast",
@@ -131,6 +131,35 @@ def test_ops_fast_is_opt_in_to_avoid_nested_orchestrators() -> None:
     )
     assert next(spec for spec in default_specs if spec.case_id == "ops_fast").enabled is False
     assert next(spec for spec in explicit_specs if spec.case_id == "ops_fast").enabled is True
+
+
+def test_live_read_stage_case_is_absent_by_default_and_added_only_for_explicit_observation(tmp_path) -> None:
+    default_specs = pdca_e2e_inventory.build_case_specs(
+        python_executable=sys.executable,
+        url=None,
+        include_desktop_cache=False,
+    )
+    default_case = next(spec for spec in default_specs if spec.case_id == "chrome_observation_contract")
+    assert default_case.enabled is False
+    assert default_case.skip_reason == "live_observation_not_supplied_and_runtime_not_verified"
+
+    observation = tmp_path / "observation.json"
+    explicit_specs = pdca_e2e_inventory.build_case_specs(
+        python_executable=sys.executable,
+        url=None,
+        include_desktop_cache=False,
+        live_read_observation=observation,
+    )
+    case = next(spec for spec in explicit_specs if spec.case_id == "chrome_observation_contract")
+    assert case.enabled is True
+    assert str(observation) in case.command
+
+
+def test_report_explicitly_disclaims_live_browser_verification() -> None:
+    report = pdca_e2e_inventory.build_report([])
+
+    assert report["overall"] == "passed"
+    assert report["live_read_verified"] is False
 
 
 def test_cache_inventory_case_only_uses_supported_cli_flags() -> None:

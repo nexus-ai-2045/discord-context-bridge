@@ -73,7 +73,14 @@ def test_cache_inventory_can_include_private_title_and_marks_stale(tmp_path: Pat
     )
 
     assert payload["decision"] == "refresh_exact_url_snapshot"
+    assert payload["state"] == "stale_snapshot"
     assert payload["freshness"]["status"] == "stale"
+    assert payload["current_context"] == {
+        "ready": False,
+        "status": "refresh_required",
+        "reason_code": "stale_snapshot_not_current_context",
+        "required_action": "refresh_exact_url_snapshot",
+    }
     assert payload["title"]["value"] == "交流広場B"
 
 

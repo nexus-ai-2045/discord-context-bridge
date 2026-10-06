@@ -8,6 +8,8 @@ from typing import Any, Iterable
 
 from .core import (
     DEFAULT_TEXT_SNAPSHOT_STORE,
+    current_context_policy_for_freshness,
+    discord_url_requires_current_context,
     matching_snapshot_records,
     parse_snapshot_timestamp,
     plan_discord_url_read,
@@ -148,6 +150,9 @@ def build_cache_inventory(
     generated = generated_at or datetime.now(timezone.utc).isoformat()
     freshness = snapshot_freshness(records, generated_at=generated, source="local_snapshot")
     policy = stale_policy_for_freshness(freshness)
+    current_context = current_context_policy_for_freshness(
+        freshness, current_context_required=discord_url_requires_current_context(url)
+    )
     if freshness["status"] == "recent":
         decision = "use_local_snapshot"
     elif freshness["status"] in {"stale", "unknown"}:
@@ -169,7 +174,15 @@ def build_cache_inventory(
         "language": "ja",
         "schema": "discord_cache_inventory.v1",
         "ok": root.exists() or bool(records),
-        "state": "ready" if records else "snapshot_missing",
+        "state": (
+            "ready"
+            if records and current_context["ready"]
+            else "stale_snapshot"
+            if records and freshness["status"] == "stale"
+            else "snapshot_refresh_required"
+            if records
+            else "snapshot_missing"
+        ),
         "target": {
             "target_key": target_key,
             "url_present": True,
@@ -193,6 +206,8 @@ def build_cache_inventory(
         "title": title_payload,
         "freshness": freshness,
         "stale_policy": policy,
+        "current_context": current_context,
+        "reason_code": current_context["reason_code"],
         "decision": decision,
         "scan_elapsed_ms": elapsed_ms,
         "raw_text_returned": False,

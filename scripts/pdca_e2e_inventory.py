@@ -57,6 +57,7 @@ def build_case_specs(
     url: str | None,
     include_desktop_cache: bool,
     include_ops_fast: bool = False,
+    live_read_observation: Path | None = None,
 ) -> list[CaseSpec]:
     py = python_executable
     specs = [
@@ -141,6 +142,26 @@ def build_case_specs(
             ),
         ),
     ]
+    specs.append(
+        CaseSpec(
+            "chrome_observation_contract",
+            "untrusted_read_observation_contract",
+            (
+                py,
+                "scripts/chrome_live_read_stage_guard.py",
+                "--observation-json",
+                str(live_read_observation or ""),
+                "--json",
+            ),
+            35,
+            enabled=live_read_observation is not None,
+            skip_reason=(
+                "live_observation_not_supplied_and_runtime_not_verified"
+                if live_read_observation is None
+                else ""
+            ),
+        )
+    )
     return specs
 
 
@@ -186,7 +207,10 @@ def classify_case(spec: CaseSpec, result: ExecutionResult) -> dict[str, Any]:
     )
     if result.returncode == 0 and not (spec.expects_json and payload is None) and not payload_reports_failure:
         state = str((payload or {}).get("state") or "").casefold()
-        if state in {"snapshot_missing", "reference_only", "partial", "partial_scan"}:
+        if payload and payload.get("live_read_verified") is False:
+            classification = "partial_evidence"
+            next_action = "正本runtime receiptが得られる経路でのみ実ブラウザ検証を追加します。"
+        elif state in {"snapshot_missing", "reference_only", "partial", "partial_scan"}:
             classification = "partial_evidence"
             next_action = "不足証拠だけを次のread-only取得で補います。"
         else:
@@ -312,6 +336,7 @@ def build_report(cases: list[dict[str, Any]], *, previous: dict[str, Any] | None
         "schema": "discord_context_bridge_pdca_e2e_inventory.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "overall": overall,
+        "live_read_verified": False,
         "pdca": {
             "plan": "安全なlocal/fixture/read-only E2Eを棚卸しする",
             "do": f"{len(cases)} casesをbounded実行",
@@ -355,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", help="対象Discord URL。出力には表示しません")
     parser.add_argument("--include-desktop-cache", action="store_true", help="時間のかかるDesktop cache実走査を含める")
     parser.add_argument("--include-ops-fast", action="store_true", help="重複する並列ops orchestratorも明示的に含める")
+    parser.add_argument("--live-read-observation", type=Path, help="明示指定したlive read-only stage観測reportだけを検証する")
     parser.add_argument("--only", action="append", default=[], help="指定caseだけ実行。複数指定可")
     parser.add_argument("--max-retries", type=int, choices=[0, 1], default=1, help="timeout等の一時失敗だけ再試行する上限")
     parser.add_argument("--previous-report", type=Path, help="前回結果との解消/継続/新規差分を出す")
@@ -371,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         url=args.url,
         include_desktop_cache=args.include_desktop_cache,
         include_ops_fast=args.include_ops_fast,
+        live_read_observation=args.live_read_observation,
     )
     if args.only:
         selected = set(args.only)

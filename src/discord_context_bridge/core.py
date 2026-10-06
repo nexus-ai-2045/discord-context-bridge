@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from .full_capture import build_capture_route_policy
 
@@ -77,6 +79,14 @@ PLAY_KEYWORDS = ("しりとり", "雑談", "ノリ", "笑", "w", "www", "遊び"
 
 class DisabledCapability(RuntimeError):
     """外部送信など、意図的に無効化した機能が呼ばれた時の例外。"""
+
+
+class LegacySnapshotRepairError(ValueError):
+    """append-only legacy snapshot repair が証拠不足または矛盾で停止した。"""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -236,6 +246,7 @@ def snapshot_freshness(
     generated_at: str,
     source: str,
     max_age_hours: int = 24,
+    max_future_skew_seconds: int = 300,
 ) -> dict[str, Any]:
     newest_captured_at = latest_captured_at(records)
     if not records:
@@ -249,6 +260,22 @@ def snapshot_freshness(
         }
 
     now = parse_snapshot_timestamp(generated_at) or datetime.now(timezone.utc)
+    timestamp_text = str(newest_captured_at).strip()
+    normalized_timestamp = f"{timestamp_text[:-1]}+00:00" if timestamp_text.endswith("Z") else timestamp_text
+    try:
+        timestamp_candidate = datetime.fromisoformat(normalized_timestamp)
+    except ValueError:
+        timestamp_candidate = None
+    if timestamp_candidate is None or timestamp_candidate.tzinfo is None or timestamp_candidate.utcoffset() is None:
+        return {
+            "status": "unknown",
+            "reason": "snapshot_timestamp_timezone_missing",
+            "source": source,
+            "newest_captured_at": newest_captured_at,
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+            "max_future_skew_seconds": max_future_skew_seconds,
+        }
     newest = parse_snapshot_timestamp(newest_captured_at)
     if newest is None:
         return {
@@ -258,6 +285,20 @@ def snapshot_freshness(
             "newest_captured_at": newest_captured_at,
             "age_seconds": None,
             "max_age_hours": max_age_hours,
+            "max_future_skew_seconds": max_future_skew_seconds,
+        }
+
+    future_skew_seconds = int((newest - now).total_seconds())
+    if future_skew_seconds > max_future_skew_seconds:
+        return {
+            "status": "unknown",
+            "reason": "snapshot_timestamp_beyond_future_skew",
+            "source": source,
+            "newest_captured_at": newest_captured_at,
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+            "max_future_skew_seconds": max_future_skew_seconds,
+            "future_skew_seconds": future_skew_seconds,
         }
 
     age_seconds = max(0, int((now - newest).total_seconds()))
@@ -269,18 +310,78 @@ def snapshot_freshness(
         "newest_captured_at": newest_captured_at,
         "age_seconds": age_seconds,
         "max_age_hours": max_age_hours,
+        "max_future_skew_seconds": max_future_skew_seconds,
     }
 
 
 def stale_policy_for_freshness(freshness: dict[str, Any]) -> dict[str, Any]:
-    is_stale = freshness.get("status") == "stale"
+    status = str(freshness.get("status") or "unknown")
+    action = {
+        "stale": "refresh_exact_url_snapshot",
+        "unknown": "refresh_exact_url_snapshot",
+        "missing": "capture_visible_or_read_only_adapter",
+    }.get(status, "none")
     return {
-        "usable_for_reply": not is_stale and freshness.get("status") != "missing",
-        "usable_for_routing": freshness.get("status") in {"recent", "stale", "unknown"},
-        "required_action": "refresh_exact_url_snapshot" if is_stale else "none",
+        "usable_for_reply": status == "recent",
+        "usable_for_routing": status in {"recent", "stale", "unknown"},
+        "required_action": action,
         "fallback_allowed": "manual_visible_text_or_chrome_extension_only",
-        "reason": "stale_snapshot_requires_refresh" if is_stale else str(freshness.get("reason") or ""),
+        "reason": "stale_snapshot_requires_refresh" if status == "stale" else str(freshness.get("reason") or ""),
     }
+
+
+def current_context_policy_for_freshness(
+    freshness: dict[str, Any], *, current_context_required: bool = True
+) -> dict[str, Any]:
+    """Return the machine gate for using a snapshot as current reply context."""
+
+    status = str(freshness.get("status") or "unknown")
+    if not current_context_required and status != "missing":
+        return {
+            "ready": True,
+            "status": "historical_reference_ready",
+            "reason_code": "message_deep_link_snapshot_available",
+            "required_action": "none",
+        }
+    if status == "recent":
+        return {
+            "ready": True,
+            "status": "ready",
+            "reason_code": "recent_exact_snapshot_available",
+            "required_action": "none",
+        }
+    if status == "stale":
+        return {
+            "ready": False,
+            "status": "refresh_required",
+            "reason_code": "stale_snapshot_not_current_context",
+            "required_action": "refresh_exact_url_snapshot",
+        }
+    if status == "unknown":
+        return {
+            "ready": False,
+            "status": "refresh_required",
+            "reason_code": "snapshot_freshness_unknown_not_current_context",
+            "required_action": "refresh_exact_url_snapshot",
+        }
+    return {
+        "ready": False,
+        "status": "blocked",
+        "reason_code": "current_context_snapshot_missing",
+        "required_action": "capture_visible_or_read_only_adapter",
+    }
+
+
+def discord_url_requires_current_context(url: str) -> bool:
+    """Channel/thread-only URLs need fresh context; message deep links preserve history."""
+
+    match = re.fullmatch(
+        r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+        r"(?:[^/?#]+/[^/?#]+|[^/?#]+/[^/?#]+/threads/[^/?#]+)/?"
+        r"(?:[?#].*)?",
+        url.strip(),
+    )
+    return match is not None
 
 
 def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
@@ -389,14 +490,18 @@ def build_url_intake_gate(
     payload["ai_log"] = {"exists": ai_log_path.exists(), "match_count": len(ai_matches)}
 
     if raw_matches and ai_matches:
-        payload["state"] = "ready"
+        current_context = current_context_policy_for_freshness(
+            ai_freshness, current_context_required=discord_url_requires_current_context(url)
+        )
+        payload["state"] = "ready" if current_context["ready"] else "refresh_required"
         payload["exact_coverage"] = "yes"
         payload["sync_performed"] = "not_needed"
-        payload["blocked_reason"] = ""
-        payload["snapshot_status"] = "ready"
+        payload["blocked_reason"] = "" if current_context["ready"] else current_context["reason_code"]
+        payload["snapshot_status"] = "ready" if current_context["ready"] else "stale_snapshot"
         payload["freshness"] = ai_freshness
         payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
         payload["stale_policy"] = stale_policy_for_freshness(ai_freshness)
+        payload["current_context"] = current_context
         return payload
 
     if raw_matches and not ai_matches:
@@ -415,14 +520,25 @@ def build_url_intake_gate(
             ai_freshness = snapshot_freshness(ai_matches, generated_at=generated, source="ai_log")
             payload["sync_performed"] = "yes"
             payload["exact_coverage"] = "yes"
-            payload["state"] = "ready"
-            payload["blocked_reason"] = ""
-            payload["snapshot_status"] = "ready"
+            current_context = current_context_policy_for_freshness(
+                ai_freshness, current_context_required=discord_url_requires_current_context(url)
+            )
+            payload["state"] = "ready" if current_context["ready"] else "refresh_required"
+            payload["blocked_reason"] = "" if current_context["ready"] else current_context["reason_code"]
+            payload["snapshot_status"] = "ready" if current_context["ready"] else "stale_snapshot"
             payload["freshness"] = ai_freshness
             payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
+            payload["current_context"] = current_context
             payload["ai_log"]["exists"] = True
             payload["ai_log"]["match_count"] = len(ai_matches)
         payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+        payload.setdefault(
+            "current_context",
+            current_context_policy_for_freshness(
+                payload["freshness"],
+                current_context_required=discord_url_requires_current_context(url),
+            ),
+        )
         return payload
 
     payload["state"] = "raw_cache_missing"
@@ -525,6 +641,9 @@ def build_coverage_report(
             gate_records = receipt_matched
             freshness_source = "receipt_matched_records"
     freshness = snapshot_freshness(gate_records, generated_at=generated, source=freshness_source)
+    current_context = current_context_policy_for_freshness(
+        freshness, current_context_required=discord_url_requires_current_context(url)
+    )
     url_shape = analyze_discord_forum_url_shape(url) if url else {
         "language": DEFAULT_LANGUAGE,
         "schema": "discord_forum_url_shape.v1",
@@ -559,10 +678,22 @@ def build_coverage_report(
             "url_output": "omitted",
         },
         "url_shape": url_shape,
-        "snapshot_status": "ready" if exact_coverage else "raw_cache_missing" if raw_cache_path is not None else "unknown",
+        "snapshot_status": (
+            "ready"
+            if exact_coverage and current_context["ready"]
+            else "stale_snapshot"
+            if exact_coverage and freshness["status"] == "stale"
+            else "snapshot_refresh_required"
+            if exact_coverage
+            else "raw_cache_missing"
+            if raw_cache_path is not None
+            else "unknown"
+        ),
         "freshness": freshness,
         "recency": {key: freshness[key] for key in ("status", "reason", "source")},
         "stale_policy": stale_policy_for_freshness(freshness),
+        "current_context": current_context,
+        "reason_code": current_context["reason_code"],
         "source_kind": source_kind,
         "dedupe_policy": dedupe_policy,
         "coverage": {
@@ -600,9 +731,25 @@ def build_url_intake_fast_path(
     latest = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
     url_shape = analyze_discord_forum_url_shape(url)
     snapshot_ready = bool(latest.get("ok"))
-    decision = "snapshot_metadata_ready" if snapshot_ready else "need_visible_text"
-    next_step = "use_saved_snapshot_metadata" if snapshot_ready else "ask_for_visible_text_or_paste"
-    observed_snapshot_status = "ready" if snapshot_ready else str(latest.get("reason") or hook_snapshot_status or "snapshot_missing")
+    matches = matching_snapshot_records(snapshot_store, url=url, target_key=key)
+    freshness = snapshot_freshness(matches, generated_at=generated, source="saved_snapshot")
+    current_context = current_context_policy_for_freshness(
+        freshness, current_context_required=discord_url_requires_current_context(url)
+    )
+    if snapshot_ready and current_context["ready"]:
+        decision = "snapshot_metadata_ready"
+        next_step = "use_saved_snapshot_metadata"
+        observed_snapshot_status = "ready"
+    elif snapshot_ready:
+        decision = "refresh_required"
+        next_step = str(current_context["required_action"])
+        observed_snapshot_status = (
+            "stale_snapshot" if freshness["status"] == "stale" else "snapshot_refresh_required"
+        )
+    else:
+        decision = "need_visible_text"
+        next_step = "ask_for_visible_text_or_paste"
+        observed_snapshot_status = str(latest.get("reason") or hook_snapshot_status or "snapshot_missing")
 
     return {
         "language": DEFAULT_LANGUAGE,
@@ -619,6 +766,9 @@ def build_url_intake_fast_path(
         },
         "hook_snapshot_status": hook_snapshot_status or "not_provided",
         "observed_snapshot_status": observed_snapshot_status,
+        "freshness": freshness,
+        "current_context": current_context,
+        "reason_code": current_context["reason_code"],
         "text_required_tools_allowed": False,
         "target": {
             "target_key": key,
@@ -811,6 +961,23 @@ def build_bridge_intake(
     if not saved_text:
         payload["message"] = "保存済み snapshot が無いため bridge intake を完了できません。"
         payload["pipeline"]["completed"] = steps_completed
+        return payload
+
+    current_context = dict(coverage.get("current_context") or {})
+    if not current_context.get("ready"):
+        reason_code = str(current_context.get("reason_code") or "current_context_not_ready")
+        payload["decision"] = (
+            "refresh_required"
+            if current_context.get("status") == "refresh_required"
+            else "need_visible_text"
+        )
+        payload["next_step"] = str(
+            current_context.get("required_action") or "capture_visible_or_read_only_adapter"
+        )
+        payload["recommended_command"] = "snapshot-discord-url-text"
+        payload["blocked_reason"] = reason_code
+        payload["route_failure"] = reason_code
+        payload["message"] = "保存済み snapshot は current context の要件を満たさないため更新が必要です。"
         return payload
 
     passport = context_passport_from_text(
@@ -2150,20 +2317,53 @@ def snapshot_visible_text(
     # Snapshot はローカル保存でも平文の認証情報を残さない。後段の文脈処理は
     # この安全化済み本文を正本として扱い、元の本文をファイルへ渡さない。
     content = redact_sensitive_storage_text(content)
-    target_identity = url.strip() or title.strip() or content[:120]
+    normalized_url = url.strip()
+    discord_target = _discord_legacy_target_identity_and_url(normalized_url)
+    if discord_target is not None:
+        source_identity, canonical_url = discord_target
+        normalized_url = canonical_url
+        target_identity = canonical_url
+    else:
+        source_identity = None
+        target_identity = normalized_url or title.strip() or content[:120]
     target_key = stable_text_hash(target_identity)
     content_hash = stable_text_hash(content)
-    previous = latest_snapshot_for_target(target_key, path)
+    records = load_text_snapshots(path)
+    if source_identity is not None and records:
+        source_records = _records_for_source_identity(
+            records, source_identity=source_identity
+        )
+        if source_records:
+            try:
+                previous = _validated_main_head_for_records(
+                    source_records, source_identity=source_identity
+                )
+            except LegacySnapshotRepairError as exc:
+                raise ValueError("snapshot_store_main_invalid") from exc
+        else:
+            previous = None
+    else:
+        previous = next(
+            (
+                snapshot
+                for snapshot in reversed(records)
+                if snapshot.get("target_key") == target_key
+            ),
+            None,
+        )
     previous_hash = str(previous.get("content_hash") or "") if previous else None
     previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
-    snapshot_count_before = sum(1 for item in load_text_snapshots(path) if item.get("target_key") == target_key)
+    snapshot_count_before = sum(1 for item in records if item.get("target_key") == target_key)
     previous_stream_sequence = (
         int(previous.get("stream_sequence") or previous.get("observation_index_for_target") or snapshot_count_before)
         if previous
         else 0
     )
     changed = previous_hash != content_hash
-    stream_sequence = snapshot_count_before + 1
+    # The hash-chain head is the sequence SSOT. A canonicalized target may have
+    # fewer same-key rows than its prior logical-thread chain (for example after
+    # an alias orphan merge), so a row count can regress the stream sequence.
+    stream_sequence = previous_stream_sequence + 1
     captured_at = utc_now()
     snapshot = {
         "schema": "discord_context_bridge_text_snapshot_observation.v1",
@@ -2188,7 +2388,7 @@ def snapshot_visible_text(
         "observed_at": captured_at,
         "ingested_at": captured_at,
         "source": source,
-        "url": url.strip(),
+        "url": normalized_url,
         "title": title.strip(),
         "target_key": target_key,
         "content_hash": content_hash,
@@ -2226,6 +2426,1945 @@ def snapshot_visible_text(
         "context_ready": True,
         "visible_text_saved": True,
     }
+
+
+def _legacy_quarantine_result(
+    *,
+    saved: bool,
+    duplicate: bool,
+    correction: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_snapshot_store_legacy_quarantine_receipt.v1",
+        "ok": True,
+        "status": "duplicate" if duplicate else "repaired",
+        "saved": saved,
+        "duplicate": duplicate,
+        "quarantined_row_hash": str(correction["quarantined_row_hash"]),
+        "relocated_snapshot_event_hash": str(correction["relocated_snapshot_event_hash"]),
+        "relocated_content_hash": str(correction["relocated_content_hash"]),
+        "correction_event_hash": str(correction["event_hash"]),
+        "canonical_readback": True,
+        "raw_text_returned": False,
+        "url_output": "omitted",
+        "path_output": "omitted",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+
+
+_DISCORD_FLAT_THREAD_URL_RE = re.compile(
+    r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+    r"(?P<guild>\d{17,20})/(?P<thread>\d{17,20})/?$"
+)
+_DISCORD_NESTED_THREAD_URL_RE = re.compile(
+    r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+    r"(?P<guild>\d{17,20})/(?P<parent>\d{17,20})/threads/(?P<thread>\d{17,20})/?$"
+)
+_DISCORD_MESSAGE_URL_RE = re.compile(
+    r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+    r"(?P<guild>\d{17,20})/(?P<thread>\d{17,20})/(?P<message>\d{17,20})/?$"
+)
+
+
+def _discord_canonical_thread_identity(url: str) -> tuple[str, str] | None:
+    for pattern in (_DISCORD_FLAT_THREAD_URL_RE, _DISCORD_NESTED_THREAD_URL_RE):
+        match = pattern.fullmatch(url.strip())
+        if match:
+            return match.group("guild"), match.group("thread")
+    return None
+
+
+def _discord_legacy_target_identity_and_url(url: str) -> tuple[tuple[str, str], str] | None:
+    identity = _discord_canonical_thread_identity(url)
+    if identity is not None:
+        guild_id, thread_id = identity
+        return identity, f"https://discord.com/channels/{guild_id}/{thread_id}"
+    message_match = _DISCORD_MESSAGE_URL_RE.fullmatch(url.strip())
+    if not message_match:
+        return None
+    guild_id = message_match.group("guild")
+    thread_id = message_match.group("thread")
+    return (guild_id, thread_id), f"https://discord.com/channels/{guild_id}/{thread_id}"
+
+
+def _canonical_thread_store(snapshot_root: Path, identity: tuple[str, str]) -> Path:
+    guild_id, thread_id = identity
+    return (
+        snapshot_root
+        / "discord"
+        / "servers"
+        / guild_id
+        / "channels"
+        / thread_id
+        / "text-snapshots.ndjson"
+    )
+
+
+def _reject_symlink_components(root: Path, path: Path) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise LegacySnapshotRepairError("store_path_escape") from exc
+    current = root
+    if current.is_symlink():
+        raise LegacySnapshotRepairError("store_symlink_rejected")
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise LegacySnapshotRepairError("store_symlink_rejected")
+
+
+def _validate_canonical_store_path(
+    *, snapshot_root: Path, store: Path, identity: tuple[str, str], require_exists: bool
+) -> Path:
+    expected = _canonical_thread_store(snapshot_root, identity)
+    if store.name != "text-snapshots.ndjson":
+        raise LegacySnapshotRepairError("store_filename_invalid")
+    if store.resolve(strict=False) != expected.resolve(strict=False):
+        raise LegacySnapshotRepairError("store_target_path_mismatch")
+    _reject_symlink_components(snapshot_root, store)
+    if require_exists and (not store.exists() or not store.is_file()):
+        raise LegacySnapshotRepairError("source_store_missing")
+    return expected
+
+
+@contextmanager
+def _locked_snapshot_stores(stores: Iterable[Path]) -> Iterator[None]:
+    handles: list[Any] = []
+    try:
+        for store in sorted({path.resolve(strict=False) for path in stores}, key=str):
+            store.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = store.parent / ".legacy-snapshot-repair.lock"
+            handle = lock_path.open("a+b")
+            if lock_path.stat().st_size == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handles.append(handle)
+        yield
+    finally:
+        for handle in reversed(handles):
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
+
+
+def _load_repair_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        return load_text_snapshots(path)
+    except UnicodeError as exc:
+        raise LegacySnapshotRepairError("store_decode_error") from exc
+    except json.JSONDecodeError as exc:
+        raise LegacySnapshotRepairError("store_decode_error") from exc
+    except (TypeError, ValueError) as exc:
+        raise LegacySnapshotRepairError("store_semantic_error") from exc
+    except OSError as exc:
+        raise LegacySnapshotRepairError("store_io_error") from exc
+
+
+def _strict_nonnegative_int(value: Any) -> int | None:
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
+def _legacy_repair_event_semantically_valid(
+    record: dict[str, Any],
+    *,
+    kind: str,
+    target_key: str,
+    prior: dict[str, Any] | None,
+    quarantined_row_hash: str,
+    legacy_content_hash: str,
+    legacy_original_content_hash: str = "",
+    relocation_source: str,
+    relocated_event_hash: str = "",
+    correction_reason: str = "cross_thread_legacy_row",
+) -> bool:
+    """Validate persisted relocation/correction semantics after canonical re-hash."""
+
+    sequence = _strict_nonnegative_int(record.get("stream_sequence"))
+    expected_previous_sequence = _strict_nonnegative_int(record.get("expected_previous_stream_sequence"))
+    if sequence is None or sequence < 1 or expected_previous_sequence is None:
+        return False
+    if prior is None:
+        prior_sequence = 0
+        prior_event_hash = ""
+        prior_content_hash: str | None = None
+    else:
+        prior_sequence = _strict_nonnegative_int(prior.get("stream_sequence"))
+        if prior_sequence is None or prior_sequence < 1:
+            return False
+        persisted_prior_hash = str(prior.get("event_hash") or "")
+        prior_event_hash = persisted_prior_hash or canonical_event_hash(prior)
+        if persisted_prior_hash and persisted_prior_hash != canonical_event_hash(prior):
+            return False
+        prior_content_hash = str(prior.get("content_hash") or "")
+
+    sequence_valid = sequence == prior_sequence + 1
+    if kind in {"snapshot", "relocation"} and prior is not None:
+        sequence_valid = sequence > prior_sequence
+
+    common_valid = (
+        record.get("specversion") == "1.0"
+        and record.get("target_key") == target_key
+        and record.get("stream_id") == target_key
+        and record.get("subject") == target_key
+        and sequence_valid
+        and expected_previous_sequence == prior_sequence
+        and record.get("previous_event_hash") == prior_event_hash
+        and record.get("previous_content_hash") == prior_content_hash
+        and record.get("private_local_only") is True
+        and record.get("external_share_allowed") is False
+        and record.get("outbound_actions") == "disabled"
+        and record.get("event_hash") == canonical_event_hash(record)
+        and isinstance(record.get("captured_at"), str)
+        and record.get("captured_at")
+        and record.get("time") == record.get("captured_at")
+        and record.get("observed_at") == record.get("captured_at")
+        and record.get("ingested_at") == record.get("captured_at")
+    )
+    if not common_valid:
+        return False
+
+    if kind in {"snapshot", "relocation"}:
+        content_hash = str(record.get("content_hash") or "")
+        expected_event_id = snapshot_observation_event_id(
+            captured_at=str(record["captured_at"]),
+            target_key=target_key,
+            content_hash=content_hash,
+            source=relocation_source,
+            stream_sequence=sequence,
+        )
+        return (
+            record.get("schema") == "discord_context_bridge_text_snapshot_observation.v1"
+            and record.get("dataschema") == "discord_context_bridge_text_snapshot_observation.v1"
+            and record.get("event_type") == "discord.visible_text.snapshot_observed"
+            and record.get("type") == "discord.visible_text.snapshot_observed"
+            and record.get("datacontenttype") == "text/plain; charset=utf-8"
+            and record.get("source") == relocation_source
+            and record.get("event_id") == expected_event_id
+            and content_hash == legacy_content_hash
+            and record.get("duplicate_content") is (prior_content_hash == content_hash)
+            and record.get("changed") is (prior_content_hash != content_hash)
+        )
+
+    if kind == "correction":
+        original_content_hash = legacy_original_content_hash or legacy_content_hash
+        persisted_original_hash = record.get("legacy_content_hash")
+        original_hash_valid = (
+            persisted_original_hash == original_content_hash
+            if persisted_original_hash is not None
+            else True
+        )
+        expected_event_id = stable_text_hash(
+            "|".join(
+                [
+                    "discord.snapshot_store.legacy_row_quarantined",
+                    quarantined_row_hash,
+                    relocated_event_hash,
+                ]
+            )
+        )
+        return (
+            record.get("schema") == "discord_snapshot_store_legacy_row_quarantined.v1"
+            and record.get("dataschema") == "discord_snapshot_store_legacy_row_quarantined.v1"
+            and record.get("event_type") == "discord.snapshot_store.legacy_row_quarantined"
+            and record.get("type") == "discord.snapshot_store.legacy_row_quarantined"
+            and record.get("datacontenttype") == "application/json"
+            and record.get("source") == "legacy_snapshot_repair"
+            and record.get("event_id") == expected_event_id
+            and record.get("quarantined_row_hash") == quarantined_row_hash
+            and record.get("relocated_snapshot_event_hash") == relocated_event_hash
+            and record.get("relocated_content_hash") == legacy_content_hash
+            and original_hash_valid
+            and record.get("reason") == correction_reason
+            and "text" not in record
+            and "url" not in record
+        )
+    return False
+
+
+def _failed_relocation_quarantine_semantically_valid(
+    record: dict[str, Any],
+    *,
+    invalid: dict[str, Any],
+    logical_prior: dict[str, Any],
+    quarantined_row_hash: str,
+    target_key: str,
+) -> bool:
+    event_type = "discord.snapshot_store.failed_relocation_quarantined"
+    invalid_hash = str(invalid.get("event_hash") or "")
+    logical_hash = str(logical_prior.get("event_hash") or "")
+    logical_sequence = _strict_nonnegative_int(logical_prior.get("stream_sequence"))
+    if logical_sequence is None:
+        return False
+    expected_event_id = stable_text_hash(
+        "|".join([event_type, invalid_hash, quarantined_row_hash, logical_hash])
+    )
+    captured_at = record.get("captured_at")
+    return (
+        record.get("schema") == "discord_snapshot_store_failed_relocation_quarantined.v1"
+        and record.get("dataschema") == "discord_snapshot_store_failed_relocation_quarantined.v1"
+        and record.get("specversion") == "1.0"
+        and record.get("event_type") == event_type
+        and record.get("type") == event_type
+        and record.get("datacontenttype") == "application/json"
+        and record.get("event_id") == expected_event_id
+        and record.get("source") == "legacy_relocation_recovery"
+        and record.get("target_key") == target_key
+        and record.get("stream_id") == target_key
+        and record.get("subject") == target_key
+        and record.get("invalid_relocation_event_hash") == invalid_hash
+        and record.get("quarantined_row_hash") == quarantined_row_hash
+        and record.get("logical_previous_event_hash") == logical_hash
+        and record.get("reason") == "invalid_relocation_attempt"
+        and record.get("previous_event_hash") == invalid_hash
+        and record.get("stream_sequence") == logical_sequence + 1
+        and record.get("expected_previous_stream_sequence") == logical_sequence
+        and record.get("previous_content_hash") == str(logical_prior.get("content_hash") or "")
+        and isinstance(captured_at, str)
+        and bool(captured_at)
+        and record.get("time") == captured_at
+        and record.get("observed_at") == captured_at
+        and record.get("ingested_at") == captured_at
+        and record.get("private_local_only") is True
+        and record.get("external_share_allowed") is False
+        and record.get("outbound_actions") == "disabled"
+        and "text" not in record
+        and "url" not in record
+        and "path" not in record
+        and record.get("event_hash") == canonical_event_hash(record)
+    )
+
+
+def _invalid_relocation_attempt_semantically_valid(
+    record: dict[str, Any],
+    *,
+    logical_prior: dict[str, Any],
+    quarantined_row_hash: str,
+    legacy_content_hash: str,
+    legacy_text: str,
+    relocation_url: str,
+) -> bool:
+    target_key = target_key_for_url(relocation_url)
+    source = f"legacy_snapshot_recanonicalization:{quarantined_row_hash}"
+    sequence = _strict_nonnegative_int(record.get("stream_sequence"))
+    logical_sequence = _strict_nonnegative_int(logical_prior.get("stream_sequence"))
+    captured_at = record.get("captured_at")
+    if sequence is None or logical_sequence is None or not isinstance(captured_at, str) or not captured_at:
+        return False
+    expected_event_id = snapshot_observation_event_id(
+        captured_at=captured_at,
+        target_key=target_key,
+        content_hash=legacy_content_hash,
+        source=source,
+        stream_sequence=sequence,
+    )
+    return (
+        sequence != logical_sequence + 1
+        and record.get("schema") == "discord_context_bridge_text_snapshot_observation.v1"
+        and record.get("dataschema") == "discord_context_bridge_text_snapshot_observation.v1"
+        and record.get("specversion") == "1.0"
+        and record.get("event_type") == "discord.visible_text.snapshot_observed"
+        and record.get("type") == "discord.visible_text.snapshot_observed"
+        and record.get("datacontenttype") == "text/plain; charset=utf-8"
+        and record.get("event_id") == expected_event_id
+        and record.get("source") == source
+        and record.get("url") == relocation_url
+        and record.get("target_key") == target_key
+        and record.get("stream_id") == target_key
+        and record.get("subject") == target_key
+        and record.get("previous_event_hash") == logical_prior.get("event_hash")
+        and record.get("expected_previous_stream_sequence") == logical_sequence
+        and record.get("previous_content_hash") == str(logical_prior.get("content_hash") or "")
+        and record.get("content_hash") == legacy_content_hash
+        and record.get("text") == legacy_text
+        and stable_text_hash(redact_sensitive_storage_text(legacy_text)) == legacy_content_hash
+        and record.get("private_local_only") is True
+        and record.get("external_share_allowed") is False
+        and record.get("outbound_actions") == "disabled"
+        and record.get("event_hash") == canonical_event_hash(record)
+    )
+
+
+def _official_source_target_key(
+    records: list[dict[str, Any]], source_identity: tuple[str, str]
+) -> str:
+    target_keys: set[str] = set()
+    official_records: list[dict[str, Any]] = []
+    merged_orphan_hashes = _merged_orphan_excluded_hashes(records)
+    for record in records:
+        record_identity_hash = str(record.get("event_hash") or canonical_event_hash(record))
+        if record_identity_hash in merged_orphan_hashes:
+            continue
+        if record.get("event_type") != "discord.visible_text.snapshot_observed":
+            continue
+        if str(record.get("source") or "").startswith(
+            ("legacy_snapshot_recanonicalization:", "legacy_cross_thread_relocation:")
+        ):
+            continue
+        url = str(record.get("url") or "")
+        if _discord_canonical_thread_identity(url) != source_identity:
+            continue
+        target_key = str(record.get("target_key") or "")
+        if target_key != target_key_for_url(url):
+            raise LegacySnapshotRepairError("source_official_stream_invalid")
+        if record.get("event_hash") != canonical_event_hash(record):
+            raise LegacySnapshotRepairError("source_official_stream_invalid")
+        target_keys.add(target_key)
+        official_records.append(record)
+    if not target_keys:
+        raise LegacySnapshotRepairError("source_official_stream_missing")
+    if len(target_keys) != 1:
+        raise LegacySnapshotRepairError("source_official_stream_ambiguous")
+    target_key = next(iter(target_keys))
+    prior: dict[str, Any] | None = None
+    for record in records:
+        if record.get("target_key") != target_key:
+            continue
+        if record in official_records and not _legacy_repair_event_semantically_valid(
+            record,
+            kind="snapshot",
+            target_key=target_key,
+            prior=prior,
+            quarantined_row_hash="",
+            legacy_content_hash=str(record.get("content_hash") or ""),
+            relocation_source=str(record.get("source") or ""),
+        ):
+            raise LegacySnapshotRepairError("source_official_stream_invalid")
+        prior = record
+    return target_key
+
+
+def _recover_failed_same_store_relocation(
+    *,
+    records: list[dict[str, Any]],
+    source_store: Path,
+    source_identity: tuple[str, str],
+    quarantined_row_hash: str,
+    legacy_content_hash: str,
+    legacy_text: str,
+    relocation_url: str,
+) -> list[dict[str, Any]]:
+    relocation_source = f"legacy_snapshot_recanonicalization:{quarantined_row_hash}"
+    candidates = [record for record in records if record.get("source") == relocation_source]
+    if len(candidates) != 1:
+        return records
+    invalid = candidates[0]
+    invalid_hash = str(invalid.get("event_hash") or "")
+    quarantine_events = [
+        record
+        for record in records
+        if record.get("event_type") == "discord.snapshot_store.failed_relocation_quarantined"
+        and record.get("invalid_relocation_event_hash") == invalid_hash
+    ]
+    if len(quarantine_events) > 1:
+        raise LegacySnapshotRepairError("failed_relocation_quarantine_ambiguous")
+    logical_hash = str(invalid.get("previous_event_hash") or "")
+    logical_matches = [record for record in records if record.get("event_hash") == logical_hash]
+    if len(logical_matches) != 1:
+        raise LegacySnapshotRepairError("invalid_relocation_position")
+    logical_prior = logical_matches[0]
+    invalid_sequence = _strict_nonnegative_int(invalid.get("stream_sequence"))
+    logical_sequence = _strict_nonnegative_int(logical_prior.get("stream_sequence"))
+    if (
+        logical_prior.get("event_type") != "discord.snapshot_store.orphan_branch_merged"
+        or invalid_sequence is None
+        or logical_sequence is None
+        or invalid_sequence == logical_sequence + 1
+    ):
+        return records
+    excluded_hashes = {invalid_hash}
+    if quarantine_events:
+        excluded_hashes.add(str(quarantine_events[0].get("event_hash") or ""))
+    projected_records = [
+        record for record in records if str(record.get("event_hash") or "") not in excluded_hashes
+    ]
+    projected_head = _validated_main_head_for_records(
+        projected_records,
+        source_identity=source_identity,
+    )
+    if projected_head.get("event_hash") != logical_hash or not _invalid_relocation_attempt_semantically_valid(
+        invalid,
+        logical_prior=logical_prior,
+        quarantined_row_hash=quarantined_row_hash,
+        legacy_content_hash=legacy_content_hash,
+        legacy_text=legacy_text,
+        relocation_url=relocation_url,
+    ):
+        raise LegacySnapshotRepairError("invalid_relocation_proof_mismatch")
+    children = [record for record in records if record.get("previous_event_hash") == invalid_hash]
+    if quarantine_events:
+        quarantine = quarantine_events[0]
+        if children != [quarantine] or not _failed_relocation_quarantine_semantically_valid(
+            quarantine,
+            invalid=invalid,
+            logical_prior=logical_prior,
+            quarantined_row_hash=quarantined_row_hash,
+            target_key=target_key_for_url(relocation_url),
+        ):
+            raise LegacySnapshotRepairError("failed_relocation_quarantine_conflict")
+        return records
+    if children:
+        raise LegacySnapshotRepairError("invalid_relocation_has_child")
+    logical_sequence = int(logical_prior["stream_sequence"])
+    captured_at = utc_now()
+    event_type = "discord.snapshot_store.failed_relocation_quarantined"
+    quarantine = {
+        "schema": "discord_snapshot_store_failed_relocation_quarantined.v1",
+        "event_id": stable_text_hash(
+            "|".join([event_type, invalid_hash, quarantined_row_hash, logical_hash])
+        ),
+        "event_type": event_type,
+        "stream_id": target_key_for_url(relocation_url),
+        "stream_sequence": logical_sequence + 1,
+        "expected_previous_stream_sequence": logical_sequence,
+        "specversion": "1.0",
+        "type": event_type,
+        "subject": target_key_for_url(relocation_url),
+        "time": captured_at,
+        "datacontenttype": "application/json",
+        "dataschema": "discord_snapshot_store_failed_relocation_quarantined.v1",
+        "captured_at": captured_at,
+        "observed_at": captured_at,
+        "ingested_at": captured_at,
+        "source": "legacy_relocation_recovery",
+        "target_key": target_key_for_url(relocation_url),
+        "previous_content_hash": str(logical_prior.get("content_hash") or ""),
+        "previous_event_hash": invalid_hash,
+        "invalid_relocation_event_hash": invalid_hash,
+        "quarantined_row_hash": quarantined_row_hash,
+        "logical_previous_event_hash": logical_hash,
+        "reason": "invalid_relocation_attempt",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    quarantine["event_hash"] = canonical_event_hash(quarantine)
+    if not _failed_relocation_quarantine_semantically_valid(
+        quarantine,
+        invalid=invalid,
+        logical_prior=logical_prior,
+        quarantined_row_hash=quarantined_row_hash,
+        target_key=target_key_for_url(relocation_url),
+    ):
+        raise LegacySnapshotRepairError("failed_relocation_quarantine_invalid")
+    before = source_store.read_bytes()
+    append_text_snapshot(quarantine, source_store)
+    if not source_store.read_bytes().startswith(before):
+        raise LegacySnapshotRepairError("source_append_only_violation")
+    return _load_repair_records(source_store)
+
+
+def _repair_cross_thread_legacy_snapshot_locked(
+    *,
+    source_store: Path,
+    source_identity: tuple[str, str],
+    quarantined_row_hash: str,
+    destination_store: Path,
+) -> dict[str, Any]:
+    source_bytes = source_store.read_bytes()
+    source_records = _load_repair_records(source_store)
+    matching_rows = [
+        record
+        for record in source_records
+        if not record.get("event_hash") and canonical_event_hash(record) == quarantined_row_hash
+    ]
+    if not matching_rows:
+        raise LegacySnapshotRepairError("legacy_row_hash_missing")
+    if len(matching_rows) != 1:
+        raise LegacySnapshotRepairError("legacy_row_hash_multiple")
+
+    legacy_row = matching_rows[0]
+    if legacy_row.get("event_type") not in {None, "", "discord.visible_text.snapshot_observed"}:
+        raise LegacySnapshotRepairError("legacy_row_not_snapshot")
+    legacy_target_key = str(legacy_row.get("target_key") or "")
+    legacy_url = str(legacy_row.get("url") or "").strip()
+    legacy_text = str(legacy_row.get("text") or "")
+    legacy_original_content_hash = str(legacy_row.get("content_hash") or "")
+    if not legacy_target_key or not legacy_url or not legacy_text or not legacy_original_content_hash:
+        raise LegacySnapshotRepairError("legacy_row_proof_incomplete")
+    legacy_target = _discord_legacy_target_identity_and_url(legacy_url)
+    if legacy_target is None:
+        raise LegacySnapshotRepairError("legacy_row_target_invalid")
+    legacy_identity, relocation_url = legacy_target
+    if legacy_identity[0] != source_identity[0]:
+        raise LegacySnapshotRepairError("cross_guild_legacy_row")
+    if target_key_for_url(legacy_url) != legacy_target_key:
+        raise LegacySnapshotRepairError("legacy_row_target_mismatch")
+    legacy_content_hash = stable_text_hash(legacy_text)
+    legacy_short_proof = legacy_row.get("content_hash_short")
+    short_format_valid = (
+        len(legacy_original_content_hash) == 16
+        and legacy_original_content_hash == legacy_content_hash
+        and legacy_short_proof in {None, ""}
+    )
+    full_format_valid = (
+        len(legacy_original_content_hash) == 64
+        and legacy_original_content_hash == hashlib.sha256(legacy_text.encode("utf-8")).hexdigest()
+        and legacy_short_proof == legacy_content_hash
+    )
+    if not (short_format_valid or full_format_valid):
+        raise LegacySnapshotRepairError("legacy_row_content_mismatch")
+    same_thread_recanonicalization = legacy_identity == source_identity
+    correction_reason = (
+        "same_thread_legacy_row_recanonicalized"
+        if same_thread_recanonicalization
+        else "cross_thread_legacy_row"
+    )
+    relocation_target_key = target_key_for_url(relocation_url)
+
+    official_source_target_key = _official_source_target_key(source_records, source_identity)
+    source_target_key = (
+        relocation_target_key if same_thread_recanonicalization else official_source_target_key
+    )
+    existing_corrections = [
+        record
+        for record in source_records
+        if record.get("event_type") == "discord.snapshot_store.legacy_row_quarantined"
+        and record.get("quarantined_row_hash") == quarantined_row_hash
+    ]
+    if len(existing_corrections) > 1:
+        raise LegacySnapshotRepairError("conflicting_correction")
+    relocation_source = f"legacy_snapshot_recanonicalization:{quarantined_row_hash}"
+    compatible_relocation_sources = {
+        relocation_source,
+        f"legacy_cross_thread_relocation:{quarantined_row_hash}",
+    }
+    destination_records = _load_repair_records(destination_store)
+    if same_thread_recanonicalization and source_store == destination_store:
+        destination_records = _recover_failed_same_store_relocation(
+            records=destination_records,
+            source_store=source_store,
+            source_identity=source_identity,
+            quarantined_row_hash=quarantined_row_hash,
+            legacy_content_hash=legacy_content_hash,
+            legacy_text=legacy_text,
+            relocation_url=relocation_url,
+        )
+        source_records = destination_records
+        source_bytes = source_store.read_bytes()
+    same_store_main_head: dict[str, Any] | None = None
+    if same_thread_recanonicalization and source_store == destination_store:
+        same_store_main_head = _validated_main_head_for_records(
+            source_records,
+            source_identity=source_identity,
+        )
+    destination_snapshot_identities: set[tuple[str, str] | None] = set()
+    for record in destination_records:
+        if record.get("event_type") != "discord.visible_text.snapshot_observed":
+            continue
+        record_url = str(record.get("url") or "")
+        record_identity = _discord_canonical_thread_identity(record_url)
+        record_text = str(record.get("text") or "")
+        if (
+            (
+                record.get("source") not in compatible_relocation_sources
+                and record.get("target_key") != target_key_for_url(record_url)
+            )
+            or record.get("event_hash") != canonical_event_hash(record)
+            or not record_text
+            or record.get("content_hash") != stable_text_hash(redact_sensitive_storage_text(record_text))
+        ):
+            record_identity = None
+        destination_snapshot_identities.add(record_identity)
+    if destination_snapshot_identities and destination_snapshot_identities != {legacy_identity}:
+        raise LegacySnapshotRepairError("destination_target_mismatch")
+
+    quarantined_invalid_hashes = {
+        str(record.get("invalid_relocation_event_hash") or "")
+        for record in destination_records
+        if record.get("event_type") == "discord.snapshot_store.failed_relocation_quarantined"
+    }
+    deterministic_relocations = [
+        record
+        for record in destination_records
+        if record.get("source") in compatible_relocation_sources
+        and str(record.get("event_hash") or "") not in quarantined_invalid_hashes
+    ]
+    if len(deterministic_relocations) > 1:
+        raise LegacySnapshotRepairError("relocation_ambiguous")
+    if deterministic_relocations:
+        relocated = deterministic_relocations[0]
+        persisted_relocation_source = str(relocated.get("source") or "")
+        relocated_index = destination_records.index(relocated)
+        if same_store_main_head is not None:
+            prior_hash = str(relocated.get("previous_event_hash") or "")
+            matching_priors = [
+                record
+                for record in destination_records[:relocated_index]
+                if record.get("event_hash") == prior_hash
+            ]
+            relocation_prior = matching_priors[0] if len(matching_priors) == 1 else None
+        else:
+            prior_relocations = [
+                record
+                for record in destination_records[:relocated_index]
+                if record.get("target_key") == relocation_target_key
+            ]
+            relocation_prior = prior_relocations[-1] if prior_relocations else None
+        if not _legacy_repair_event_semantically_valid(
+            relocated,
+            kind="relocation",
+            target_key=relocation_target_key,
+            prior=relocation_prior,
+            quarantined_row_hash=quarantined_row_hash,
+            legacy_content_hash=legacy_content_hash,
+            legacy_original_content_hash=legacy_original_content_hash,
+            relocation_source=persisted_relocation_source,
+        ):
+            raise LegacySnapshotRepairError("relocation_proof_mismatch")
+    else:
+        if existing_corrections:
+            raise LegacySnapshotRepairError("conflicting_correction")
+        destination_bytes = destination_store.read_bytes() if destination_store.exists() else b""
+        if destination_store.exists() and destination_store.read_bytes() != destination_bytes:
+            raise LegacySnapshotRepairError("destination_cas_mismatch")
+        snapshot_visible_text(
+            text=legacy_text,
+            url=relocation_url,
+            source=relocation_source,
+            path=destination_store,
+        )
+        if destination_bytes and not destination_store.read_bytes().startswith(destination_bytes):
+            raise LegacySnapshotRepairError("destination_append_only_violation")
+        if same_store_main_head is not None:
+            relocation_prior = same_store_main_head
+        else:
+            prior_relocations = [
+                record for record in destination_records if record.get("target_key") == relocation_target_key
+            ]
+            relocation_prior = prior_relocations[-1] if prior_relocations else None
+        destination_records = _load_repair_records(destination_store)
+        relocated = destination_records[-1]
+        if not _legacy_repair_event_semantically_valid(
+            relocated,
+            kind="relocation",
+            target_key=relocation_target_key,
+            prior=relocation_prior,
+            quarantined_row_hash=quarantined_row_hash,
+            legacy_content_hash=legacy_content_hash,
+            legacy_original_content_hash=legacy_original_content_hash,
+            relocation_source=relocation_source,
+        ):
+            raise LegacySnapshotRepairError("relocation_proof_mismatch")
+
+    if existing_corrections:
+        correction = existing_corrections[0]
+        correction_index = source_records.index(correction)
+        prior_stream_records = [
+            record
+            for record in source_records[:correction_index]
+            if record.get("target_key") == source_target_key
+        ]
+        prior = prior_stream_records[-1] if prior_stream_records else None
+        if not _legacy_repair_event_semantically_valid(
+            correction,
+            kind="correction",
+            target_key=source_target_key,
+            prior=prior,
+            quarantined_row_hash=quarantined_row_hash,
+            legacy_content_hash=legacy_content_hash,
+            legacy_original_content_hash=legacy_original_content_hash,
+            relocation_source=relocation_source,
+            relocated_event_hash=str(relocated.get("event_hash") or ""),
+            correction_reason=correction_reason,
+        ):
+            raise LegacySnapshotRepairError("conflicting_correction")
+        return _legacy_quarantine_result(saved=False, duplicate=True, correction=correction)
+
+    previous = latest_snapshot_for_target(source_target_key, source_store)
+    previous_event_hash = str(previous.get("event_hash") or canonical_event_hash(previous)) if previous else ""
+    previous_content_hash = str(previous.get("content_hash") or "") if previous else None
+    previous_sequence = _strict_nonnegative_int(previous.get("stream_sequence")) if previous else 0
+    if previous_sequence is None:
+        raise LegacySnapshotRepairError("source_official_stream_invalid")
+    stream_sequence = previous_sequence + 1
+    captured_at = utc_now()
+    correction: dict[str, Any] = {
+        "schema": "discord_snapshot_store_legacy_row_quarantined.v1",
+        "event_id": stable_text_hash(
+            "|".join(
+                [
+                    "discord.snapshot_store.legacy_row_quarantined",
+                    quarantined_row_hash,
+                    str(relocated["event_hash"]),
+                ]
+            )
+        ),
+        "event_type": "discord.snapshot_store.legacy_row_quarantined",
+        "stream_id": source_target_key,
+        "stream_sequence": stream_sequence,
+        "expected_previous_stream_sequence": previous_sequence,
+        "specversion": "1.0",
+        "type": "discord.snapshot_store.legacy_row_quarantined",
+        "subject": source_target_key,
+        "time": captured_at,
+        "datacontenttype": "application/json",
+        "dataschema": "discord_snapshot_store_legacy_row_quarantined.v1",
+        "captured_at": captured_at,
+        "observed_at": captured_at,
+        "ingested_at": captured_at,
+        "source": "legacy_snapshot_repair",
+        "target_key": source_target_key,
+        "previous_content_hash": previous_content_hash,
+        "previous_event_hash": previous_event_hash,
+        "quarantined_row_hash": quarantined_row_hash,
+        "relocated_snapshot_event_hash": str(relocated["event_hash"]),
+        "relocated_content_hash": legacy_content_hash,
+        "legacy_content_hash": legacy_original_content_hash,
+        "reason": correction_reason,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    correction["event_hash"] = canonical_event_hash(correction)
+    if not _legacy_repair_event_semantically_valid(
+        correction,
+        kind="correction",
+        target_key=source_target_key,
+        prior=previous,
+        quarantined_row_hash=quarantined_row_hash,
+        legacy_content_hash=legacy_content_hash,
+        legacy_original_content_hash=legacy_original_content_hash,
+        relocation_source=relocation_source,
+        relocated_event_hash=str(relocated["event_hash"]),
+        correction_reason=correction_reason,
+    ):
+        raise LegacySnapshotRepairError("correction_semantic_invalid")
+    if source_store == destination_store:
+        source_bytes = source_store.read_bytes()
+    if source_store.read_bytes() != source_bytes:
+        raise LegacySnapshotRepairError("source_cas_mismatch")
+    append_text_snapshot(correction, source_store)
+    if not source_store.read_bytes().startswith(source_bytes):
+        raise LegacySnapshotRepairError("source_append_only_violation")
+    readback = _load_repair_records(source_store)[-1]
+    if readback != correction or readback.get("event_hash") != canonical_event_hash(readback):
+        raise LegacySnapshotRepairError("correction_readback_mismatch")
+    return _legacy_quarantine_result(saved=True, duplicate=False, correction=correction)
+
+
+def _persisted_orphan_merge_shape_valid(record: dict[str, Any]) -> bool:
+    event_type = "discord.snapshot_store.orphan_branch_merged"
+    root_hash = str(record.get("branch_root_event_hash") or "")
+    head_hash = str(record.get("branch_head_event_hash") or "")
+    content_hash = str(record.get("branch_content_hash") or "")
+    expected_event_id = stable_text_hash("|".join([event_type, root_hash, head_hash, content_hash]))
+    return (
+        record.get("schema") == "discord_snapshot_store_orphan_branch_merged.v1"
+        and record.get("dataschema") == "discord_snapshot_store_orphan_branch_merged.v1"
+        and record.get("event_type") == event_type
+        and record.get("type") == event_type
+        and record.get("datacontenttype") == "application/json"
+        and bool(root_hash and head_hash and content_hash)
+        and record.get("event_id") == expected_event_id
+        and record.get("reason") == "orphan_snapshot_branch_merged"
+        and record.get("private_local_only") is True
+        and record.get("external_share_allowed") is False
+        and record.get("outbound_actions") == "disabled"
+        and "text" not in record
+        and "url" not in record
+        and "path" not in record
+        and record.get("event_hash") == canonical_event_hash(record)
+    )
+
+
+def _merged_orphan_excluded_hashes(records: list[dict[str, Any]]) -> set[str]:
+    event_index = {
+        str(record.get("event_hash")): record
+        for record in records
+        if record.get("event_hash")
+    }
+    excluded: set[str] = set()
+    for merge in records:
+        if not _persisted_orphan_merge_shape_valid(merge):
+            continue
+        root_hash = str(merge["branch_root_event_hash"])
+        current_hash = str(merge["branch_head_event_hash"])
+        seen: set[str] = set()
+        while current_hash and current_hash != root_hash and current_hash not in seen:
+            seen.add(current_hash)
+            excluded.add(current_hash)
+            current = event_index.get(current_hash)
+            if current is None:
+                break
+            current_hash = str(current.get("previous_event_hash") or "")
+        if current_hash == root_hash:
+            excluded.add(root_hash)
+    return excluded
+
+
+def _orphan_merge_event_semantically_valid(
+    record: dict[str, Any],
+    *,
+    prior: dict[str, Any],
+    target_key: str,
+    branch_root_hash: str,
+    branch_head_hash: str,
+    branch_content_hash: str,
+) -> bool:
+    if not _persisted_orphan_merge_shape_valid(record):
+        return False
+    sequence = _strict_nonnegative_int(record.get("stream_sequence"))
+    expected_previous = _strict_nonnegative_int(record.get("expected_previous_stream_sequence"))
+    prior_sequence = _strict_nonnegative_int(prior.get("stream_sequence"))
+    if sequence is None or expected_previous is None or prior_sequence is None:
+        return False
+    prior_hash = str(prior.get("event_hash") or "")
+    prior_content_hash = str(prior.get("content_hash") or "")
+    return (
+        record.get("target_key") == target_key
+        and record.get("stream_id") == target_key
+        and record.get("subject") == target_key
+        and sequence == prior_sequence + 1
+        and expected_previous == prior_sequence
+        and record.get("previous_event_hash") == prior_hash
+        and record.get("previous_content_hash") == prior_content_hash
+        and record.get("branch_root_event_hash") == branch_root_hash
+        and record.get("branch_head_event_hash") == branch_head_hash
+        and record.get("branch_content_hash") == branch_content_hash
+        and isinstance(record.get("captured_at"), str)
+        and bool(record.get("captured_at"))
+        and record.get("time") == record.get("captured_at")
+        and record.get("observed_at") == record.get("captured_at")
+        and record.get("ingested_at") == record.get("captured_at")
+    )
+
+
+def _event_components(event_index: dict[str, dict[str, Any]]) -> list[set[str]]:
+    adjacency: dict[str, set[str]] = {event_hash: set() for event_hash in event_index}
+    for event_hash, record in event_index.items():
+        previous_hash = str(record.get("previous_event_hash") or "")
+        if previous_hash in event_index:
+            adjacency[event_hash].add(previous_hash)
+            adjacency[previous_hash].add(event_hash)
+    components: list[set[str]] = []
+    remaining = set(event_index)
+    while remaining:
+        seed = next(iter(remaining))
+        component: set[str] = set()
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(adjacency[current] - component)
+        remaining -= component
+        components.append(component)
+    return components
+
+
+def _select_main_event_component(
+    event_index: dict[str, dict[str, Any]],
+    *,
+    excluded_hashes: set[str] | None = None,
+    branch_root_position: int | None = None,
+    event_positions: dict[str, int] | None = None,
+) -> set[str]:
+    """Canonical main selector shared by merge and repair projections."""
+
+    excluded = excluded_hashes or set()
+    positions = event_positions or {
+        event_hash: index for index, event_hash in enumerate(event_index)
+    }
+    projected_index = {
+        event_hash: record
+        for event_hash, record in event_index.items()
+        if event_hash not in excluded
+    }
+    eligible = _event_components(projected_index)
+    message_components = [
+        component
+        for component in eligible
+        if any(event_index[event_hash].get("event_type") == "message_observation" for event_hash in component)
+    ]
+    if len(message_components) > 1:
+        raise LegacySnapshotRepairError("main_component_ambiguous")
+    if message_components:
+        snapshot_fallback = False
+        selected = message_components[0]
+    else:
+        snapshot_fallback = True
+        allowed_types = {
+            "discord.visible_text.snapshot_observed",
+            "discord.snapshot_store.orphan_branch_merged",
+            "discord.snapshot_store.legacy_row_quarantined",
+            "discord.snapshot_store.failed_relocation_quarantined",
+        }
+        rooted: list[tuple[int, set[str]]] = []
+        for component in eligible:
+            if not component or not any(
+                event_index[event_hash].get("event_type") == "discord.visible_text.snapshot_observed"
+                for event_hash in component
+            ):
+                continue
+            if any(event_index[event_hash].get("event_type") not in allowed_types for event_hash in component):
+                continue
+            roots = [
+                event_hash
+                for event_hash in component
+                if str(event_index[event_hash].get("previous_event_hash") or "") not in component
+            ]
+            if len(roots) != 1:
+                raise LegacySnapshotRepairError("main_component_ambiguous")
+            rooted.append((positions[roots[0]], component))
+        if not rooted:
+            raise LegacySnapshotRepairError("main_component_not_unique")
+        rooted.sort(key=lambda item: item[0])
+        if len(rooted) > 1 and rooted[0][0] == rooted[1][0]:
+            raise LegacySnapshotRepairError("main_component_ambiguous")
+        selected = rooted[0][1]
+    main_roots = [
+        event_hash
+        for event_hash in selected
+        if str(event_index[event_hash].get("previous_event_hash") or "") not in selected
+    ]
+    if len(main_roots) != 1:
+        raise LegacySnapshotRepairError("main_component_ambiguous")
+    if (
+        snapshot_fallback
+        and branch_root_position is not None
+        and branch_root_position <= positions[main_roots[0]]
+    ):
+        raise LegacySnapshotRepairError("branch_is_deterministic_main")
+    return selected
+
+
+def _source_event_semantically_valid(
+    record: dict[str, Any],
+    *,
+    prior: dict[str, Any] | None,
+    source_identity: tuple[str, str],
+    allow_message_deep_link: bool = False,
+) -> bool:
+    """Validate snapshot/message source events before admitting either graph branch."""
+
+    event_type = record.get("event_type")
+    if event_type not in {"discord.visible_text.snapshot_observed", "message_observation"}:
+        return False
+    url = record.get("url")
+    if not isinstance(url, str):
+        return False
+    target = _discord_canonical_thread_identity(url)
+    if target is None and allow_message_deep_link:
+        legacy_target = _discord_legacy_target_identity_and_url(url)
+        target = legacy_target[0] if legacy_target is not None else None
+    if target != source_identity:
+        return False
+    target_key = stable_text_hash(url.strip())
+    sequence = _strict_nonnegative_int(record.get("stream_sequence"))
+    expected_previous = _strict_nonnegative_int(record.get("expected_previous_stream_sequence"))
+    if sequence is None or sequence < 1 or expected_previous is None:
+        return False
+    if prior is None:
+        prior_sequence = 0
+        prior_hash = ""
+        prior_content_hash: str | None = None
+    else:
+        persisted_prior_hash = str(prior.get("event_hash") or "")
+        prior_hash = persisted_prior_hash or canonical_event_hash(prior)
+        if persisted_prior_hash and persisted_prior_hash != canonical_event_hash(prior):
+            return False
+        prior_content_hash = str(prior.get("content_hash") or "")
+        stored_prior_sequence = _strict_nonnegative_int(prior.get("stream_sequence"))
+        # A pre-hash legacy root has no sequence field, but is the immediately
+        # preceding observation represented by the source event's expectation.
+        prior_sequence = stored_prior_sequence if stored_prior_sequence is not None else sequence - 1
+    captured_at = record.get("captured_at")
+    source = record.get("source")
+    content_hash = record.get("content_hash")
+    text = record.get("text")
+    if (
+        not all(isinstance(value, str) and value for value in (captured_at, source, content_hash))
+        or not isinstance(text, str)
+    ):
+        return False
+    expected_event_id = snapshot_observation_event_id(
+        captured_at=captured_at,
+        target_key=target_key,
+        content_hash=content_hash,
+        source=source,
+        stream_sequence=sequence,
+    )
+    if event_type == "message_observation":
+        message_id = record.get("message_id")
+        ordinal = _strict_nonnegative_int(record.get("ordinal"))
+        kind_valid = (
+            (message_id is None or isinstance(message_id, str))
+            and ordinal is not None
+            and ordinal >= 0
+            and isinstance(record.get("author_label"), str)
+            and isinstance(record.get("visible_timestamp"), str)
+            and type(record.get("duplicate_message_id")) is bool
+        )
+    else:
+        kind_valid = (
+            bool(text)
+            and isinstance(record.get("title"), str)
+            and type(record.get("changed")) is bool
+            and type(record.get("duplicate_content")) is bool
+        )
+    return (
+        kind_valid
+        and record.get("schema") == "discord_context_bridge_text_snapshot_observation.v1"
+        and record.get("dataschema") == "discord_context_bridge_text_snapshot_observation.v1"
+        and record.get("specversion") == "1.0"
+        and record.get("type") == event_type
+        and record.get("datacontenttype") == "text/plain; charset=utf-8"
+        and record.get("event_id") == expected_event_id
+        and record.get("target_key") == target_key
+        and record.get("stream_id") == target_key
+        and record.get("subject") == target_key
+        and sequence == prior_sequence + 1
+        and expected_previous == prior_sequence
+        and record.get("previous_event_hash") == prior_hash
+        and record.get("previous_content_hash") == prior_content_hash
+        and content_hash == stable_text_hash(text)
+        and record.get("private_local_only") is True
+        and record.get("external_share_allowed") is False
+        and record.get("outbound_actions") == "disabled"
+        and record.get("event_hash") == canonical_event_hash(record)
+        and record.get("time") == captured_at
+        and record.get("observed_at") == captured_at
+        and isinstance(record.get("ingested_at"), str)
+        and bool(record.get("ingested_at"))
+    )
+
+
+def _orphan_branch_proof_valid(
+    record: dict[str, Any],
+    *,
+    event_index: dict[str, dict[str, Any]],
+    prehash_index: dict[str, list[dict[str, Any]]],
+    source_identity: tuple[str, str],
+    main_component: set[str],
+    validated_main_hashes: set[str],
+    event_positions: dict[str, int],
+) -> bool:
+    root_hash = str(record.get("branch_root_event_hash") or "")
+    head_hash = str(record.get("branch_head_event_hash") or "")
+    roots = prehash_index.get(root_hash, [])
+    persisted_root = event_index.get(root_hash)
+    if head_hash not in event_index or (len(roots) != 1 and persisted_root is None):
+        return False
+    if persisted_root is not None:
+        root_previous_hash = str(persisted_root.get("previous_event_hash") or "")
+        root_previous = event_index.get(root_previous_hash) if root_previous_hash else None
+        if (
+            persisted_root.get("event_type") != "discord.visible_text.snapshot_observed"
+            or not _source_event_semantically_valid(
+                persisted_root,
+                prior=root_previous,
+                source_identity=source_identity,
+                allow_message_deep_link=True,
+            )
+        ):
+            return False
+    else:
+        root_target = _discord_legacy_target_identity_and_url(str(roots[0].get("url") or ""))
+        if root_target is None or root_target[0] != source_identity:
+            return False
+    current_hash = head_hash
+    seen: set[str] = set()
+    while current_hash != root_hash:
+        if current_hash in seen:
+            return False
+        seen.add(current_hash)
+        current = event_index.get(current_hash)
+        if current is None or current.get("event_type") != "discord.visible_text.snapshot_observed":
+            return False
+        previous_hash = str(current.get("previous_event_hash") or "")
+        prior = event_index.get(previous_hash)
+        if previous_hash == root_hash and persisted_root is None:
+            prior = roots[0]
+        if not _source_event_semantically_valid(
+            current,
+            prior=prior,
+            source_identity=source_identity,
+            allow_message_deep_link=True,
+        ):
+            return False
+        current_hash = previous_hash
+    branch_head = event_index[head_hash]
+    if record.get("branch_content_hash") != branch_head.get("content_hash"):
+        return False
+    if persisted_root is not None:
+        root_previous_hash = str(persisted_root.get("previous_event_hash") or "")
+        if root_previous_hash:
+            branch_hashes = seen | {root_hash}
+            remaining_children = [
+                child
+                for child in event_index.values()
+                if child.get("previous_event_hash") == root_previous_hash
+                and str(child.get("event_hash") or "") not in branch_hashes
+            ]
+            if (
+                root_previous_hash not in main_component
+                or len(remaining_children) != 1
+                or not _strict_fork_main_child_established(
+                    remaining_children[0],
+                    parent=event_index[root_previous_hash],
+                    source_identity=source_identity,
+                    main_component=main_component,
+                    validated_main_hashes=validated_main_hashes,
+                )
+                or event_positions.get(root_hash, -1)
+                <= event_positions.get(
+                    str(remaining_children[0].get("event_hash") or ""), -1
+                )
+            ):
+                return False
+    return True
+
+
+def _event_hash_is_strict_descendant(
+    event_index: dict[str, dict[str, Any]],
+    *,
+    descendant_hash: str,
+    ancestor_hash: str,
+) -> bool:
+    if not descendant_hash or not ancestor_hash or descendant_hash == ancestor_hash:
+        return False
+    current_hash = descendant_hash
+    seen: set[str] = set()
+    while current_hash and current_hash not in seen:
+        seen.add(current_hash)
+        current = event_index.get(current_hash)
+        if current is None:
+            return False
+        previous_hash = str(current.get("previous_event_hash") or "")
+        if previous_hash == ancestor_hash:
+            return True
+        current_hash = previous_hash
+    return False
+
+
+def _strict_fork_main_child_established(
+    record: dict[str, Any],
+    *,
+    parent: dict[str, Any],
+    source_identity: tuple[str, str],
+    main_component: set[str],
+    validated_main_hashes: set[str],
+) -> bool:
+    event_hash = str(record.get("event_hash") or "")
+    if event_hash not in main_component:
+        return False
+    if record.get("event_type") in {
+        "discord.visible_text.snapshot_observed",
+        "message_observation",
+    }:
+        return _source_event_semantically_valid(
+            record,
+            prior=parent,
+            source_identity=source_identity,
+        )
+    return event_hash in validated_main_hashes
+
+
+def _legacy_correction_on_main_semantically_valid(
+    record: dict[str, Any],
+    *,
+    prior: dict[str, Any] | None,
+    canonical_target_key: str,
+) -> bool:
+    if prior is None:
+        return False
+    target_key = str(record.get("target_key") or "")
+    prior_target_key = str(prior.get("target_key") or "")
+    if not target_key or target_key not in {canonical_target_key, prior_target_key}:
+        return False
+    return _legacy_repair_event_semantically_valid(
+        record,
+        kind="correction",
+        target_key=target_key,
+        prior=prior,
+        quarantined_row_hash=str(record.get("quarantined_row_hash") or ""),
+        legacy_content_hash=str(record.get("relocated_content_hash") or ""),
+        legacy_original_content_hash=str(
+            record.get("legacy_content_hash") or record.get("relocated_content_hash") or ""
+        ),
+        relocation_source="",
+        relocated_event_hash=str(record.get("relocated_snapshot_event_hash") or ""),
+        correction_reason=str(record.get("reason") or ""),
+    )
+
+
+def _validate_main_event_component(
+    component: set[str],
+    *,
+    event_index: dict[str, dict[str, Any]],
+    prehash_index: dict[str, list[dict[str, Any]]],
+    source_identity: tuple[str, str],
+) -> dict[str, Any]:
+    canonical_target_key = stable_text_hash(
+        f"https://discord.com/channels/{source_identity[0]}/{source_identity[1]}"
+    )
+    children: dict[str, list[str]] = {event_hash: [] for event_hash in component}
+    roots: list[str] = []
+    for event_hash in component:
+        record = event_index[event_hash]
+        if record.get("event_hash") != canonical_event_hash(record):
+            raise LegacySnapshotRepairError("main_event_hash_invalid")
+        previous_hash = str(record.get("previous_event_hash") or "")
+        if previous_hash in component:
+            children[previous_hash].append(event_hash)
+        else:
+            roots.append(event_hash)
+            if previous_hash and len(prehash_index.get(previous_hash, [])) != 1:
+                raise LegacySnapshotRepairError("main_previous_missing")
+    if len(roots) != 1:
+        raise LegacySnapshotRepairError("main_root_invalid")
+    if any(len(values) > 1 for values in children.values()):
+        raise LegacySnapshotRepairError("main_fork_detected")
+    heads = [event_hash for event_hash, values in children.items() if not values]
+    if len(heads) != 1:
+        raise LegacySnapshotRepairError("main_head_invalid")
+    visited: set[str] = set()
+    ordered: list[str] = []
+    current = roots[0]
+    while current not in visited:
+        visited.add(current)
+        ordered.append(current)
+        next_values = children[current]
+        if not next_values:
+            break
+        current = next_values[0]
+    if visited != component or current != heads[0]:
+        raise LegacySnapshotRepairError("main_cycle_or_disconnected")
+
+    validated_main_hashes: set[str] = set()
+    event_positions = {
+        event_hash: index for index, event_hash in enumerate(event_index)
+    }
+    for event_hash in ordered:
+        record = event_index[event_hash]
+        previous_hash = str(record.get("previous_event_hash") or "")
+        prior: dict[str, Any] | None = None
+        if previous_hash in component:
+            prior = event_index[previous_hash]
+        elif previous_hash:
+            prior = prehash_index[previous_hash][0]
+        event_type = record.get("event_type")
+        quarantine_proofs = [
+            candidate
+            for candidate in event_index.values()
+            if candidate.get("event_type")
+            == "discord.snapshot_store.failed_relocation_quarantined"
+            and candidate.get("invalid_relocation_event_hash") == event_hash
+        ]
+        if event_type == "discord.visible_text.snapshot_observed" and quarantine_proofs:
+            proof = quarantine_proofs[0] if len(quarantine_proofs) == 1 else {}
+            valid = (
+                prior is not None
+                and bool(proof)
+                and _invalid_relocation_attempt_semantically_valid(
+                    record,
+                    logical_prior=prior,
+                    quarantined_row_hash=str(proof.get("quarantined_row_hash") or ""),
+                    legacy_content_hash=str(record.get("content_hash") or ""),
+                    legacy_text=str(record.get("text") or ""),
+                    relocation_url=str(record.get("url") or ""),
+                )
+            )
+            error_reason = "main_event_semantic_invalid"
+        elif event_type in {"discord.visible_text.snapshot_observed", "message_observation"}:
+            valid = _source_event_semantically_valid(
+                record,
+                prior=prior,
+                source_identity=source_identity,
+            )
+            error_reason = "source_event_semantic_invalid"
+        elif event_type == "discord.snapshot_store.orphan_branch_merged":
+            valid = (
+                prior is not None
+                and _orphan_branch_proof_valid(
+                    record,
+                    event_index=event_index,
+                    prehash_index=prehash_index,
+                    source_identity=source_identity,
+                    main_component=component,
+                    validated_main_hashes=validated_main_hashes,
+                    event_positions=event_positions,
+                )
+                and _orphan_merge_event_semantically_valid(
+                    record,
+                    prior=prior,
+                    target_key=canonical_target_key,
+                    branch_root_hash=str(record.get("branch_root_event_hash") or ""),
+                    branch_head_hash=str(record.get("branch_head_event_hash") or ""),
+                    branch_content_hash=str(record.get("branch_content_hash") or ""),
+                )
+            )
+            error_reason = "main_event_semantic_invalid"
+        elif event_type == "discord.snapshot_store.legacy_row_quarantined":
+            valid = _legacy_correction_on_main_semantically_valid(
+                record,
+                prior=prior,
+                canonical_target_key=canonical_target_key,
+            )
+            error_reason = "main_event_semantic_invalid"
+        elif event_type == "discord.snapshot_store.failed_relocation_quarantined":
+            invalid = event_index.get(str(record.get("invalid_relocation_event_hash") or ""))
+            logical_prior = event_index.get(str(record.get("logical_previous_event_hash") or ""))
+            valid = (
+                invalid is not None
+                and logical_prior is not None
+                and _failed_relocation_quarantine_semantically_valid(
+                    record,
+                    invalid=invalid,
+                    logical_prior=logical_prior,
+                    quarantined_row_hash=str(record.get("quarantined_row_hash") or ""),
+                    target_key=canonical_target_key,
+                )
+            )
+            error_reason = "main_event_semantic_invalid"
+        else:
+            raise LegacySnapshotRepairError("main_event_type_unknown")
+        if not valid:
+            raise LegacySnapshotRepairError(error_reason)
+        validated_main_hashes.add(event_hash)
+    latest_orphan_head_by_root: dict[str, str] = {}
+    for event_hash in ordered:
+        record = event_index[event_hash]
+        if record.get("event_type") != "discord.snapshot_store.orphan_branch_merged":
+            continue
+        root_hash = str(record.get("branch_root_event_hash") or "")
+        head_hash = str(record.get("branch_head_event_hash") or "")
+        previous_head = latest_orphan_head_by_root.get(root_hash)
+        if previous_head is not None and not _event_hash_is_strict_descendant(
+            event_index,
+            descendant_hash=head_hash,
+            ancestor_hash=previous_head,
+        ):
+            raise LegacySnapshotRepairError("orphan_merge_proof_not_extension")
+        latest_orphan_head_by_root[root_hash] = head_hash
+    return event_index[heads[0]]
+
+
+_TARGET_EVENT_REFERENCE_FIELDS = (
+    "previous_event_hash",
+    "branch_root_event_hash",
+    "branch_head_event_hash",
+    "invalid_relocation_event_hash",
+    "logical_previous_event_hash",
+    "relocated_snapshot_event_hash",
+)
+
+
+def _records_for_source_identity(
+    records: list[dict[str, Any]], *, source_identity: tuple[str, str]
+) -> list[dict[str, Any]]:
+    """Project a shared append-only store onto one Discord target graph.
+
+    A shared snapshot store legitimately contains independent target streams.
+    The strict main-chain validator must therefore see the requested stream and
+    its repair/proof events, rather than treating every unrelated component as
+    a competing main.  The projection is graph-based so a malformed event that
+    links itself to the requested stream remains in scope and still fails
+    closed during semantic validation.
+    """
+
+    canonical_url = (
+        f"https://discord.com/channels/{source_identity[0]}/{source_identity[1]}"
+    )
+    canonical_target_key = stable_text_hash(canonical_url)
+    record_hashes = {
+        id(record): str(record.get("event_hash") or canonical_event_hash(record))
+        for record in records
+    }
+
+    included_hashes: set[str] = set()
+    for record in records:
+        target = _discord_legacy_target_identity_and_url(str(record.get("url") or ""))
+        if (
+            (target is not None and target[0] == source_identity)
+            or record.get("target_key") == canonical_target_key
+            or record.get("stream_id") == canonical_target_key
+        ):
+            included_hashes.add(record_hashes[id(record)])
+
+    changed = True
+    while changed:
+        changed = False
+        for record in records:
+            record_hash = record_hashes[id(record)]
+            references = {
+                str(record.get(field) or "")
+                for field in _TARGET_EVENT_REFERENCE_FIELDS
+                if record.get(field)
+            }
+            if record_hash in included_hashes or references & included_hashes:
+                expanded = references | {record_hash}
+                if not expanded.issubset(included_hashes):
+                    included_hashes.update(expanded)
+                    changed = True
+                continue
+
+    return [
+        record
+        for record in records
+        if record_hashes[id(record)] in included_hashes
+    ]
+
+
+def _validated_main_head_for_records(
+    records: list[dict[str, Any]], *, source_identity: tuple[str, str]
+) -> dict[str, Any]:
+    records = _records_for_source_identity(records, source_identity=source_identity)
+    event_index: dict[str, dict[str, Any]] = {}
+    prehash_index: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        persisted_hash = str(record.get("event_hash") or "")
+        if persisted_hash:
+            if persisted_hash in event_index:
+                raise LegacySnapshotRepairError("duplicate_event_hash")
+            event_index[persisted_hash] = record
+        else:
+            prehash_index.setdefault(canonical_event_hash(record), []).append(record)
+    selected = _select_main_event_component(
+        event_index,
+        excluded_hashes=_merged_orphan_excluded_hashes(records),
+    )
+    shaped_merge_hashes = {
+        str(record.get("event_hash") or "")
+        for record in records
+        if _persisted_orphan_merge_shape_valid(record)
+    }
+    if not shaped_merge_hashes.issubset(selected):
+        raise LegacySnapshotRepairError("orphan_merge_proof_not_on_main")
+    return _validate_main_event_component(
+        selected,
+        event_index=event_index,
+        prehash_index=prehash_index,
+        source_identity=source_identity,
+    )
+
+
+def _merge_orphan_snapshot_branch_locked(
+    *,
+    source_store: Path,
+    source_identity: tuple[str, str],
+    branch_head_event_hash: str,
+    legacy_root_hash: str = "",
+    branch_root_event_hash: str = "",
+) -> dict[str, Any]:
+    source_bytes = source_store.read_bytes()
+    records = _load_repair_records(source_store)
+    event_records = [record for record in records if record.get("event_hash")]
+    event_index: dict[str, dict[str, Any]] = {}
+    for record in event_records:
+        event_hash = str(record.get("event_hash") or "")
+        if event_hash in event_index:
+            raise LegacySnapshotRepairError("duplicate_event_hash")
+        event_index[event_hash] = record
+    prehash_index: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if record.get("event_hash"):
+            continue
+        prehash_index.setdefault(canonical_event_hash(record), []).append(record)
+
+    modern_root = bool(branch_root_event_hash)
+    root_hash = branch_root_event_hash or legacy_root_hash
+    legacy_root: dict[str, Any] | None = None
+    fork_parent_hash = ""
+    if modern_root:
+        modern_root_record = event_index.get(root_hash)
+        fork_parent_hash = (
+            str(modern_root_record.get("previous_event_hash") or "")
+            if modern_root_record is not None
+            else ""
+        )
+        modern_root_prior = event_index.get(fork_parent_hash) if fork_parent_hash else None
+        if (
+            modern_root_record is None
+            or modern_root_record.get("event_type") != "discord.visible_text.snapshot_observed"
+            or not _source_event_semantically_valid(
+                modern_root_record,
+                prior=modern_root_prior,
+                source_identity=source_identity,
+                allow_message_deep_link=True,
+            )
+        ):
+            raise LegacySnapshotRepairError("branch_root_event_invalid")
+    else:
+        legacy_roots = prehash_index.get(root_hash, [])
+        if len(legacy_roots) != 1:
+            raise LegacySnapshotRepairError("legacy_root_hash_invalid")
+        legacy_root = legacy_roots[0]
+        legacy_target = _discord_legacy_target_identity_and_url(str(legacy_root.get("url") or ""))
+        if legacy_target is None or legacy_target[0] != source_identity:
+            raise LegacySnapshotRepairError("legacy_root_target_mismatch")
+
+    branch_head = event_index.get(branch_head_event_hash)
+    if branch_head is None:
+        raise LegacySnapshotRepairError("branch_head_missing")
+    if branch_head.get("event_hash") != canonical_event_hash(branch_head):
+        raise LegacySnapshotRepairError("branch_head_hash_invalid")
+    if branch_head.get("event_type") != "discord.visible_text.snapshot_observed":
+        raise LegacySnapshotRepairError("branch_head_not_snapshot")
+    if any(record.get("previous_event_hash") == branch_head_event_hash for record in event_records):
+        raise LegacySnapshotRepairError("branch_head_has_child")
+
+    branch_hashes: set[str] = set()
+    current_hash = branch_head_event_hash
+    while current_hash != root_hash:
+        if current_hash in branch_hashes:
+            raise LegacySnapshotRepairError("branch_cycle_detected")
+        current = event_index.get(current_hash)
+        if current is None:
+            raise LegacySnapshotRepairError("branch_ancestry_missing")
+        if current.get("event_hash") != canonical_event_hash(current):
+            raise LegacySnapshotRepairError("branch_event_hash_invalid")
+        if current.get("event_type") == "message_observation":
+            raise LegacySnapshotRepairError("branch_message_observation_forbidden")
+        if current.get("event_type") != "discord.visible_text.snapshot_observed":
+            raise LegacySnapshotRepairError("branch_event_type_invalid")
+        previous_hash = str(current.get("previous_event_hash") or "")
+        prior = event_index.get(previous_hash)
+        if prior is None and previous_hash == root_hash:
+            prior = legacy_root
+        if not _source_event_semantically_valid(
+            current,
+            prior=prior,
+            source_identity=source_identity,
+            allow_message_deep_link=True,
+        ):
+            raise LegacySnapshotRepairError("source_event_semantic_invalid")
+        branch_hashes.add(current_hash)
+        current_hash = previous_hash
+    if modern_root:
+        branch_hashes.add(root_hash)
+    branch_children = {
+        event_hash: [
+            record
+            for record in event_records
+            if record.get("previous_event_hash") == event_hash
+        ]
+        for event_hash in branch_hashes
+    }
+    for event_hash, children_for_event in branch_children.items():
+        expected_children = 0 if event_hash == branch_head_event_hash else 1
+        if len(children_for_event) != expected_children or any(
+            str(child.get("event_hash") or "") not in branch_hashes for child in children_for_event
+        ):
+            raise LegacySnapshotRepairError("branch_not_linear")
+
+    root_positions = [
+        index
+        for index, record in enumerate(records)
+        if str(record.get("event_hash") or canonical_event_hash(record)) == root_hash
+    ]
+    if len(root_positions) != 1:
+        raise LegacySnapshotRepairError("branch_root_position_ambiguous")
+    main_component = _select_main_event_component(
+        event_index,
+        excluded_hashes=branch_hashes,
+        branch_root_position=None if fork_parent_hash else root_positions[0],
+        event_positions={
+            str(record.get("event_hash")): index
+            for index, record in enumerate(records)
+            if record.get("event_hash")
+        },
+    )
+    main_head = _validate_main_event_component(
+        main_component,
+        event_index=event_index,
+        prehash_index=prehash_index,
+        source_identity=source_identity,
+    )
+    if fork_parent_hash:
+        event_positions = {
+            str(record.get("event_hash") or ""): index
+            for index, record in enumerate(records)
+            if record.get("event_hash")
+        }
+        remaining_children = [
+            record
+            for record in event_records
+            if record.get("previous_event_hash") == fork_parent_hash
+            and str(record.get("event_hash") or "") not in branch_hashes
+        ]
+        if (
+            fork_parent_hash not in main_component
+            or len(remaining_children) != 1
+            or not _strict_fork_main_child_established(
+                remaining_children[0],
+                parent=event_index[fork_parent_hash],
+                source_identity=source_identity,
+                main_component=main_component,
+                validated_main_hashes=main_component,
+            )
+            or event_positions.get(root_hash, -1)
+            <= event_positions.get(
+                str(remaining_children[0].get("event_hash") or ""), -1
+            )
+        ):
+            raise LegacySnapshotRepairError("branch_root_not_strict_main_fork")
+    target_key = stable_text_hash(
+        f"https://discord.com/channels/{source_identity[0]}/{source_identity[1]}"
+    )
+    branch_content_hash = str(branch_head.get("content_hash") or "")
+    if not branch_content_hash:
+        raise LegacySnapshotRepairError("branch_content_hash_missing")
+
+    existing_merges = [
+        record
+        for record in records
+        if record.get("event_type") == "discord.snapshot_store.orphan_branch_merged"
+        and record.get("branch_root_event_hash") == root_hash
+        and record.get("branch_head_event_hash") == branch_head_event_hash
+    ]
+    if len(existing_merges) > 1:
+        raise LegacySnapshotRepairError("orphan_merge_conflict")
+    if existing_merges:
+        merge = existing_merges[0]
+        prior = event_index.get(str(merge.get("previous_event_hash") or ""))
+        if prior is None or not _orphan_merge_event_semantically_valid(
+            merge,
+            prior=prior,
+            target_key=target_key,
+            branch_root_hash=root_hash,
+            branch_head_hash=branch_head_event_hash,
+            branch_content_hash=branch_content_hash,
+        ):
+            raise LegacySnapshotRepairError("orphan_merge_conflict")
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_snapshot_store_orphan_branch_merge_receipt.v1",
+            "ok": True,
+            "status": "duplicate",
+            "saved": False,
+            "duplicate": True,
+            "branch_root_event_hash": root_hash,
+            "branch_head_event_hash": branch_head_event_hash,
+            "branch_content_hash": branch_content_hash,
+            "merge_event_hash": str(merge["event_hash"]),
+            "canonical_readback": True,
+            "raw_text_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+
+    main_sequence = _strict_nonnegative_int(main_head.get("stream_sequence"))
+    if main_sequence is None:
+        raise LegacySnapshotRepairError("main_sequence_invalid")
+    captured_at = utc_now()
+    event_type = "discord.snapshot_store.orphan_branch_merged"
+    merge: dict[str, Any] = {
+        "schema": "discord_snapshot_store_orphan_branch_merged.v1",
+        "event_id": stable_text_hash(
+            "|".join([event_type, root_hash, branch_head_event_hash, branch_content_hash])
+        ),
+        "event_type": event_type,
+        "stream_id": target_key,
+        "stream_sequence": main_sequence + 1,
+        "expected_previous_stream_sequence": main_sequence,
+        "specversion": "1.0",
+        "type": event_type,
+        "subject": target_key,
+        "time": captured_at,
+        "datacontenttype": "application/json",
+        "dataschema": "discord_snapshot_store_orphan_branch_merged.v1",
+        "captured_at": captured_at,
+        "observed_at": captured_at,
+        "ingested_at": captured_at,
+        "source": "legacy_snapshot_repair",
+        "target_key": target_key,
+        "previous_content_hash": str(main_head.get("content_hash") or ""),
+        "previous_event_hash": str(main_head["event_hash"]),
+        "branch_root_event_hash": root_hash,
+        "branch_head_event_hash": branch_head_event_hash,
+        "branch_content_hash": branch_content_hash,
+        "reason": "orphan_snapshot_branch_merged",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    merge["event_hash"] = canonical_event_hash(merge)
+    if not _orphan_merge_event_semantically_valid(
+        merge,
+        prior=main_head,
+        target_key=target_key,
+        branch_root_hash=root_hash,
+        branch_head_hash=branch_head_event_hash,
+        branch_content_hash=branch_content_hash,
+    ):
+        raise LegacySnapshotRepairError("orphan_merge_semantic_invalid")
+    if source_store.read_bytes() != source_bytes:
+        raise LegacySnapshotRepairError("source_cas_mismatch")
+    append_text_snapshot(merge, source_store)
+    if not source_store.read_bytes().startswith(source_bytes):
+        raise LegacySnapshotRepairError("source_append_only_violation")
+    readback = _load_repair_records(source_store)[-1]
+    if readback != merge:
+        raise LegacySnapshotRepairError("orphan_merge_readback_mismatch")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_snapshot_store_orphan_branch_merge_receipt.v1",
+        "ok": True,
+        "status": "merged",
+        "saved": True,
+        "duplicate": False,
+        "branch_root_event_hash": root_hash,
+        "branch_head_event_hash": branch_head_event_hash,
+        "branch_content_hash": branch_content_hash,
+        "merge_event_hash": str(merge["event_hash"]),
+        "canonical_readback": True,
+        "raw_text_returned": False,
+        "url_output": "omitted",
+        "path_output": "omitted",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def merge_orphan_snapshot_branch(
+    *,
+    snapshot_root: Path,
+    source_store: Path,
+    source_target_url: str,
+    branch_head_event_hash: str,
+    legacy_root_hash: str = "",
+    branch_root_event_hash: str = "",
+) -> dict[str, Any]:
+    try:
+        if bool(legacy_root_hash) == bool(branch_root_event_hash):
+            raise LegacySnapshotRepairError("branch_root_proof_exactly_one_required")
+        if not snapshot_root.exists() or not snapshot_root.is_dir() or snapshot_root.is_symlink():
+            raise LegacySnapshotRepairError("snapshot_root_invalid")
+        root = snapshot_root.resolve(strict=True)
+        source_identity = _discord_canonical_thread_identity(source_target_url)
+        if source_identity is None:
+            raise LegacySnapshotRepairError("source_target_invalid")
+        source = _validate_canonical_store_path(
+            snapshot_root=root, store=source_store, identity=source_identity, require_exists=True
+        )
+        with _locked_snapshot_stores([source]):
+            _validate_canonical_store_path(
+                snapshot_root=root, store=source, identity=source_identity, require_exists=True
+            )
+            return _merge_orphan_snapshot_branch_locked(
+                source_store=source,
+                source_identity=source_identity,
+                branch_head_event_hash=branch_head_event_hash,
+                legacy_root_hash=legacy_root_hash,
+                branch_root_event_hash=branch_root_event_hash,
+            )
+    except LegacySnapshotRepairError:
+        raise
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise LegacySnapshotRepairError("store_decode_error") from exc
+    except (TypeError, ValueError) as exc:
+        raise LegacySnapshotRepairError("store_semantic_error") from exc
+    except OSError as exc:
+        raise LegacySnapshotRepairError("store_io_error") from exc
+    except RuntimeError as exc:
+        raise LegacySnapshotRepairError("store_path_unsafe") from exc
+
+
+def repair_cross_thread_legacy_snapshot(
+    *,
+    snapshot_root: Path,
+    source_store: Path,
+    source_target_url: str,
+    quarantined_row_hash: str,
+    destination_store: Path,
+) -> dict[str, Any]:
+    """Relocate one pre-hash cross-thread row and append an auditable correction.
+
+    Existing bytes are never rewritten.  The source correction is appended only
+    after the relocated snapshot has been read back and its target/content/event
+    proof has been verified.
+    """
+
+    try:
+        if not snapshot_root.exists() or not snapshot_root.is_dir() or snapshot_root.is_symlink():
+            raise LegacySnapshotRepairError("snapshot_root_invalid")
+        root = snapshot_root.resolve(strict=True)
+        source_identity = _discord_canonical_thread_identity(source_target_url)
+        if source_identity is None:
+            raise LegacySnapshotRepairError("source_target_invalid")
+        source = _validate_canonical_store_path(
+            snapshot_root=root, store=source_store, identity=source_identity, require_exists=True
+        )
+        preliminary_records = _load_repair_records(source)
+        matching_rows = [
+            record
+            for record in preliminary_records
+            if not record.get("event_hash") and canonical_event_hash(record) == quarantined_row_hash
+        ]
+        if len(matching_rows) != 1:
+            raise LegacySnapshotRepairError(
+                "legacy_row_hash_missing" if not matching_rows else "legacy_row_hash_multiple"
+            )
+        legacy_target = _discord_legacy_target_identity_and_url(str(matching_rows[0].get("url") or ""))
+        if legacy_target is None:
+            raise LegacySnapshotRepairError("legacy_row_target_invalid")
+        legacy_identity, _relocation_url = legacy_target
+        if legacy_identity[0] != source_identity[0]:
+            raise LegacySnapshotRepairError("cross_guild_legacy_row")
+        destination = _validate_canonical_store_path(
+            snapshot_root=root, store=destination_store, identity=legacy_identity, require_exists=False
+        )
+        same_thread_recanonicalization = legacy_identity == source_identity
+        if source == destination and not same_thread_recanonicalization:
+            raise LegacySnapshotRepairError("source_destination_same_store")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_components(root, destination)
+        if source != destination and destination.exists() and os.path.samefile(source, destination):
+            raise LegacySnapshotRepairError("source_destination_same_file")
+        with _locked_snapshot_stores([source, destination]):
+            _validate_canonical_store_path(
+                snapshot_root=root, store=source, identity=source_identity, require_exists=True
+            )
+            _validate_canonical_store_path(
+                snapshot_root=root, store=destination, identity=legacy_identity, require_exists=False
+            )
+            if source != destination and destination.exists() and os.path.samefile(source, destination):
+                raise LegacySnapshotRepairError("source_destination_same_file")
+            return _repair_cross_thread_legacy_snapshot_locked(
+                source_store=source,
+                source_identity=source_identity,
+                quarantined_row_hash=quarantined_row_hash,
+                destination_store=destination,
+            )
+    except LegacySnapshotRepairError:
+        raise
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise LegacySnapshotRepairError("store_decode_error") from exc
+    except OSError as exc:
+        raise LegacySnapshotRepairError("store_io_error") from exc
+    except RuntimeError as exc:
+        raise LegacySnapshotRepairError("store_path_unsafe") from exc
 
 
 def load_jsonl_records(path: Path) -> list[dict[str, Any]]:

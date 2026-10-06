@@ -535,6 +535,37 @@ def test_url_intake_gate_reports_ai_log_stale_and_syncs(tmp_path):
     assert "member-a" not in json.dumps(synced, ensure_ascii=False)
 
 
+def test_url_intake_gate_exact_but_stale_evidence_requires_refresh(tmp_path):
+    url = "https://discord.com/channels/1/20"
+    key = target_key_for_url(url)
+    record = json.dumps(
+        {
+            "url": url,
+            "target_key": key,
+            "captured_at": "2026-07-01T00:00:00+00:00",
+            "content_hash": "stale-hash",
+            "text": "private stale context",
+        }
+    ) + "\n"
+    raw_cache = tmp_path / "raw.ndjson"
+    ai_log = tmp_path / "ai.ndjson"
+    raw_cache.write_text(record, encoding="utf-8")
+    ai_log.write_text(record, encoding="utf-8")
+
+    payload = build_url_intake_gate(
+        url,
+        raw_cache_path=raw_cache,
+        ai_log_path=ai_log,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["exact_coverage"] == "yes"
+    assert payload["state"] == "refresh_required"
+    assert payload["snapshot_status"] == "stale_snapshot"
+    assert payload["blocked_reason"] == "stale_snapshot_not_current_context"
+    assert payload["current_context"]["ready"] is False
+
+
 def test_url_intake_gate_splits_forum_parent_missing_from_raw_cache_miss(tmp_path):
     url = "https://discord.com/channels/1/20"
     raw_cache = tmp_path / "raw.ndjson"
@@ -577,6 +608,175 @@ def test_url_intake_fast_path_stops_at_missing_snapshot_without_text_tools(tmp_p
     assert payload["target"]["target_key"] == key
     assert str(snapshot_store) not in rendered
     assert url not in rendered
+
+
+def test_url_intake_fast_path_never_promotes_stale_snapshot_to_current_context(tmp_path):
+    url = "https://discord.com/channels/1/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": "2026-07-01T00:00:00+00:00",
+                "content_hash": "stale-hash",
+                "text": "private stale context",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_url_intake_fast_path(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["decision"] == "refresh_required"
+    assert payload["next_step"] == "refresh_exact_url_snapshot"
+    assert payload["observed_snapshot_status"] == "stale_snapshot"
+    assert payload["current_context"]["ready"] is False
+    assert payload["current_context"]["reason_code"] == "stale_snapshot_not_current_context"
+    assert "private stale context" not in rendered
+
+
+def test_url_intake_fast_path_preserves_stale_message_deep_link_as_historical_reference(
+    tmp_path,
+):
+    url = "https://discord.com/channels/1/10/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": "2026-07-01T00:00:00+00:00",
+                "content_hash": "historical-hash",
+                "text": "private historical context",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_url_intake_fast_path(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["decision"] == "snapshot_metadata_ready"
+    assert payload["observed_snapshot_status"] == "ready"
+    assert payload["current_context"] == {
+        "ready": True,
+        "status": "historical_reference_ready",
+        "reason_code": "message_deep_link_snapshot_available",
+        "required_action": "none",
+    }
+
+
+def test_url_intake_fast_path_requires_refresh_for_stale_in_app_thread_route(tmp_path):
+    url = "https://discord.com/channels/1/10/threads/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": "2026-07-01T00:00:00+00:00",
+                "content_hash": "stale-thread-hash",
+                "text": "private stale thread context",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_url_intake_fast_path(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["decision"] == "refresh_required"
+    assert payload["observed_snapshot_status"] == "stale_snapshot"
+    assert payload["current_context"]["ready"] is False
+    assert payload["current_context"]["reason_code"] == "stale_snapshot_not_current_context"
+
+
+@pytest.mark.parametrize(
+    ("captured_at", "reason"),
+    [
+        ("2026-07-03T00:00:00", "snapshot_timestamp_timezone_missing"),
+        ("2026-07-03T00:10:01+00:00", "snapshot_timestamp_beyond_future_skew"),
+    ],
+)
+def test_current_context_rejects_naive_or_excessively_future_snapshot_timestamp(
+    tmp_path, captured_at, reason
+):
+    url = "https://discord.com/channels/1/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": captured_at,
+                "content_hash": "invalid-time-hash",
+                "text": "private context",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_url_intake_fast_path(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["freshness"]["status"] == "unknown"
+    assert payload["freshness"]["reason"] == reason
+    assert payload["decision"] == "refresh_required"
+    assert payload["current_context"]["ready"] is False
+    assert payload["current_context"]["reason_code"] == "snapshot_freshness_unknown_not_current_context"
+
+
+def test_bridge_intake_blocks_stale_saved_text_before_context_passport(tmp_path):
+    url = "https://discord.com/channels/1/30"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": "2026-07-01T00:00:00+00:00",
+                "content_hash": "stale-hash",
+                "text": "member-a: stale private discussion",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_bridge_intake(
+        url=url,
+        snapshot_store=snapshot_store,
+        generated_at="2026-07-03T00:00:00+00:00",
+    )
+
+    assert payload["decision"] == "refresh_required"
+    assert payload["blocked_reason"] == "stale_snapshot_not_current_context"
+    assert payload["context_passport"]["built"] is False
+    assert payload["pipeline"]["completed"] == ["coverage"]
 
 
 def test_bridge_intake_blocks_when_snapshot_missing(tmp_path):
@@ -716,6 +916,46 @@ def test_cli_url_intake_fast_path_outputs_metadata_only_missing_snapshot(tmp_pat
     assert payload["paths_output"] == "omitted"
     assert str(snapshot_store) not in output
     assert url not in output
+
+
+def test_cli_url_intake_fast_path_exits_blocked_for_stale_snapshot_without_refresh_source(
+    tmp_path, capsys
+):
+    url = "https://discord.com/channels/1/20"
+    key = target_key_for_url(url)
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    snapshot_store.write_text(
+        json.dumps(
+            {
+                "url": url,
+                "target_key": key,
+                "captured_at": "2026-07-01T00:00:00+00:00",
+                "content_hash": "stale-hash",
+                "text": "private stale context",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = cli_main(
+        [
+            "url-intake-fast-path",
+            "--url",
+            url,
+            "--snapshot-store",
+            str(snapshot_store),
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert result == 2
+    assert payload["decision"] == "refresh_required"
+    assert payload["reason_code"] == "stale_snapshot_not_current_context"
+    assert payload["refresh_source_available"] is False
+    assert "private stale context" not in output
 
 
 def test_coverage_report_marks_stale_snapshot_recency_and_policy(tmp_path):

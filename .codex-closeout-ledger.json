@@ -1,0 +1,37 @@
+{
+  "review": "complete",
+  "items": [
+    {
+      "description": "承認済みbranchをpushしてPRを作成する",
+      "status": "resolved",
+      "owner": "codex-main",
+      "next_action": "なし",
+      "resume_condition": "PR #63の追加変更をユーザーが依頼した場合",
+      "evidence": "PR #63 open; head 785907be6897afd9603020d7fb032bdadd526bce; CI success"
+    },
+    {
+      "description": "ずんだもん人間判断通知を短文化し対象task focus後だけ再生する",
+      "status": "resolved",
+      "owner": "codex-main",
+      "next_action": "なし",
+      "resume_condition": "Codex native navigation APIのreceipt schemaが変更された場合",
+      "evidence": "9 unit tests; py_compile; native navigation and 8-char live playback receipts"
+    },
+    {
+      "description": "PR #63をmergeする",
+      "status": "rejected",
+      "owner": "user",
+      "next_action": "別途明示承認があるまで実行しない",
+      "resume_condition": "ユーザーがPR #63のmergeを明示承認した場合",
+      "evidence": "current goal explicitly excludes merge"
+    },
+    {
+      "description": "再利用価値のない追加memory noteを作る",
+      "status": "rejected",
+      "owner": "codex-main",
+      "next_action": "なし",
+      "resume_condition": "新しいdurable learningが発生した場合",
+      "evidence": "context_save_audit save_decision=skip; reusable rule stored in .codex/AGENTS.md"
+    }
+  ]
+}

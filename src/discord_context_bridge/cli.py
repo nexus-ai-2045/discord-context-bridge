@@ -58,6 +58,7 @@ from .core import (
     DEFAULT_ATTACHMENT_LEDGER,
     DEFAULT_SHARED_RAW_SNAPSHOT_ROOT,
     DEFAULT_STORE,
+    LegacySnapshotRepairError,
     audit_context_store,
     audit_event_store,
     build_attachment_ledger,
@@ -87,8 +88,10 @@ from .core import (
     list_context_documents,
     load_events,
     matching_snapshot_records,
+    merge_orphan_snapshot_branch,
     ops_view_summary,
     review_reply_intent,
+    repair_cross_thread_legacy_snapshot,
     resolve_context_bindings,
     snapshot_visible_text,
     status_dashboard,
@@ -372,6 +375,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     snapshot_url.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     snapshot_url.set_defaults(handler=_cmd_snapshot_discord_url_text)
+
+    repair_legacy = sub.add_parser(
+        "repair-cross-thread-legacy-snapshot",
+        help="cross-thread legacy snapshot rowをappend-only correctionで修復する",
+    )
+    repair_legacy.add_argument(
+        "--snapshot-root",
+        type=Path,
+        required=True,
+        help="canonical raw snapshot root",
+    )
+    repair_legacy.add_argument("--source-store", type=Path, required=True, help="誤rowを含むsource store")
+    repair_legacy.add_argument("--source-target-url", required=True, help="source storeのlogical target URL。出力には表示しません")
+    repair_legacy.add_argument("--quarantined-row-hash", required=True, help="event_hash付与前legacy rowのcanonical hash")
+    repair_legacy.add_argument("--destination-store", type=Path, required=True, help="row本来のtarget store")
+    repair_legacy.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
+    repair_legacy.set_defaults(handler=_cmd_repair_cross_thread_legacy_snapshot)
+
+    repair_generic = sub.add_parser(
+        "repair-legacy-snapshot-row",
+        help="legacy snapshot rowをcanonical thread streamへappend-only修復する",
+    )
+    repair_generic.add_argument("--snapshot-root", type=Path, required=True, help="canonical raw snapshot root")
+    repair_generic.add_argument("--source-store", type=Path, required=True, help="legacy rowを含むsource store")
+    repair_generic.add_argument("--source-target-url", required=True, help="source storeのlogical target URL。出力には表示しません")
+    repair_generic.add_argument("--quarantined-row-hash", required=True, help="event_hash付与前legacy rowのcanonical hash")
+    repair_generic.add_argument("--destination-store", type=Path, required=True, help="canonical target store")
+    repair_generic.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
+    repair_generic.set_defaults(handler=_cmd_repair_cross_thread_legacy_snapshot)
+
+    merge_orphan = sub.add_parser(
+        "merge-orphan-snapshot-branch",
+        help="孤立snapshot branchをmain hash-chainへmetadata-only mergeする",
+    )
+    merge_orphan.add_argument("--snapshot-root", type=Path, required=True, help="canonical raw snapshot root")
+    merge_orphan.add_argument("--source-store", type=Path, required=True, help="対象canonical store")
+    merge_orphan.add_argument("--source-target-url", required=True, help="source logical target URL。出力には表示しません")
+    merge_orphan.add_argument("--branch-head-event-hash", required=True, help="孤立branch head event hash")
+    merge_root = merge_orphan.add_mutually_exclusive_group(required=True)
+    merge_root.add_argument("--legacy-root-hash", help="孤立branchのpre-hash legacy root hash")
+    merge_root.add_argument("--branch-root-event-hash", help="孤立branchのpersisted snapshot root event hash")
+    merge_orphan.add_argument("--json", action="store_true", help="metadata-only JSONを表示する")
+    merge_orphan.set_defaults(handler=_cmd_merge_orphan_snapshot_branch)
 
     attachment_ledger = sub.add_parser("attachment-ledger", help="raw cache から添付の safe metadata ledger を作る")
     attachment_ledger.add_argument("--input", type=Path, required=True, help="Discord raw cache / snapshot ndjson")
@@ -1364,6 +1410,69 @@ def _cmd_snapshot_discord_url_text(args: argparse.Namespace) -> int:
     print("raw_text_returned: false")
     print("path_output: omitted")
     print("outbound: disabled")
+    return 0
+
+
+def _cmd_repair_cross_thread_legacy_snapshot(args: argparse.Namespace) -> int:
+    try:
+        payload = repair_cross_thread_legacy_snapshot(
+            snapshot_root=args.snapshot_root,
+            source_store=args.source_store,
+            source_target_url=args.source_target_url,
+            quarantined_row_hash=args.quarantined_row_hash,
+            destination_store=args.destination_store,
+        )
+    except LegacySnapshotRepairError as exc:
+        payload = {
+            "language": "ja",
+            "schema": "discord_snapshot_store_legacy_quarantine_receipt.v1",
+            "ok": False,
+            "status": "blocked",
+            "reason": exc.reason,
+            "saved": False,
+            "duplicate": False,
+            "raw_text_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        print(_json(payload) if args.json else payload["status"])
+        return 2
+    print(_json(payload) if args.json else payload["status"])
+    return 0
+
+
+def _cmd_merge_orphan_snapshot_branch(args: argparse.Namespace) -> int:
+    try:
+        payload = merge_orphan_snapshot_branch(
+            snapshot_root=args.snapshot_root,
+            source_store=args.source_store,
+            source_target_url=args.source_target_url,
+            branch_head_event_hash=args.branch_head_event_hash,
+            legacy_root_hash=args.legacy_root_hash,
+            branch_root_event_hash=args.branch_root_event_hash,
+        )
+    except LegacySnapshotRepairError as exc:
+        payload = {
+            "language": "ja",
+            "schema": "discord_snapshot_store_orphan_branch_merge_receipt.v1",
+            "ok": False,
+            "status": "blocked",
+            "reason": exc.reason,
+            "saved": False,
+            "duplicate": False,
+            "raw_text_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        print(_json(payload) if args.json else payload["status"])
+        return 2
+    print(_json(payload) if args.json else payload["status"])
     return 0
 
 
@@ -2470,14 +2579,31 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
         evidence = _load_private_json(args.evidence)
         store = CompletenessStore(args.db)
         store.initialize()
-        store.record_inventory_scan(
-            parent_target_key=str(evidence["parent_target_key"]),
-            scan_id=str(evidence["scan_id"]),
-            observed_at=str(evidence["observed_at"]),
-            thread_ids=[str(value) for value in evidence["thread_ids"]],
-            scopes=dict(evidence["scopes"]),
-            pagination_exhausted=evidence["pagination_exhausted"],
-        )
+        if "scope_receipts" in evidence or "parent_kind" in evidence:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                parent_kind=str(evidence["parent_kind"]),
+                scope_receipts=dict(evidence["scope_receipts"]),
+            )
+            thread_count = len(
+                {
+                    str(thread_id)
+                    for receipt in evidence["scope_receipts"].values()
+                    for thread_id in receipt.get("thread_ids", [])
+                }
+            )
+        else:
+            store.record_inventory_scan(
+                parent_target_key=str(evidence["parent_target_key"]),
+                scan_id=str(evidence["scan_id"]),
+                observed_at=str(evidence["observed_at"]),
+                thread_ids=[str(value) for value in evidence["thread_ids"]],
+                scopes=dict(evidence["scopes"]),
+                pagination_exhausted=evidence["pagination_exhausted"],
+            )
+            thread_count = len(evidence["thread_ids"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         payload = {
             "language": "ja",
@@ -2495,7 +2621,7 @@ def _cmd_record_parent_inventory(args: argparse.Namespace) -> int:
             "schema": "discord_completeness_store_operation.v1",
             "ok": True,
             "operation": "record_parent_inventory",
-            "thread_count": len(evidence["thread_ids"]),
+            "thread_count": thread_count,
             "path_output": "omitted",
             "identifiers_returned": False,
             "outbound_actions": "disabled",
