@@ -657,6 +657,7 @@ def _evaluate_legacy_parallel_run(
         blockers.append("parent_target_binding_mismatch")
     else:
         result["parent_audit_sha256"] = _mapping_sha256(parent_audit)
+        result["evidence_observed_at"] = parent_audit.get("evidence_observed_at")
 
     blockers = sorted(set(blockers))
     result["blockers"] = blockers

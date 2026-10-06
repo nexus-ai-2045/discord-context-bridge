@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for claude-code; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: bdd229bd4841575f5792ae4788a2195ae49ae4ed
+ssot_commit: f4d0ca3e3f8bfced20f47591c1717fab51da85d4
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 3717ed8dcefe62822eff97aa8aeb2d42650b932d120aa3eb92257e7b21a42159
-contract_checksum: e9b670f0ac1f0ec8da275f8917298c6f4ccf73417c7172dcedf5627ebc998c57
-generated_at: 2026-09-01T01:09:56+00:00
+manifest_checksum: 685d01e9ff0fd9c4ca5b635c72d1947cc9bf4e3289c6964f973e481673ab7947
+contract_checksum: 75d45ecc5ffb0503866500c9c79e4211727d6439677d45559653e899a4d72c73
+generated_at: 2026-09-01T01:10:35+00:00
 runtime_target: claude-code
 ---
 
@@ -41,6 +41,8 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 - Chronica、Markdown、latest report、context reconstruction、TODO、`private-working` 配下の生成物は projection / view であり、canonical capture の代替証拠にしない。これらが存在しても、対象一致した canonical gate と freshness evidence が当日runで成立しない限り「最新」「完全」「全部理解した」と言わない。
+- `mandatory_context_claim_gate`: ユーザーへ「完全」「最新」「理解済み」と肯定的に伝える直前に、`context_claim_gate.py` が対象runとcanonical completeness DBを再監査する。任意JSONの持ち込みは受け付けない。`complete` はcanonical full + persisted、`current` はそれにcanonical inventory観測時刻のfreshness、`understood` はさらに理解確認を要求する。該当claimの `allowed=true` を同一ターンで取得できない場合、肯定表現を返さず `partial` / `blocked` とreason codeを返す。runtime独自の再判定やprojectionからの推定は禁止する。
+- `context-claim-gate-trusted.yml` は `pull_request_target` のbase側コードで候補treeを静的監査する。候補コードは実行せず、secret・write権限を渡さない。小型gate、canonical再監査、manifest、全runtime投影、ops smoke、このtrusted workflow自身のいずれかが外れた候補を `blocked` にする。初回導入はbase側guardがまだ存在しないため人間bootstrap reviewを必須とし、導入後の変更はbase SHAとhead SHAの組で再監査する。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -63,11 +65,12 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
 5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
 6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致や派生viewの存在だけで full としない。
-7. `context-passport` で文脈カードを作る。
-8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
-11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+7. ユーザーへ完全・最新・理解済みのclaimを返す場合は `context_claim_gate.py` を実行し、要求claimの `allowed=true` を確認する。この手順は省略不可とする。
+8. `context-passport` で文脈カードを作る。
+9. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+10. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+11. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
+12. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
 
@@ -244,6 +247,7 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/discord_archived_thread_inventory.py --url <parent-channel-url> --json`: 公式GET-only APIでpublic/private/joined private archiveを終端まで列挙し、private inventoryとmetadata-only判定を作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
+- `python3 scripts/context_claim_gate.py --run-dir <canonical-run> --completeness-db <canonical-db> --parent-target-key <target> --claim <complete|current|understood> --json`: ユーザーへ完全・最新・理解済みと伝える直前に必ず実行し、allowed=trueのclaimだけを許可する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
 - `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
@@ -267,3 +271,6 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する
 - `python3 scripts/codex_chrome_bundle_smoke.py --json`: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
 - `python3 scripts/archived_thread_inventory_smoke.py --json`: archive列挙の全scope終端、private保存、metadata-only出力、page-limit時のfail-closedをfixtureで検証する
+- `python3 scripts/context_claim_gate_smoke.py --json`: projection迂回、stale evidence、理解未確認を個別に拒否し、canonical fresh persisted evidenceだけを許可する
+- `python3 scripts/lint_context_claim_gate_wiring.py --json`: SSOT・manifest・全runtime skill・ops_checkから必須claim gateが外れたdriftをfail-closedで検出する
+- `python3 scripts/verify_context_claim_gate_head.py --head-root <candidate-tree> --json`: base側の信頼済みコードで候補treeを実行せず監査し、claim gate自身の削除・迂回を停止する

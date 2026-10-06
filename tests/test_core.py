@@ -2783,6 +2783,9 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "send-pdca-preflight smoke",
         "discord-url-measure smoke",
         "archived thread inventory smoke",
+        "context claim gate smoke",
+        "context claim gate wiring lint",
+        "context claim gate trusted audit",
         "ローカルスモーク",
     }
     assert "テスト" not in checks

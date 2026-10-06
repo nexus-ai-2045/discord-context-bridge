@@ -34,6 +34,8 @@ required_commands:
     purpose: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
   - command: full-capture-gate
     purpose: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
+  - command: python3 scripts/context_claim_gate.py --run-dir <canonical-run> --completeness-db <canonical-db> --parent-target-key <target> --claim <complete|current|understood> --json
+    purpose: ユーザーへ完全・最新・理解済みと伝える直前に必ず実行し、allowed=trueのclaimだけを許可する
   - command: reply-context-plan
     purpose: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
   - command: cache-first-intake
@@ -75,3 +77,9 @@ verification_commands:
     purpose: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
   - command: python3 scripts/archived_thread_inventory_smoke.py --json
     purpose: archive列挙の全scope終端、private保存、metadata-only出力、page-limit時のfail-closedをfixtureで検証する
+  - command: python3 scripts/context_claim_gate_smoke.py --json
+    purpose: projection迂回、stale evidence、理解未確認を個別に拒否し、canonical fresh persisted evidenceだけを許可する
+  - command: python3 scripts/lint_context_claim_gate_wiring.py --json
+    purpose: SSOT・manifest・全runtime skill・ops_checkから必須claim gateが外れたdriftをfail-closedで検出する
+  - command: python3 scripts/verify_context_claim_gate_head.py --head-root <candidate-tree> --json
+    purpose: base側の信頼済みコードで候補treeを実行せず監査し、claim gate自身の削除・迂回を停止する

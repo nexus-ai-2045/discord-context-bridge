@@ -23,6 +23,8 @@
 - 送信補助 workflow で webhook / bot / browser の投稿先が一致しない場合は送信しない。通知用 webhook や別 guild の bot token を、目的チャンネルの代替経路として使わない。
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 - Chronica、Markdown、latest report、context reconstruction、TODO、`private-working` 配下の生成物は projection / view であり、canonical capture の代替証拠にしない。これらが存在しても、対象一致した canonical gate と freshness evidence が当日runで成立しない限り「最新」「完全」「全部理解した」と言わない。
+- `mandatory_context_claim_gate`: ユーザーへ「完全」「最新」「理解済み」と肯定的に伝える直前に、`context_claim_gate.py` が対象runとcanonical completeness DBを再監査する。任意JSONの持ち込みは受け付けない。`complete` はcanonical full + persisted、`current` はそれにcanonical inventory観測時刻のfreshness、`understood` はさらに理解確認を要求する。該当claimの `allowed=true` を同一ターンで取得できない場合、肯定表現を返さず `partial` / `blocked` とreason codeを返す。runtime独自の再判定やprojectionからの推定は禁止する。
+- `context-claim-gate-trusted.yml` は `pull_request_target` のbase側コードで候補treeを静的監査する。候補コードは実行せず、secret・write権限を渡さない。小型gate、canonical再監査、manifest、全runtime投影、ops smoke、このtrusted workflow自身のいずれかが外れた候補を `blocked` にする。初回導入はbase側guardがまだ存在しないため人間bootstrap reviewを必須とし、導入後の変更はbase SHAとhead SHAの組で再監査する。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
 ## Discord OSS 参照境界
@@ -45,11 +47,12 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 4. `rest-backfill` または private command で読めた本文を private raw artifact と metadata-only manifest に保存する。
 5. 可視テキストを local file または stdin から `import-visible-text` / `snapshot-discord-url-text` に渡す。
 6. `coverage-report` は対象一致と既存証拠の概況、`thread-capture-plan` は取得経路、`full-capture-gate` は full / partial / blocked の厳格判定に使う。件数一致や派生viewの存在だけで full としない。
-7. `context-passport` で文脈カードを作る。
-8. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
-9. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
-10. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
-11. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
+7. ユーザーへ完全・最新・理解済みのclaimを返す場合は `context_claim_gate.py` を実行し、要求claimの `allowed=true` を確認する。この手順は省略不可とする。
+8. `context-passport` で文脈カードを作る。
+9. 返信案の前に `reply-context-plan` を通し、スレッド起点、返信対象、返信対象までの直前10件を最低限取得する。スレッド全体が10件未満なら履歴終端の確認を必須にする。
+10. 指示語、引用、添付、過去回答などの未解決参照が残る場合は10件ずつ追加取得する。
+11. `reply-context-plan` が `ready` / `ready_short_thread` の時だけ、`guide-reply` または `review-draft` で確認する。
+12. 自動送信要求がある場合でも、`stage-discord-send` と `verify-chrome-fill-dry-run` を先に通し、最後に `auto-send-preflight` で private adapter 実行可否を判定する。public core 自体は送信しない。
 
 ## ローカルcache解決と鮮度判断
 
