@@ -73,6 +73,7 @@ def test_apply_preserves_history_and_is_idempotent(sample):
     after = store.read_bytes()
     assert invoke(sample, apply=True)["status"] == "already_present"
     assert store.read_bytes() == after
+    assert not list(store.parent.glob(".external-import-stage-*"))
 
 
 def test_stale_store_cas_blocks(sample):
@@ -152,6 +153,7 @@ def test_swap_failure_keeps_original(sample, monkeypatch):
     assert result["status"] == "blocked"
     assert "private-path-must-not-leak" not in json.dumps(result)
     assert store.read_bytes() == before
+    assert not list(store.parent.glob(".external-import-stage-*"))
 
 
 def test_cli_dry_run_is_metadata_only(sample):
@@ -165,6 +167,63 @@ def test_cli_dry_run_is_metadata_only(sample):
     assert json.loads(completed.stdout)["status"] == "ready"
     for private in (URL, str(source), original["text"], "111111111111111111"):
         assert private not in completed.stdout + completed.stderr
+
+
+def test_stage_cleanup_does_not_follow_symlink(sample, tmp_path, monkeypatch):
+    _, store, _, _ = sample
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "private.txt"
+    protected.write_text("must remain")
+
+    def fail(source, destination, **kwargs):
+        os.symlink(outside, "outside-link", dir_fd=kwargs["src_dir_fd"])
+        raise OSError("swap failed")
+
+    monkeypatch.setattr("discord_context_bridge.external_snapshot_import.os.replace", fail)
+    assert invoke(sample, apply=True)["status"] == "blocked"
+    assert protected.read_text() == "must remain"
+    assert not list(store.parent.glob(".external-import-stage-*"))
+
+
+def test_stage_cleanup_failure_reports_safe_reason_and_applied_state(sample, monkeypatch):
+    _, store, _, _ = sample
+    original_rmdir = os.rmdir
+
+    def fail_stage_remove(path, **kwargs):
+        if str(path).startswith(".external-import-stage-"):
+            raise OSError("private-cleanup-path")
+        return original_rmdir(path, **kwargs)
+
+    monkeypatch.setattr("discord_context_bridge.external_snapshot_import.os.rmdir", fail_stage_remove)
+    result = invoke(sample, apply=True)
+    assert result["status"] == "blocked"
+    assert result["reason"] == "stage_cleanup_failed"
+    assert result["events_appended"] == 1
+    assert result["commit_state"] == "applied_unverified"
+    assert "private-cleanup-path" not in json.dumps(result)
+    assert len(load_text_snapshots(store)) == 2
+
+
+def test_unopened_stage_is_preserved_without_private_data(sample, monkeypatch):
+    _, store, _, _ = sample
+    before = store.read_bytes()
+    original_open = os.open
+
+    def fail_stage_open(path, *args, **kwargs):
+        if str(path).startswith(".external-import-stage-"):
+            raise OSError("stage cannot be pinned")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("discord_context_bridge.external_snapshot_import.os.open", fail_stage_open)
+    result = invoke(sample, apply=True)
+    assert result["status"] == "blocked"
+    assert result["reason"] == "stage_cleanup_failed"
+    assert result["events_appended"] == 0
+    assert store.read_bytes() == before
+    stages = list(store.parent.glob(".external-import-stage-*"))
+    assert len(stages) == 1
+    assert not list(stages[0].iterdir())
 
 
 def test_post_swap_failure_reports_applied_not_zero(sample, monkeypatch):
@@ -183,6 +242,7 @@ def test_post_swap_failure_reports_applied_not_zero(sample, monkeypatch):
     assert result["commit_state"] == "applied_unverified"
     _validate_text_snapshot_chain(load_text_snapshots(store))
     assert invoke(sample)["status"] == "already_present"
+    assert not list(store.parent.glob(".external-import-stage-*"))
 
 
 def test_swap_uses_pinned_source_and_destination_directories(sample, monkeypatch):

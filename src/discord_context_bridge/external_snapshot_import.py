@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
@@ -204,10 +205,12 @@ def import_external_snapshot(
             parent_fd = _directory(canonical.parent)
             stage_fd = None
             stage_file_fd = None
+            stage_created = False
             try:
                 parent_stat = os.fstat(parent_fd)
                 stage_name = f".external-import-stage-{uuid4().hex}"
                 os.mkdir(stage_name, mode=0o700, dir_fd=parent_fd)
+                stage_created = True
                 stage_fd = os.open(stage_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                    dir_fd=parent_fd)
                 stage_dir_stat = os.fstat(stage_fd)
@@ -282,11 +285,32 @@ def import_external_snapshot(
                     raise _Blocked("canonical_read_back_failed")
                 verified_sha = _sha(actual)
             finally:
-                if stage_file_fd is not None:
-                    os.close(stage_file_fd)
-                if stage_fd is not None:
-                    os.close(stage_fd)
-                os.close(parent_fd)
+                try:
+                    if stage_created:
+                        if stage_fd is None:
+                            # No private data was written; do not remove an unpinned name.
+                            raise _Blocked("stage_cleanup_failed")
+                        if stage_fd is not None:
+                            # Clean only the directory we opened, including its lock files.
+                            with os.scandir(stage_fd) as entries:
+                                for entry in entries:
+                                    if entry.is_dir(follow_symlinks=False):
+                                        shutil.rmtree(entry.name, dir_fd=stage_fd)
+                                    else:
+                                        os.unlink(entry.name, dir_fd=stage_fd)
+                            opened = os.fstat(stage_fd)
+                            named = os.stat(stage_name, dir_fd=parent_fd, follow_symlinks=False)
+                            if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+                                raise _Blocked("stage_cleanup_binding_changed")
+                        os.rmdir(stage_name, dir_fd=parent_fd)
+                except OSError as error:
+                    raise _Blocked("stage_cleanup_failed") from error
+                finally:
+                    if stage_file_fd is not None:
+                        os.close(stage_file_fd)
+                    if stage_fd is not None:
+                        os.close(stage_fd)
+                    os.close(parent_fd)
         return {**result, "status": "absorbed", "commit_state": "applied_verified",
                 "read_back": True, "store_sha256": verified_sha, "reason": "import_verified"}
     except _Blocked as error:
