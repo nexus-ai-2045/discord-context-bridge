@@ -5,6 +5,9 @@ import json
 import struct
 from pathlib import Path
 
+import pytest
+import discord_context_bridge.desktop_cache as desktop_cache
+
 from discord_context_bridge.desktop_cache import (
     FLAG_HAS_KEY_SHA256,
     SIMPLE_FINAL_MAGIC,
@@ -19,6 +22,35 @@ from discord_context_bridge.desktop_cache import (
 GUILD_ID = "12345678901234567"
 CHANNEL_ID = "22345678901234567"
 DISCORD_URL = f"https://discord.com/channels/{GUILD_ID}/{CHANNEL_ID}"
+
+
+@pytest.mark.parametrize("reader", ["_read_simple_cache_key", "_read_simple_cache_entry_parts"])
+def test_cache_readers_refuse_symlink_before_reading_external_entry(tmp_path: Path, reader: str) -> None:
+    outside = tmp_path / "outside-profile-entry"
+    _write_entry(outside, key=f"https://discord.com/api/v9/guilds/{GUILD_ID}/channels", payload=[])
+    link = tmp_path / "cache-entry"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("platform does not permit creating symbolic links")
+    with pytest.raises(desktop_cache.CacheEntryError, match="symlink_cache_entry_refused"):
+        getattr(desktop_cache, reader)(link)
+
+
+def test_cache_scan_does_not_collect_metadata_from_external_symlink(tmp_path: Path) -> None:
+    user_data = tmp_path / "discord"
+    cache = user_data / "Cache" / "Cache_Data"
+    cache.mkdir(parents=True)
+    outside = tmp_path / "outside-profile-entry"
+    _write_entry(outside, key=f"https://discord.com/api/v9/guilds/{GUILD_ID}/channels",
+                 payload=[{"id": CHANNEL_ID, "type": 15, "name": "outside-profile"}])
+    try:
+        (cache / "linked-entry").symlink_to(outside)
+    except OSError:
+        pytest.skip("platform does not permit creating symbolic links")
+    result = probe_discord_desktop_cache(url=DISCORD_URL, explicit_user_data_dir=user_data, include_labels=True)
+    assert result["state"] != "metadata_found"
+    assert "outside-profile" not in json.dumps(result)
 
 
 def _write_entry(path: Path, *, key: str, payload: object, gzip_body: bool = False) -> None:
