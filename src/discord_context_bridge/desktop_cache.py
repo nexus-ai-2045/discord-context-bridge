@@ -157,6 +157,8 @@ def _decode_simple_cache_body(body: bytes, response_metadata: bytes) -> Any:
 
 
 def _read_simple_cache_entry_parts(path: Path) -> SimpleCacheEntryParts:
+    if path.is_symlink():
+        raise CacheEntryError("symlink_cache_entry_refused")
     data = path.read_bytes()
     minimum_size = SIMPLE_HEADER.size + (2 * SIMPLE_EOF.size)
     if len(data) < minimum_size:
@@ -191,6 +193,8 @@ def _read_simple_cache_entry_parts(path: Path) -> SimpleCacheEntryParts:
 
 
 def _read_simple_cache_key(path: Path) -> str:
+    if path.is_symlink():
+        raise CacheEntryError("symlink_cache_entry_refused")
     with path.open("rb") as handle:
         header_data = handle.read(SIMPLE_HEADER.size)
         if len(header_data) != SIMPLE_HEADER.size:
