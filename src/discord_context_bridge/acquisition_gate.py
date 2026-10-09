@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo("Asia/Tokyo")
+_CAPTURE_ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def capture_id_from_attempt_identity(identity: object) -> str:
+    """Recompute an explicit attempt capture id from its strict identity record."""
+
+    if not isinstance(identity, Mapping) or set(identity) != {
+        "schema", "base_capture_id", "attempt_id"
+    }:
+        raise ValueError("capture attempt identity structure is invalid")
+    base_capture_id = identity.get("base_capture_id")
+    attempt_id = identity.get("attempt_id")
+    if (
+        identity.get("schema") != "dcb-capture-attempt-identity.v1"
+        or not isinstance(base_capture_id, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", base_capture_id)
+        or not isinstance(attempt_id, str)
+        or not _CAPTURE_ATTEMPT_ID_RE.fullmatch(attempt_id)
+    ):
+        raise ValueError("capture attempt identity is invalid")
+    framed = "".join(
+        f"{len(part)}:{part}"
+        for part in ("dcb-capture-attempt.v1", base_capture_id, attempt_id)
+    )
+    return sha256(framed.encode("utf-8")).hexdigest()
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -83,6 +110,15 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
         if is_canonical_persisted_receipt
         else receipt_schema
     )
+    attempt_identity_invalid = False
+    if "capture_identity" in receipt:
+        try:
+            attempt_identity_invalid = (
+                capture_id_from_attempt_identity(receipt.get("capture_identity"))
+                != capture_id
+            )
+        except ValueError:
+            attempt_identity_invalid = True
     checks = [
         (source_gate_schema != "discord_full_capture_completion_gate.v1", "full_capture_receipt_schema_invalid"),
         (
@@ -102,6 +138,7 @@ def _validate_full_capture_receipt(receipt: Mapping[str, Any] | None) -> tuple[s
         (receipt.get("status") != "full", "full_capture_receipt_not_full"),
         (receipt.get("full_capture_confirmed") is not True, "full_capture_receipt_not_confirmed"),
         (not capture_id, "full_capture_receipt_capture_id_missing"),
+        (attempt_identity_invalid, "full_capture_receipt_attempt_identity_invalid"),
         (not all(boundaries.get(key) is True for key in ("oldest_reached", "latest_reached", "capture_stable_after_rescan")),
          "full_capture_receipt_boundaries_incomplete"),
         (receipt.get("counts_consistent") is not True, "full_capture_receipt_counts_inconsistent"),

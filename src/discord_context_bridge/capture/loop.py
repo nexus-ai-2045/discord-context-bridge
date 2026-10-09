@@ -52,6 +52,7 @@ def new_capture_loop(
     scan_pass_budget: int = 2,
     retry_budget: int = 3,
     tag_context: Mapping[str, Any] | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a resumable run with a bounded partial-gate scan loop."""
 
@@ -62,6 +63,7 @@ def new_capture_loop(
         route,
         upper_watermark,
         retry_budget=retry_budget,
+        attempt_id=attempt_id,
     )
     run["loop_schema"] = _SCHEMA
     run["scan_pass"] = {"budget": scan_pass_budget, "used": 0}

@@ -524,6 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path(".local/discord-context-bridge/capture-runs"),
     )
     capture_loop.add_argument("--capture-id", default="")
+    capture_loop.add_argument("--attempt-id", default=None)
     capture_loop.add_argument("--target-key", default="", help="出力には表示しません")
     capture_loop.add_argument(
         "--route",
@@ -1666,6 +1667,7 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 args.upper_watermark,
                 scan_pass_budget=args.scan_pass_budget,
                 retry_budget=args.retry_budget,
+                attempt_id=args.attempt_id,
                 tag_context={
                     "scope": args.scope,
                     "refresh_check": args.refresh_check,
@@ -1673,6 +1675,8 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 },
             )
         elif args.action == "advance":
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if not args.capture_id or not args.event or not args.event_id:
                 raise CaptureStoreError(
                     "advanceには--capture-id、--event、--event-idが必要です"
@@ -1685,6 +1689,8 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 expected_sequence=args.expected_sequence,
             )
         elif args.action == "observe":
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if not args.capture_id or args.window_file is None:
                 raise CaptureStoreError(
                     "observeには--capture-idと--window-fileが必要です"
@@ -1701,10 +1707,14 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 expected_window_count=args.expected_window_count,
             )
         elif args.action == "reconcile":
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if not args.capture_id:
                 raise CaptureStoreError("reconcileには--capture-idが必要です")
             result = _reconcile_persisted_capture(store, args.capture_id)
         elif args.action == "attachment-save":
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if (
                 not args.capture_id
                 or not args.attachment_id
@@ -1721,6 +1731,8 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 expected_sequence=args.expected_attachment_sequence,
             )
         elif args.action == "attachment-seal":
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if not args.capture_id:
                 raise CaptureStoreError("attachment-sealには--capture-idが必要です")
             result = seal_persisted_attachment_inventory(
@@ -1729,6 +1741,8 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 expected_sequence=args.expected_attachment_sequence,
             )
         else:
+            if args.attempt_id is not None:
+                raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
             if not args.capture_id:
                 raise CaptureStoreError("statusには--capture-idが必要です")
             result = read_capture_loop_status(store, args.capture_id)

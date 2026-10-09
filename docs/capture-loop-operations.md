@@ -84,11 +84,30 @@ attachment manifest、full-capture evidenceは、message event ledgerから
 - `scan-pass-budget` と `retry-budget` を先に固定する。
 - `refresh-check` は既存保存物との差分確認が必要な run に付ける。
 
+## Source selection and scope
+
+- Resolve the canonical target through the existing registry. Its `url_hash_16` key is canonical; a native browser URL remains a source alias. Do not replace the key with a source fingerprint or target alias.
+- Reuse the original tab and identify it only with the official browser API's ephemeral tab/window IDs. Do not persist those IDs as canonical identity or read cookies or tokens.
+- Before capture, confirm that the visible header and URL both match the requested target. Bind message IDs and scope to the message's own role article, its `aria-labelledby`, and the native `#chat-messages` container. A reply quote ID belongs to quoted context, not the current message body.
+- Treat author, time, reply, inline-image, and `body_html` values as raw context data. Keep them within the existing private source boundary and never execute HTML.
+- Expand every blocked group in each virtualized window. Remounts can collapse groups again, so reopen them for every window. Record the exact UI header shown outside an article for an originally deleted item; if the source reports zero or unavailable, do not invent its text or ID.
+- If a legacy input lacks `native_container_id` scope evidence, do not infer that the current view is full; obtain an actual new source observation.
+
+Use existing capture and review mechanisms as scope grows:
+
+1. Leaf: messages and their attachments through the existing PDCA.
+2. Thread: connected window overlap and two stable complete passes.
+3. Forum: two inventory passes plus every relevant child scope.
+4. Server: the registered current and historical source set.
+5. Runtime: source readback and tests for the requested scope.
+
+Registering a source does not prove full coverage; the relevant runtime and readback evidence must still satisfy the existing full gate.
+
 ## Do
 
 ```powershell
 discord-context-bridge capture-loop start `
-  --target-key "<private Discord URL または opaque key>" `
+  --target-key "<canonical registry url_hash_16 key>" `
   --route chrome_extension `
   --upper-watermark "<latest message id>" `
   --scope thread_only `
@@ -97,6 +116,19 @@ discord-context-bridge capture-loop start `
 ```
 
 返された `capture_id` を使い、状態イベントを一意な `event-id` と期待 sequence 付きで進める。
+
+再取得を新しい独立runとして開始する場合だけ `start` に `--attempt-id` を指定する。
+同じtarget・route・watermarkと同じattempt IDなら既存checkpointへ再開する。異なるattempt IDは
+別の `capture_id` と保存領域を使い、以前のpartial coverage、ledger、添付seal、receiptを引き継がない。
+省略時は従来のcapture IDと出力形を維持する。attempt IDは1〜128文字の英数字、`.`、`_`、`-`に限る。
+capture IDはattempt IDとbase capture IDから再計算して検査するunkeyed hashであり、署名や改ざん防止鍵ではない。
+試行付きrunは既存storeの `attempt-identities/<capture_id>.json` に開始時identityとsource digestを固定する。
+直接capture IDで再開する場合もcheckpointと固定情報を照合し、片側の削除・差替えを拒否する。
+固定情報を先に保存するため、初回保存の中断時は同じIDを自動復元せずfail-closedとなる。
+この変更以前の実験版attempt checkpointは固定情報がないため、自動移行せず別attemptとして開始する。
+checkpoint、固定情報、ledger、receiptを同時に書き換えられる場合まで検出できるとは扱わない。
+checkpoint、ledger、receiptの保存先bindingとsource digestを合わせて検査するが、ローカル保存物への
+書換権限を持つ攻撃者に対する真正性証明としては扱わない。
 
 ```powershell
 discord-context-bridge capture-loop advance `

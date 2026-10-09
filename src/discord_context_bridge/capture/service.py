@@ -50,6 +50,17 @@ def _new_attachment_save_ledger(capture_id: str) -> dict[str, Any]:
     }
 
 
+def _validate_run_ledger_binding(
+    run: Mapping[str, Any], ledger: Mapping[str, Any]
+) -> None:
+    if (
+        ledger.get("capture_id") != run.get("capture_id")
+        or ledger.get("target_key") != run.get("target_digest")
+        or ledger.get("upper_watermark") != run.get("upper_watermark_digest")
+    ):
+        raise SequenceConflictError("message ledger does not match capture identity")
+
+
 def _validated_private_ref(value: str) -> str:
     if (
         not value
@@ -322,6 +333,10 @@ def record_persisted_attachment_save(
         message_ledger = store.load_message_ledger(capture_id)
         if message_ledger is None:
             raise SequenceConflictError("message ledger does not exist")
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise SequenceConflictError("capture checkpoint does not exist")
+        _validate_run_ledger_binding(run, message_ledger)
         discovered = {
             str(item)
             for event in message_ledger["events"]
@@ -451,6 +466,12 @@ def seal_persisted_attachment_inventory(
         coverage = store.load_coverage(capture_id)
         if message_ledger is None or coverage is None:
             raise SequenceConflictError("durable capture evidence does not exist")
+        run = store.load_checkpoint(capture_id)
+        if run is None:
+            raise SequenceConflictError("capture checkpoint does not exist")
+        _validate_run_ledger_binding(run, message_ledger)
+        if coverage.get("capture_id") != run.get("capture_id"):
+            raise SequenceConflictError("coverage does not match capture identity")
         ledger = store.load_attachment_save_ledger(capture_id) or _new_attachment_save_ledger(
             capture_id
         )
@@ -561,8 +582,28 @@ def start_capture_loop(
 
     run = new_capture_loop(target_key, route, upper_watermark, **options)
     with store.transition_lock(run["capture_id"]):
-        existing = store.load_checkpoint(run["capture_id"])
+        expected_identity = run.get("capture_identity")
+        existing = store.load_checkpoint(
+            run["capture_id"],
+            expected_capture_identity=expected_identity,
+        )
         if existing is not None:
+            if any(
+                existing.get(field) != run.get(field)
+                for field in (
+                    "capture_id",
+                    "target_digest",
+                    "upper_watermark_digest",
+                    "route",
+                )
+            ):
+                raise CheckpointCorruptError(
+                    "checkpoint source identity does not match requested run"
+                )
+            if existing.get("capture_identity") != expected_identity:
+                raise CheckpointCorruptError(
+                    "checkpoint capture attempt identity does not match requested run"
+                )
             return build_capture_status_projection(existing)
         store.save_checkpoint(run, expected_sequence=0)
         return build_capture_status_projection(run)
@@ -642,6 +683,7 @@ def merge_persisted_capture_window(
             target_key=str(run["target_digest"]),
             upper_watermark=str(run["upper_watermark_digest"]),
         )
+        _validate_run_ledger_binding(run, ledger)
         current_sequence = len(ledger["events"])
         updated_ledger = _append_window_events(ledger, observation)
         store.invalidate_full_capture_receipt(capture_id)
@@ -701,6 +743,7 @@ def merge_capture_windows_cache_first(
             target_key=str(run["target_digest"]),
             upper_watermark=str(run["upper_watermark_digest"]),
         )
+        _validate_run_ledger_binding(run, ledger)
         current_sequence = len(ledger["events"])
         for _, observation in ordered:
             source = str(observation.get("source") or "")
@@ -743,6 +786,7 @@ def append_persisted_message_event(
             target_key=str(run["target_digest"]),
             upper_watermark=str(run["upper_watermark_digest"]),
         )
+        _validate_run_ledger_binding(run, ledger)
         if len(ledger["events"]) != expected_sequence:
             raise SequenceConflictError(
                 "message ledger sequence conflict: "
@@ -785,6 +829,10 @@ def rebuild_persisted_capture_projections(
     ledger = store.load_message_ledger(capture_id)
     if ledger is None:
         raise SequenceConflictError("message ledger does not exist")
+    run = store.load_checkpoint(capture_id)
+    if run is None:
+        raise SequenceConflictError("capture checkpoint does not exist")
+    _validate_run_ledger_binding(run, ledger)
     coverage = store.load_coverage(capture_id)
     measured_gap_count = int(coverage.get("gap_count") or 0) if coverage else 0
     projections = build_capture_projections(
@@ -798,8 +846,7 @@ def rebuild_persisted_capture_projections(
         pending_retry_count=pending_retry_count,
         attachment_inventory_complete=attachment_inventory_complete,
     )
-    run = store.load_checkpoint(capture_id)
-    route = str((run or {}).get("route") or "unknown")
+    route = str(run.get("route") or "unknown")
     strict_evidence = build_strict_full_capture_evidence_from_projections(
         projections,
         route=route,

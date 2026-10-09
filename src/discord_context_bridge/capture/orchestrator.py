@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from hashlib import sha256
+import re
 from typing import Any, Mapping
+
+from ..acquisition_gate import capture_id_from_attempt_identity
 
 
 _VERSION = "dcb-full-capture-orchestrator.v1"
+_ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_ATTEMPT_IDENTITY_SCHEMA = "dcb-capture-attempt-identity.v1"
 _SUPPORTED_ROUTES = {
     "in_app_browser",
     "chrome_extension",
@@ -47,17 +52,29 @@ def new_capture_run(
     upper_watermark: str,
     *,
     retry_budget: int = 3,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic run envelope safe to persist and resume."""
     if route not in _SUPPORTED_ROUTES:
         raise ValueError(f"unsupported capture route: {route}")
     if retry_budget < 0:
         raise ValueError("retry_budget must be non-negative")
-    identity = _digest(_VERSION, target_key, route, upper_watermark)
-    return {
+    base_identity = _digest(_VERSION, target_key, route, upper_watermark)
+    capture_id = base_identity
+    attempt_identity: dict[str, str] | None = None
+    if attempt_id is not None:
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID_RE.fullmatch(attempt_id):
+            raise ValueError("attempt_id must be a safe opaque identifier")
+        attempt_identity = {
+            "schema": _ATTEMPT_IDENTITY_SCHEMA,
+            "base_capture_id": base_identity,
+            "attempt_id": attempt_id,
+        }
+        capture_id = capture_id_from_attempt_identity(attempt_identity)
+    run = {
         "schema": _VERSION,
-        "capture_id": identity,
-        "idempotency_key": _digest("idempotency", identity),
+        "capture_id": capture_id,
+        "idempotency_key": _digest("idempotency", capture_id),
         "target_digest": _digest("target", target_key),
         "upper_watermark_digest": capture_watermark_digest(upper_watermark),
         "route": route,
@@ -79,6 +96,9 @@ def new_capture_run(
         },
         "checkpoints": [],
     }
+    if attempt_identity is not None:
+        run["capture_identity"] = attempt_identity
+    return run
 
 
 def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> dict[str, Any]:
