@@ -9,7 +9,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
-from discord_context_bridge.acquisition_gate import validate_full_capture_receipt
+from discord_context_bridge.acquisition_gate import (
+    capture_id_from_attempt_identity,
+    validate_full_capture_receipt,
+)
 from .store import (
     CaptureCheckpointStore,
     CaptureStoreError,
@@ -157,6 +160,31 @@ def persist_strict_full_capture_receipt(
         attachment_ledger = store.load_attachment_save_ledger(capture_id)
         if message_ledger is None or coverage is None:
             raise CaptureStoreError("full capture receipt source evidence is missing")
+        if checkpoint is not None:
+            if (
+                message_ledger.get("capture_id") != checkpoint.get("capture_id")
+                or message_ledger.get("target_key") != checkpoint.get("target_digest")
+                or message_ledger.get("upper_watermark")
+                != checkpoint.get("upper_watermark_digest")
+                or coverage.get("capture_id") != checkpoint.get("capture_id")
+            ):
+                raise CaptureStoreError(
+                    "full capture receipt source identity does not match checkpoint"
+                )
+            if "capture_identity" in checkpoint:
+                try:
+                    expected_capture_id = capture_id_from_attempt_identity(
+                        checkpoint.get("capture_identity")
+                    )
+                except ValueError as error:
+                    raise CaptureStoreError(
+                        "full capture checkpoint attempt identity is invalid"
+                    ) from error
+                if expected_capture_id != capture_id:
+                    raise CaptureStoreError(
+                        "full capture checkpoint attempt identity does not match capture"
+                    )
+                receipt["capture_identity"] = dict(checkpoint["capture_identity"])
         if checkpoint is not None and (
             checkpoint.get("blocker") is not None
             or checkpoint.get("state") == "retry_wait"

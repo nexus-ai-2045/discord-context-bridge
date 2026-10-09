@@ -14,6 +14,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..acquisition_gate import capture_id_from_attempt_identity
+
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_STATES = {
@@ -910,6 +912,33 @@ class CaptureCheckpointStore:
             }:
                 raise CheckpointCorruptError("full capture receipt source binding is invalid")
             checkpoint = self.load_checkpoint(capture_id)
+            checkpoint_identity = (
+                checkpoint.get("capture_identity") if checkpoint is not None else None
+            )
+            receipt_has_identity = "capture_identity" in payload
+            checkpoint_has_identity = bool(
+                checkpoint is not None and "capture_identity" in checkpoint
+            )
+            if receipt_has_identity != checkpoint_has_identity or (
+                receipt_has_identity
+                and payload.get("capture_identity") != checkpoint_identity
+            ):
+                raise CheckpointCorruptError(
+                    "full capture receipt attempt identity binding is invalid"
+                )
+            if receipt_has_identity:
+                try:
+                    expected_capture_id = capture_id_from_attempt_identity(
+                        payload.get("capture_identity")
+                    )
+                except ValueError as error:
+                    raise CheckpointCorruptError(
+                        "full capture receipt attempt identity is invalid"
+                    ) from error
+                if expected_capture_id != capture_id:
+                    raise CheckpointCorruptError(
+                        "full capture receipt attempt identity does not match capture"
+                    )
             current = {
                 "checkpoint_digest": canonical_capture_digest(checkpoint),
                 "message_ledger_digest": canonical_capture_digest(
@@ -1189,10 +1218,47 @@ class CaptureCheckpointStore:
             if descriptor is not None:
                 os.close(descriptor)
 
-    def load_checkpoint(self, capture_id: str) -> dict[str, Any] | None:
+    def _attempt_binding_path(self, capture_id: str) -> Path:
+        return self.root / "attempt-identities" / f"{_safe_capture_id(capture_id)}.json"
+
+    @staticmethod
+    def _attempt_binding(run: Mapping[str, Any]) -> dict[str, Any]:
+        return {field: run.get(field) for field in (
+            "capture_id", "capture_identity", "target_digest",
+            "upper_watermark_digest", "route",
+        )}
+
+    def _load_attempt_binding(self, capture_id: str) -> dict[str, Any] | None:
+        content = _read_store_relative_bytes(self.root, self._attempt_binding_path(capture_id))
+        if content is None:
+            return None
+        try:
+            binding = json.loads(content.decode("utf-8"))
+            if not isinstance(binding, dict) or set(binding) != {
+                "capture_id", "capture_identity", "target_digest",
+                "upper_watermark_digest", "route",
+            }:
+                raise ValueError("invalid binding structure")
+            if binding["capture_id"] != capture_id or capture_id_from_attempt_identity(
+                binding["capture_identity"]
+            ) != capture_id:
+                raise ValueError("invalid binding identity")
+        except (UnicodeError, ValueError) as error:
+            raise CheckpointCorruptError("durable attempt identity binding is invalid") from error
+        return binding
+
+    def load_checkpoint(
+        self,
+        capture_id: str,
+        *,
+        expected_capture_identity: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         path = self.checkpoint_path(capture_id)
+        binding = self._load_attempt_binding(capture_id)
         content = _read_store_relative_bytes(self.root, path)
         if content is None:
+            if binding is not None:
+                raise CheckpointCorruptError("attempt checkpoint is missing")
             return None
         try:
             payload = json.loads(content.decode("utf-8"))
@@ -1202,6 +1268,29 @@ class CaptureCheckpointStore:
             raise CheckpointCorruptError("checkpoint root is invalid")
         if payload.get("capture_id") != capture_id:
             raise CheckpointCorruptError("checkpoint capture binding is invalid")
+        if binding is not None or "capture_identity" in payload:
+            if binding is None or binding != self._attempt_binding(payload):
+                raise CheckpointCorruptError("checkpoint durable attempt identity does not match")
+        if "capture_identity" in payload:
+            try:
+                expected_capture_id = capture_id_from_attempt_identity(
+                    payload.get("capture_identity")
+                )
+            except ValueError as error:
+                raise CheckpointCorruptError(
+                    "checkpoint capture attempt identity is invalid"
+                ) from error
+            if expected_capture_id != capture_id:
+                raise CheckpointCorruptError(
+                    "checkpoint capture attempt identity binding is invalid"
+                )
+        if (
+            expected_capture_identity is not None
+            and payload.get("capture_identity") != dict(expected_capture_identity)
+        ):
+            raise CheckpointCorruptError(
+                "checkpoint capture attempt identity does not match requested run"
+            )
         if payload.get("schema") != "dcb-full-capture-orchestrator.v1":
             raise CheckpointCorruptError("checkpoint schema is invalid")
         if payload.get("state") not in _SAFE_STATES:
@@ -1222,7 +1311,43 @@ class CaptureCheckpointStore:
         self, run: Mapping[str, Any], *, expected_sequence: int
     ) -> dict[str, Any]:
         capture_id = _safe_capture_id(run.get("capture_id"))
+        if "capture_identity" in run:
+            try:
+                expected_capture_id = capture_id_from_attempt_identity(
+                    run.get("capture_identity")
+                )
+            except ValueError as error:
+                raise CheckpointCorruptError(
+                    "checkpoint capture attempt identity is invalid"
+                ) from error
+            if expected_capture_id != capture_id:
+                raise CheckpointCorruptError(
+                    "checkpoint capture attempt identity binding is invalid"
+                )
         current = self.load_checkpoint(capture_id)
+        if current is not None:
+            immutable_fields = (
+                "capture_id",
+                "target_digest",
+                "upper_watermark_digest",
+                "route",
+            )
+            if any(current.get(field) != run.get(field) for field in immutable_fields):
+                raise CheckpointCorruptError(
+                    "checkpoint immutable source identity cannot change"
+                )
+            current_has_attempt_identity = "capture_identity" in current
+            run_has_attempt_identity = "capture_identity" in run
+            if (
+                current_has_attempt_identity != run_has_attempt_identity
+                or (
+                    current_has_attempt_identity
+                    and current.get("capture_identity") != run.get("capture_identity")
+                )
+            ):
+                raise CheckpointCorruptError(
+                    "checkpoint immutable attempt identity cannot change"
+                )
         current_sequence = _sequence_from_checkpoint(current) if current else 0
         if current_sequence != expected_sequence:
             raise SequenceConflictError(
@@ -1233,6 +1358,11 @@ class CaptureCheckpointStore:
         next_sequence = _sequence_from_checkpoint(payload)
         if next_sequence < current_sequence:
             raise SequenceConflictError("checkpoint sequence cannot move backwards")
+        if "capture_identity" in payload and current is None:
+            # Publish immutable source binding first: an interrupted initial save
+            # remains fail-closed instead of silently recreating the attempt.
+            _atomic_store_json(self.root, self._attempt_binding_path(capture_id),
+                               self._attempt_binding(payload))
         _atomic_store_json(self.root, self.checkpoint_path(capture_id), payload)
         if current != payload:
             self.invalidate_full_capture_receipt(capture_id)
