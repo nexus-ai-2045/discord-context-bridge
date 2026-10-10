@@ -108,6 +108,12 @@ jobs:
           tests/test_capture_store_windows_compat.py
           -q
 
+      - name: Run private Bot receipt compatibility smoke tests
+        run: >-
+          python -m pytest tests/test_bot_live_verification.py
+          -k "unique_producer_and_consumer_bind_current_target or producer_cli_outputs_only_safe_metadata"
+          -q
+
   mcp-compatibility:
     name: MCP ${{ matrix.mcp-version }}
     runs-on: ubuntu-latest

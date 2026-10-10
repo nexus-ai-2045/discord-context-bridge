@@ -1571,8 +1571,91 @@ def test_human_sent_closeout_rejects_tampered_saved_record_hashes(tmp_path):
     )
 
     assert closeout["closeout_status"] == "blocked"
-    assert "post_send_snapshot_record_content_hash_invalid" in closeout["blockers"]
-    assert "post_send_snapshot_record_event_hash_invalid" in closeout["blockers"]
+    assert "post_send_snapshot_store_invalid" in closeout["blockers"]
+    assert closeout["snapshot_receipt"]["verified"] is False
+
+
+def closeout_prior_saved_receipt(saved, snapshot_store, observed_at):
+    return build_discord_post_send_closeout_packet(
+        snapshot_receipt=saved,
+        _trusted_snapshot_store_override=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(observed_at),
+        human_reviewed=True,
+        observed_text_status="matches_copy_block",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+
+@pytest.mark.parametrize("corruption", ["event_hash", "previous_event_hash", "stream_sequence"])
+def test_prior_closeout_receipt_rejects_later_broken_snapshot_chain(tmp_path, corruption):
+    saved, store, observed_at = persist_post_send_snapshot(tmp_path)
+    snapshot_visible_text(text="later private observation", url=POST_SEND_URL, path=store)
+    records = load_text_snapshots(store)
+    if corruption == "stream_sequence":
+        records[-1][corruption] = 4
+    else:
+        records[-1][corruption] = "0" * 64
+    if corruption != "event_hash":
+        records[-1]["event_hash"] = core_module.canonical_event_hash(records[-1])
+    store.write_text("".join(json.dumps(row) + "\n" for row in records))
+    closeout = closeout_prior_saved_receipt(saved, store, observed_at)
+    assert closeout["closeout_status"] == "blocked"
+    assert closeout["snapshot_receipt"]["verified"] is False
+    assert "post_send_snapshot_store_invalid" in closeout["blockers"]
+    rendered = json.dumps(closeout)
+    assert str(store) not in rendered
+    assert "later private observation" not in rendered
+    assert POST_SEND_URL not in rendered
+
+
+@pytest.mark.parametrize("change_revoked_bytes", [False, True])
+def test_prior_closeout_receipt_requires_valid_physical_revocation_evidence(tmp_path, change_revoked_bytes):
+    saved, store, observed_at = persist_post_send_snapshot(tmp_path)
+    thread_url = "https://discord.com/channels/12345678901234567/23456789012345678/threads/34567890123456789"
+    alias_url = "https://discord.com/channels/12345678901234567/34567890123456789"
+    snapshot_visible_text(text="unrelated valid thread", url=thread_url, path=store)
+    prior = load_text_snapshots(store)[-1]
+    invalid = dict(prior)
+    invalid.update(
+        event_id="foreign-invalid-event",
+        url=alias_url,
+        stream_id=core_module.target_key_for_url(alias_url),
+        stream_sequence=2,
+        expected_previous_stream_sequence=1,
+        previous_event_hash=prior["event_hash"],
+        previous_content_hash=prior["content_hash"],
+        content_hash=core_module.stable_text_hash("foreign private text"),
+        text="foreign private text",
+    )
+    for key in ("target_key", "subject", "dataschema", "type", "datacontenttype"):
+        invalid.pop(key, None)
+    with store.open("a") as output:
+        output.write(json.dumps(invalid) + "\n")
+    core_module.revoke_invalid_snapshot_observation(store)
+    if change_revoked_bytes:
+        lines = store.read_bytes().split(b"\n")
+        lines[-3] += b" "
+        store.write_bytes(b"\n".join(lines))
+    closeout = closeout_prior_saved_receipt(saved, store, observed_at)
+    if change_revoked_bytes:
+        assert closeout["closeout_status"] == "blocked"
+        assert closeout["snapshot_receipt"]["verified"] is False
+        assert "post_send_snapshot_store_invalid" in closeout["blockers"]
+    else:
+        assert closeout["closeout_status"] == "closed"
+        assert closeout["snapshot_receipt"]["verified"] is True
+    assert "foreign private text" not in json.dumps(closeout)
+
+
+def test_prior_closeout_receipt_rejects_duplicate_capture_id(tmp_path):
+    saved, store, observed_at = persist_post_send_snapshot(tmp_path)
+    store.write_bytes(store.read_bytes() * 2)
+    closeout = closeout_prior_saved_receipt(saved, store, observed_at)
+    assert closeout["closeout_status"] == "blocked"
+    assert closeout["snapshot_receipt"]["verified"] is False
+    assert "post_send_snapshot_capture_not_unique" in closeout["blockers"]
 
 
 def test_human_sent_closeout_rejects_forged_saved_capture_identity(tmp_path):

@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import io
 import json
+import os
 import stat
 import sys
 import urllib.error
@@ -21,6 +22,7 @@ from discord_context_bridge.live_verification import (
     credential_binding_sha256,
     normalize_expected_target,
     produce_live_verification_receipt,
+    read_private_receipt,
     target_binding_sha256,
     verify_live_target,
     verify_saved_receipt,
@@ -69,7 +71,12 @@ def _write_channel_token(channel_dir: Path) -> None:
     )
 
 
-def test_unique_producer_and_consumer_bind_current_target(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("without_fchmod", [False, True])
+def test_unique_producer_and_consumer_bind_current_target(
+    tmp_path: Path, monkeypatch, without_fchmod: bool,
+) -> None:
+    if without_fchmod:
+        monkeypatch.delattr(os, "fchmod", raising=False)
     preflight = _load_script("discord_bot_route_preflight")
     channel_dir = tmp_path / "discord"
     _write_channel_token(channel_dir)
@@ -88,7 +95,8 @@ def test_unique_producer_and_consumer_bind_current_target(tmp_path: Path, monkey
 
     assert result["ok"] is True
     assert result["live_verification"]["status"] == "verified"
-    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
     rendered = json.dumps(result)
     stored = json.loads(receipt.read_text(encoding="utf-8"))
     for field in (
@@ -233,7 +241,12 @@ def test_http_permission_denied_is_safe_reason(monkeypatch) -> None:
         _request_json("/users/@me", "private-token")
 
 
-def test_producer_cli_outputs_only_safe_metadata(tmp_path: Path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("without_fchmod", [False, True])
+def test_producer_cli_outputs_only_safe_metadata(
+    tmp_path: Path, monkeypatch, capsys, without_fchmod: bool,
+) -> None:
+    if without_fchmod:
+        monkeypatch.delattr(os, "fchmod", raising=False)
     producer = _load_script("discord_bot_live_verify")
     channel_dir = tmp_path / "discord"
     channel_dir.mkdir()
@@ -270,6 +283,12 @@ def test_producer_cli_outputs_only_safe_metadata(tmp_path: Path, monkeypatch, ca
     assert "private-token" not in visible
     assert EXPECTED_URL not in visible
     assert "/users/@me" not in visible
+    receipt, read_status = read_private_receipt(channel_dir / LIVE_VERIFICATION_RECEIPT)
+    assert read_status == "loaded"
+    assert receipt is not None
+    assert verify_saved_receipt(
+        payload=receipt, expected_url=EXPECTED_URL, token="private-token",
+    ) == "verified"
 
 
 @pytest.mark.parametrize("first_token", ["private-token", "rotated-token"])

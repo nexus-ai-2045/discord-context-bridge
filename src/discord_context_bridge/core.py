@@ -4781,7 +4781,9 @@ def _resolve_saved_post_send_snapshot(
     if not capture_id:
         return {}, ["post_send_snapshot_capture_id_missing"]
     try:
-        records = load_text_snapshots(path)
+        records = load_content_snapshot_records(path)
+    except CheckpointCorruptError:
+        return {}, ["post_send_snapshot_store_invalid"]
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return {}, ["post_send_snapshot_store_unreadable"]
     matches = [record for record in records if str(record.get("event_id") or "") == capture_id]
