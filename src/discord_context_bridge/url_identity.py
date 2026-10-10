@@ -26,6 +26,22 @@ def parse_guild_channel_url(url: str) -> tuple[str, str] | None:
     return guild, channel
 
 
+def parse_effective_channel_url(url: str) -> tuple[str, str] | None:
+    channel_identity = parse_guild_channel_url(url)
+    if channel_identity is not None:
+        return channel_identity
+    match = _URL_RE.fullmatch(url.strip())
+    if match is None:
+        return None
+    guild, parent, marker, thread = match.groups()
+    if marker != "threads" or any(
+        value is None or re.fullmatch(r"[0-9]+", value) is None
+        for value in (guild, parent, thread)
+    ):
+        return None
+    return guild, thread
+
+
 def classify_discord_url(
     url: str,
     *,

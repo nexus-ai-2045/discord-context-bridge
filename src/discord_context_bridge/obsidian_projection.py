@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .core import load_text_snapshots, parse_visible_text
+from .core import load_content_snapshot_records, parse_visible_text
 
 
 PROJECTION_SCHEMA = "discord_context_bridge_obsidian_projection.v1"
@@ -260,7 +260,7 @@ def export_obsidian_projection(
     *, snapshot_store: Path, output_root: Path
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    records = load_text_snapshots(snapshot_store)
+    records = load_content_snapshot_records(snapshot_store)
     latest_records = _latest_by_target(records)
     statuses: list[str] = []
     month_files_by_target: dict[str, list[str]] = defaultdict(list)

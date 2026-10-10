@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .core import DiscordEvent, load_text_snapshots
+from .core import DiscordEvent, load_content_snapshot_records
 from .knowledge_projection import (
     _extract_topics,
     _load_topic_registry,
@@ -273,7 +273,7 @@ def _load_proposed_observation_ids(path: Path | None) -> set[str]:
 
 
 def _candidate_events(snapshot_store: Path) -> list[dict[str, str]]:
-    records = load_text_snapshots(snapshot_store)
+    records = load_content_snapshot_records(snapshot_store)
     candidates: list[dict[str, str]] = []
     for record in _projection_records(records):
         target = str(record.get("target_key") or record.get("stream_id") or "unknown")

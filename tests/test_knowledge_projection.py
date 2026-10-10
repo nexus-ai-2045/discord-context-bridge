@@ -8,6 +8,7 @@ import pytest
 
 from discord_context_bridge.cli import main
 from discord_context_bridge.knowledge_projection import export_knowledge_projection
+from discord_context_bridge import core
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -82,6 +83,34 @@ def test_projection_creates_people_topics_timeline_and_top(tmp_path):
     assert "## 人物" in top
     assert "## 話題" in top
     assert (output_root / "Knowledge TOP.md").exists()
+
+
+def test_projection_preserves_last_valid_body_after_revocation(tmp_path):
+    store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    url = "https://discord.com/channels/12345678901234567/23456789012345678/threads/34567890123456789"
+    alias = "https://discord.com/channels/12345678901234567/34567890123456789"
+    core.snapshot_visible_text(text="member-a: 有効な本文", url=url, path=store)
+    core.snapshot_visible_text(text="member-a: 最後の有効本文", url=url, path=store)
+    previous = core.load_text_snapshots(store)[-1]
+    bad = dict(previous)
+    bad.update(event_id="bad-projection-event", url=alias,
+               stream_id=core.target_key_for_url(alias), stream_sequence=3,
+               expected_previous_stream_sequence=2,
+               previous_event_hash=previous["event_hash"],
+               previous_content_hash=previous["content_hash"],
+               content_hash=core.stable_text_hash("無効な本文"), text="無効な本文")
+    for key in ("target_key", "subject", "dataschema", "type", "datacontenttype"):
+        bad.pop(key, None)
+    with store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(bad, ensure_ascii=False) + "\n")
+    core.revoke_invalid_snapshot_observation(store)
+
+    result = export_knowledge_projection(snapshot_store=store, output_root=output_root)
+    rendered = "\n".join(path.read_text(encoding="utf-8") for path in (output_root / "People").glob("*.generated.md"))
+    assert result["projected_event_count"] == 1
+    assert "最後の有効本文" in rendered
+    assert "無効な本文" not in rendered
 
 
 def test_projection_uses_timestamp_boundary_instead_of_treating_body_as_author(

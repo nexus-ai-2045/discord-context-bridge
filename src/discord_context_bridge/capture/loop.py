@@ -187,3 +187,61 @@ def validate_observed_full_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]
         "raw_text_returned": False,
         "outbound_actions": "disabled",
     }
+
+
+def build_observed_full_closeout(
+    reconciliation: Mapping[str, Any],
+    *,
+    visible_route: bool,
+    visible_source_observed: bool,
+    observed_full_requested: bool,
+    date_continuity_operator_attested: bool,
+    scan_pass_count: int,
+    last_pass_new_message_count: int | None,
+    edited_message_count: int,
+) -> dict[str, Any]:
+    """Label a canonical visible-route gate without claiming API completeness.
+
+    The caller must derive ``reconciliation`` from the persisted capture store;
+    loose raw JSONL and caller-supplied completion flags are not evidence.
+    """
+    blockers = list(reconciliation.get("blockers") or [])
+    if reconciliation.get("schema") != "dcb-capture-loop-reconcile.v1":
+        blockers.append("canonical_reconciliation_missing")
+    if reconciliation.get("full_capture_confirmed") is not True:
+        blockers.append("strict_full_capture_not_confirmed")
+    if visible_route is not True:
+        blockers.append("visible_route_required")
+    if visible_source_observed is not True:
+        blockers.append("visible_source_not_observed")
+    if observed_full_requested is not True:
+        blockers.append("observed_full_not_requested_at_capture_start")
+    if date_continuity_operator_attested is not True:
+        blockers.append("date_continuity_operator_attestation_missing")
+    if scan_pass_count < 2 or last_pass_new_message_count != 0:
+        blockers.append("stable_repeat_pass_missing")
+    # Coverage tracks content versions but not the pass in which an edit arose.
+    # Any edit therefore blocks observed-full until a version-aware pass record
+    # is available; zero new message IDs alone is not zero new content hashes.
+    if edited_message_count != 0:
+        blockers.append("content_versions_changed_during_capture")
+    blockers = list(dict.fromkeys(blockers))
+    verified = not blockers
+    return {
+        "schema": "discord_observed_full_closeout.v1",
+        "state": "observed_full_verified" if verified else "partial_or_blocked",
+        "observed_full": {
+            "verified": verified,
+            "pass_count": scan_pass_count,
+            "last_pass_new_message_count": last_pass_new_message_count,
+            "edited_message_count": edited_message_count,
+            "date_continuity_operator_attested": date_continuity_operator_attested,
+            "date_continuity_independently_verified": False,
+            "verification_basis": "strict_capture_gate_plus_operator_attestation",
+        },
+        "api_full": {"verified": False, "status": "not_claimed"},
+        "blockers": blockers,
+        "raw_text_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }

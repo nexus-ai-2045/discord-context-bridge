@@ -69,3 +69,20 @@ def test_cli_classification_does_not_echo_url(capsys):
     assert exit_code == 0
     assert url not in output
     assert '"structural_shape": "guild_channel_target"' in output
+
+
+def test_effective_channel_parser_normalizes_only_explicit_thread_routes():
+    from discord_context_bridge.url_identity import parse_effective_channel_url
+
+    assert parse_effective_channel_url("https://discord.com/channels/1/20") == ("1", "20")
+    assert parse_effective_channel_url("https://discord.com/channels/1/20/threads/30") == ("1", "30")
+    assert parse_effective_channel_url("https://canary.discord.com/channels/1/20/threads/30") == ("1", "30")
+    for url in (
+        "https://discord.com/channels/1/20/30",
+        "https://discord.com/channels/1/20/30/40",
+        "https://discord.com/channels/1/20/threads/30/40",
+        "https://discord.com/channels/1/parent/threads/30",
+        "https://discord.com/channels/1/20/threads/thread",
+        "https://example.com/channels/1/20/threads/30",
+    ):
+        assert parse_effective_channel_url(url) is None
