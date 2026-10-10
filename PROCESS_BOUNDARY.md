@@ -145,16 +145,26 @@ reply UI / message box への下書き入力、pre-send ping、`stop_before_send
 reply UI / message box が一意に取れない時は `blocked` で停止します。
 reply UI が 0 件または複数件の場合、通常 message box へ fallback しません。
 
-人間が最後の Discord 送信操作をした後は `closeout-discord-send` で
-metadata-only に閉じます。この closeout は `human_sent_observed`、
-`human_reviewed`、`observed_text_status`、`unread_check_status`、
-`unread_signal_count` だけを状態として返し、本文、URL、snowflake は出力しません。
-本文または未読確認が `not-checked` のままでは `blocked` です。未読が残っている場合も
-`blocked` とし、先に未読を確認します。
+人間が最後の `Discord` 送信操作をした後は `closeout-discord-send` で記録を照合します。
+`human_sent` では、先に送信した投稿の正確な参照先と本文を
+`snapshot-discord-url-text` または `bridge-intake` へ保存し、その出力の
+`discord_saved_snapshot_receipt.v1` を渡します。受領記録の `capture_id` を保存先から検索し、
+実際の記録の対象・観測時刻・イベントと本文のハッシュ値・安全属性を照合します。
+保存先は設定された共有保存領域に固定し、呼び出しごとに差し替えません。
+`MCP` の保存先指定はサーバー起動時だけです。
+`human_send_observed_at` を送信観測の下限として、保存した観測がそれより前、未来、
+15 分超、別対象、改変済み、または未保存なら停止します。
+送信前の準備記録か試験実行の記録を渡す場合は両方を必須とし、
+同じ操作の識別子と投稿先の照合値が一致することを確認します。
+`human_sent_observed`、`human_reviewed`、`observed_text_status`、`unread_check_status`、
+`unread_signal_count` と照合結果を返し、本文・参照先・投稿の識別子は出力しません。
+本文または未読確認が `not-checked` のまま、あるいは未読が残っていれば `blocked` です。
 
-送信後本文を保存する必要がある場合は、先に `snapshot-discord-url-text` で
-private snapshot store へ保存し、その後に `closeout-discord-send` で
-metadata-only の完了状態だけを閉じます。snapshot 保存と closeout を同じ操作に混ぜません。
+本文の保存と送信後の照合は別の操作です。`closed` / `verified` はローカル記録との照合結果であり、
+入力の発行元や実際の `Discord` アクセス・送信を認証しません。
+本文と送信観測時刻は信頼された操作担当から受け取ります。
+送信前の準備記録と試験実行の記録を持たない事後確認は `retrospective_snapshot_only` であり、
+送信前の検査を通過したとは主張しません。`not_sent` は受領記録・送信観測時刻・操作の結合が不要です。
 
 ## やらないこと
 

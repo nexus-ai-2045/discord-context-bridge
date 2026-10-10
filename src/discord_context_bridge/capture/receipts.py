@@ -94,10 +94,13 @@ def closeout_correlation_digest(closeout: Mapping[str, Any]) -> str:
             "closeout_status",
             "external_action_state",
             "human_sent_observed",
+            "human_send_observed_at",
             "human_reviewed",
             "observed_text_status",
             "unread_check_status",
             "unread_signal_count",
+            "snapshot_receipt",
+            "operation_binding",
             "outbound_actions",
         )
     }

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
+from .local_config import default_cross_device_snapshot_store
 from .core import (
     DEFAULT_CONTEXT_STORE,
     DEFAULT_STORE,
@@ -69,6 +70,7 @@ def build_server(
     port: int = 8000,
     http_path: str = "/mcp",
 ) -> Any:
+    trusted_snapshot_store = snapshot_store or default_cross_device_snapshot_store()
     runtime = _load_mcp_runtime()
     Server = runtime.server_type
     if runtime.api_version == 2:
@@ -265,8 +267,10 @@ def build_server(
     def closeout_discord_send_after_human_action(
         staging_packet: dict[str, Any] | None = None,
         dry_run_report: dict[str, Any] | None = None,
+        snapshot_receipt: dict[str, Any] | None = None,
         external_action_state: str = "human_sent",
         human_sent_observed: bool = False,
+        human_send_observed_at: str = "",
         human_reviewed: bool = False,
         observed_text_status: str = "not_checked",
         unread_check_status: str = "not_checked",
@@ -279,8 +283,11 @@ def build_server(
         return build_discord_post_send_closeout_packet(
             staging_packet=staging_packet,
             dry_run_report=dry_run_report,
+            snapshot_receipt=snapshot_receipt,
+            _trusted_snapshot_store_override=trusted_snapshot_store,
             external_action_state=external_action_state,
             human_sent_observed=human_sent_observed,
+            human_send_observed_at=human_send_observed_at,
             human_reviewed=human_reviewed,
             observed_text_status=observed_text_status,
             unread_check_status=unread_check_status,
@@ -426,7 +433,7 @@ def build_server(
             url=url,
             title=title,
             source="discord_url_visible_text",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
 
     @server.tool()
@@ -444,7 +451,7 @@ def build_server(
             url=url,
             title=title,
             source="chrome_extension_dom",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
         return {
             **snapshot,
@@ -475,7 +482,7 @@ def build_server(
             url=url,
             title=title,
             source="discord_url_visible_text",
-            path=snapshot_store or Path(".local/discord-context-bridge/text-snapshots.ndjson"),
+            path=trusted_snapshot_store,
         )
         passport = context_passport_from_text(
             content,

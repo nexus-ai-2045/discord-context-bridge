@@ -1,6 +1,11 @@
 import hashlib
+import importlib.util
 import json
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from discord_context_bridge.capture import parallel_closeout
 from discord_context_bridge.capture.parallel_closeout import (
@@ -772,3 +777,92 @@ def test_late_write_after_full_is_detected_by_canonical_revalidation(
     assert current["full_capture_confirmed"] is False
     assert current["terminal_state"] == "running"
     assert "artifact_hash_binding_mismatch" in current["blockers"]
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_claim_cli_reaudits_legacy_receipt_without_changing_saved_bytes(
+    tmp_path: Path, capsys, fresh: bool,
+) -> None:
+    run = _run_fixture(tmp_path, item_count=1)
+    _record_item(run, 0)
+    _record_stop_receipt(run)
+    database = _full_completeness_db(tmp_path)
+    store = CompletenessStore(database)
+    audit = store.audit_parent(PARENT_TARGET)
+    audit.pop("evidence_observed_at")
+    legacy = evaluate_legacy_parallel_run_from_store(
+        run, completeness_db=database, parent_target_key=PARENT_TARGET,
+    )
+    legacy.pop("evidence_observed_at")
+    legacy["parent_audit_sha256"] = hashlib.sha256(json.dumps(
+        audit, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+    legacy.update({
+        "persistence_confirmed": True,
+        "recorded_by": "discord-context-bridge",
+        "recorded_at": "2026-09-01T00:03:00+00:00",
+    })
+    receipt_path = run / "audit" / "parallel-run-closeout.json"
+    _write_json(receipt_path, legacy)
+    original_bytes = receipt_path.read_bytes()
+    metadata_path = run / "run-metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.update({
+        "status": "full_closed",
+        "closed_at": legacy["recorded_at"],
+        "closeout_schema": legacy["schema"],
+        "closeout_report": "audit/parallel-run-closeout.json",
+    })
+    _write_json(metadata_path, metadata)
+    observed_at = (datetime.now(UTC) - timedelta(hours=1 if fresh else 48)).isoformat()
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE inventory_scans SET observed_at = ?", (observed_at,))
+    script = Path(__file__).resolve().parents[1] / "scripts" / "context_claim_gate.py"
+    spec = importlib.util.spec_from_file_location("context_claim_gate_compatibility", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for claim in ("complete", "current"):
+        expected_allowed = claim == "complete" or fresh
+        code = module.main([
+            "--run-dir", str(run), "--completeness-db", str(database),
+            "--parent-target-key", PARENT_TARGET, "--claim", claim, "--json",
+        ])
+        report = json.loads(capsys.readouterr().out)
+        assert code == (0 if expected_allowed else 2)
+        assert report["allowed"] is expected_allowed
+        assert report["stages"]["capture"]["allowed"] is True
+        assert report["blockers"] == ([] if expected_allowed else ["freshness_expired"])
+        assert receipt_path.read_bytes() == original_bytes
+
+    projection = persist_legacy_parallel_closeout(
+        run, completeness_db=database, parent_target_key=PARENT_TARGET,
+    )
+    assert projection["evidence_observed_at"] == observed_at
+    assert "evidence_observed_at" not in json.loads(receipt_path.read_bytes())
+    assert receipt_path.read_bytes() == original_bytes
+    (run / "spool" / "worker-0" / "0000.txt").write_text("late change", encoding="utf-8")
+    assert module.main([
+        "--run-dir", str(run), "--completeness-db", str(database),
+        "--parent-target-key", PARENT_TARGET, "--claim", "complete", "--json",
+    ]) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["stages"]["capture"]["allowed"] is False
+    assert receipt_path.read_bytes() == original_bytes
+
+
+def test_new_receipt_stores_completion_and_projects_observation_time(tmp_path: Path) -> None:
+    run = _run_fixture(tmp_path, item_count=1)
+    _record_item(run, 0)
+    _record_stop_receipt(run)
+    database = _full_completeness_db(tmp_path)
+
+    projection = persist_legacy_parallel_closeout(
+        run, completeness_db=database, parent_target_key=PARENT_TARGET,
+    )
+
+    saved = json.loads((run / "audit" / "parallel-run-closeout.json").read_bytes())
+    assert projection["evidence_observed_at"] == "2026-09-01T00:02:00+00:00"
+    assert "evidence_observed_at" not in saved
+    assert saved == {key: value for key, value in projection.items() if key != "evidence_observed_at"}

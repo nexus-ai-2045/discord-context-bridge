@@ -14,13 +14,14 @@ flowchart TD
   fill --> pdca["send-pdca-preflightで対象/本文/添付/route_failureを確認"]
   pdca --> stop["送信ボタン手前で停止"]
   stop --> human["人間がテスト用チャンネルで送信判断"]
-  human --> closeout["closeout-discord-sendで送信後metadata確認"]
+  human --> snapshot["exact message URLをsnapshot-discord-url-textで保存"]
+  snapshot --> closeout["receipt付きcloseout-discord-sendで送信後metadata確認"]
   closeout --> status["send-operation-statusでチェック表を吸い上げ"]
   status --> prod["本番送信手順へ進むか判断"]
 
   pdca --> auto_preflight["任意: auto-send-preflight"]
   auto_preflight --> adapter["private adapter が一回送信"]
-  adapter --> closeout
+  adapter --> snapshot
 
   stage -. "public coreでは禁止" .-> auto_send["自動送信 / Enter送信 / 送信ボタンclick"]
   dry -. "禁止" .-> reaction["reaction / edit / delete"]
@@ -63,7 +64,13 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
 
 ### closeout 出力
 
-- closeout は DCB の metadata-only 状態として残す。
+- 送信後の照合では本文を出さず、状態だけを残す。`closed` / `verified` は設定されたローカル保存先との照合結果であり、実際の `Discord` アクセスや送信を認証しない。本文と送信観測時刻は信頼された操作担当から受け取る。
+- `human_sent` は、正確な投稿の参照先と本文を保存した `discord_saved_snapshot_receipt.v1` と、タイムゾーン付きの送信観測時刻 `human_send_observed_at` が必須。
+- `capture_id` を設定された共有保存領域から検索し、実際の記録の対象・`observed_at`・イベントと本文のハッシュ値・安全属性を検証する。呼び出しごとに保存先を変更できず、`MCP` の保存先指定はサーバー起動時だけに限定する。
+- 保存した観測は `human_send_observed_at` 以後かつ照合時点から 15 分以内でなければならない。送信観測前、未来、期限超過、別対象、改変、未保存は `blocked` にする。
+- 送信前の準備記録か試験実行の記録を渡す場合は両方を必須とし、同じ操作の識別子と投稿先の照合値が一致することを確認する。片方だけ、識別子不一致、投稿先不一致は `blocked` にする。
+- 送信前の記録を持たない事後確認は `retrospective_snapshot_only` として閉じられるが、送信前の検査通過は主張しない。本文の保存記録は操作の識別子を持たないため、操作との結合は準備・試験実行の識別子の一致と、保存記録の投稿先照合までに限る。
+- `not_sent` は受領記録・送信観測時刻・操作の結合が不要で、送信なしとして閉じる。
 - 外部 action 状態は `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` のどれかに分ける。
 - evidence がない場合は `not_sent` / `blocked` / `unknown` のどれかで閉じる。
 
@@ -170,22 +177,40 @@ PYTHONPATH=src python3 -m discord_context_bridge.cli \
   --json > .local/discord-context-bridge/auto-send-preflight.json
 ```
 
-7. 送信後closeoutを取る
+7. 送信後の正確な投稿の参照先と本文を保存する
+
+送信した投稿の参照先を指定し、可視本文を非公開の保存先へ保存します。
+出力は本文や参照先を返さず、保存記録の識別子・対象の照合値・観測時刻・鮮度を含みます。
+`configure-local-cache` または環境変数で設定した共有保存領域を使用します。
+任意の作業用保存先に記録した受領記録は、この照合の根拠になりません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  snapshot-discord-url-text \
+  --url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --input <post-send-visible-text-file> \
+  --json > .local/discord-context-bridge/post-send-snapshot.json
+```
+
+8. 受領記録を渡して送信後の照合を行う
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
   closeout-discord-send \
   --staging-packet .local/discord-context-bridge/staging-packet.json \
   --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --snapshot-receipt .local/discord-context-bridge/post-send-snapshot.json \
   --human-sent-observed \
+  --human-send-observed-at "<timezone付きISO-8601送信観測時刻>" \
   --human-reviewed \
   --observed-text-status human-edited-and-reviewed \
   --unread-check-status none-unread \
   --observed-message-id "<message-id>" \
+  --observed-url "https://discord.com/channels/<guild>/<channel>/<message>" \
   --json > .local/discord-context-bridge/send-closeout.json
 ```
 
-8. 既存ログから運転表を吸い上げる
+9. 既存ログから運転表を吸い上げる
 
 ```bash
 PYTHONPATH=src python3 -m discord_context_bridge.cli \
@@ -230,7 +255,7 @@ closeout を順に通します。
 | 送信本文のレビュー | `stage-discord-send` が `ready_to_fill` | review-draft / understanding gateを通す |
 | dry-run / preview | `verify-chrome-fill-dry-run` が `ready_to_fill` | URL、UI候補数、snapshot、copy block一致を直す |
 | 送信直前PDCA | `send-pdca-preflight` が `ok_to_send=true` | 対象、本文、添付プレビュー、route_failureを直す |
-| テスト用チャンネルで実送信 | 人間送信後のcloseoutが `closed` | テストチャンネルで人間が送信し、観測する |
+| テスト用チャンネルで実送信 | 人間が実投稿を確認し、その観測を保存した照合結果が `closed` | テストチャンネルで人間が送信し、投稿の参照先と本文を保存して照合する |
 | 送信ログ/失敗時回復確認 | closeout、未読0、回復手順レビュー済み | 修正投稿、停止、人間確認の手順を確認する |
 | 本番送信手順の固定化 | runbookをレビュー済みにする | 本番前チェックリストを更新する |
 
@@ -247,7 +272,7 @@ stateDiagram-v2
   DryRunReady --> PdcaBlocked: 対象/本文/添付/route_failure未解決
   DryRunReady --> PdcaReady: send-pdca-preflight ok_to_send
   PdcaReady --> HumanSend: 下書き入力後に人間が送信判断
-  HumanSend --> CloseoutBlocked: 未観測 / 未レビュー / 未読あり
+  HumanSend --> CloseoutBlocked: snapshot receipt欠落・別対象・stale / 未観測 / 未レビュー / 未読あり
   HumanSend --> CloseoutClosed: closeout closed
   CloseoutClosed --> OperationReady: rollback-plan + production-runbook確認済み
   OperationReady --> [*]

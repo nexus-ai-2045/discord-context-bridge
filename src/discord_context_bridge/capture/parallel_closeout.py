@@ -656,7 +656,10 @@ def _evaluate_legacy_parallel_run(
         parent_full = False
         blockers.append("parent_target_binding_mismatch")
     else:
-        result["parent_audit_sha256"] = _mapping_sha256(parent_audit)
+        result["parent_audit_sha256"] = _mapping_sha256(
+            {key: value for key, value in parent_audit.items() if key != "evidence_observed_at"}
+        )
+        result["evidence_observed_at"] = parent_audit.get("evidence_observed_at")
 
     blockers = sorted(set(blockers))
     result["blockers"] = blockers
@@ -764,7 +767,7 @@ def persist_legacy_parallel_closeout(
 
     audit_dir = root / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
-    receipt = dict(result)
+    receipt = {key: value for key, value in result.items() if key != "evidence_observed_at"}
     receipt["persistence_confirmed"] = True
     receipt["recorded_by"] = "discord-context-bridge"
     report_path = audit_dir / "parallel-run-closeout.json"
@@ -813,4 +816,7 @@ def persist_legacy_parallel_closeout(
         _fsync_directory(root)
     finally:
         temp_path.unlink(missing_ok=True)
-    return receipt
+    projection = dict(receipt)
+    if "evidence_observed_at" in result:
+        projection["evidence_observed_at"] = result["evidence_observed_at"]
+    return projection

@@ -94,3 +94,9 @@ python3 scripts/e2e_discord_route_check.py \
 - token / cookie / webhook / browser profile を出力しない。
 - raw Discord 本文 / 参加者名 / snowflake 値を出力しない。
 - access.json の変更は、ユーザーが明示した plugin command なしではしない。
+
+
+## ボットの対象別アクセス確認
+
+本文取得の前に [ボットの対象別アクセス確認](bot-live-verification.md) を行う。
+対象未指定、記録なし、資格情報や対象の不一致、期限切れの場合は、設定済みでも取得経路を利用可能と判定しない。
