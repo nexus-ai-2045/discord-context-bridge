@@ -321,9 +321,15 @@ def snapshot_record_matches(record: dict[str, Any], *, url: str, target_key: str
 
 
 def matching_snapshot_records(path: Path, *, url: str, target_key: str) -> list[dict[str, Any]]:
+    records = load_snapshot_like_records(path)
+    if any(
+        record.get("event_type") == "discord.snapshot_store.invalid_observation_revoked"
+        for record in records
+    ):
+        records = load_content_snapshot_records(path)
     return [
         record
-        for record in load_snapshot_like_records(path)
+        for record in records
         if snapshot_record_matches(record, url=url, target_key=target_key)
     ]
 
@@ -1439,6 +1445,24 @@ def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[s
     return snapshots
 
 
+def load_content_snapshot_records(path: Path) -> list[dict[str, Any]]:
+    """正式ledgerを検証し、本文ではない失効証拠と失効対象を除いた観測を返す。"""
+    snapshots = load_text_snapshots(path)
+    if not any(
+        "expected_previous_stream_sequence" in row
+        or row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked"
+        for row in snapshots
+    ):
+        return snapshots
+    _validate_text_snapshot_chain(snapshots)
+    _verify_physical_revocation_hashes(path, snapshots)
+    excluded: set[int] = set()
+    for index, row in enumerate(snapshots):
+        if row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked":
+            excluded.update((index - 1, index))
+    return [row for index, row in enumerate(snapshots) if index not in excluded]
+
+
 def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
     if not _is_chained_text_snapshot(snapshot):
         return str(snapshot.get("target_key") or snapshot.get("stream_id") or "")
@@ -1450,7 +1474,12 @@ def _validate_snapshot_stream_binding(snapshot: dict[str, Any]) -> None:
 
     if not _is_chained_text_snapshot(snapshot):
         return
-    if snapshot.get("schema") != "discord_context_bridge_text_snapshot_observation.v1":
+    expected_schema = (
+        "dcb.invalid_observation_revocation.v1"
+        if snapshot.get("event_type") == "discord.snapshot_store.invalid_observation_revoked"
+        else "discord_context_bridge_text_snapshot_observation.v1"
+    )
+    if snapshot.get("schema") != expected_schema:
         raise CheckpointCorruptError("snapshot chain schema is invalid")
     event_id = snapshot.get("event_id")
     if not isinstance(event_id, str) or not event_id:
@@ -1515,7 +1544,6 @@ def _logical_text_snapshot_rows(snapshots: list[dict[str, Any]]) -> Iterable[dic
     """物理行は保持し、旧writerの完全同一canonical replayだけを論理履歴から除く。"""
     event_ids: dict[str, dict[str, Any]] = {}
     for snapshot in snapshots:
-        _validate_snapshot_stream_binding(snapshot)
         event_id = str(snapshot.get("event_id") or "")
         if event_id:
             existing = event_ids.get(event_id)
@@ -1534,17 +1562,138 @@ def _snapshot_stream_history(snapshots: list[dict[str, Any]], target_key: str) -
     return [row for row in _logical_text_snapshot_rows(snapshots) if _snapshot_stream_id(row) == target_key]
 
 
+_REVOCATION_EVENT = "discord.snapshot_store.invalid_observation_revoked"
+_REVOCATION_SCHEMA = "dcb.invalid_observation_revocation.v1"
+
+
+def _revoked_record_hash(record: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _discord_thread_identity(url: str) -> tuple[str, str] | None:
+    match = re.fullmatch(
+        r"https://discord\.com/channels/(\d{17,20})/(\d{17,20})(?:/threads/(\d{17,20}))?",
+        url,
+    )
+    if not match:
+        return None
+    return match.group(1), match.group(3) or match.group(2)
+
+
+def _valid_revocation_pair(
+    invalid: dict[str, Any], revocation: dict[str, Any], previous: dict[str, Any]
+) -> bool:
+    if any(key in invalid for key in ("target_key", "subject", "dataschema", "type", "datacontenttype")):
+        return False
+    previous_url = previous.get("url")
+    invalid_url = invalid.get("url")
+    if (
+        not isinstance(previous_url, str)
+        or not isinstance(invalid_url, str)
+        or invalid_url == previous_url
+        or _discord_thread_identity(previous_url) is None
+        or _discord_thread_identity(previous_url) != _discord_thread_identity(invalid_url)
+        or previous.get("event_type") != "discord.visible_text.snapshot_observed"
+    ):
+        return False
+    previous_sequence = previous.get("stream_sequence")
+    invalid_sequence = invalid.get("stream_sequence")
+    if any(not isinstance(value, int) or isinstance(value, bool)
+           for value in (previous_sequence, invalid_sequence)):
+        return False
+    invalid_hash = invalid.get("event_hash")
+    if (
+        invalid.get("schema") != "discord_context_bridge_text_snapshot_observation.v1"
+        or invalid.get("event_type") != "discord.visible_text.snapshot_observed"
+        or not isinstance(invalid.get("event_id"), str)
+        or not invalid.get("event_id")
+        or invalid.get("stream_id") != target_key_for_url(invalid_url)
+        or invalid.get("stream_id") == target_key_for_url(previous_url)
+        or invalid.get("expected_previous_stream_sequence") != previous_sequence
+        or invalid_sequence != previous_sequence + 1
+        or invalid.get("previous_event_hash") != previous.get("event_hash")
+        or invalid.get("previous_content_hash") != previous.get("content_hash")
+        or not isinstance(invalid.get("text"), str)
+        or invalid.get("content_hash") != stable_text_hash(invalid["text"])
+        or not isinstance(invalid_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", invalid_hash)
+        or invalid_hash == canonical_event_hash(invalid)
+        or invalid.get("private_local_only") is not True
+        or invalid.get("external_share_allowed") is not False
+        or invalid.get("outbound_actions") != "disabled"
+    ):
+        return False
+    main_key = target_key_for_url(previous_url)
+    expected_id = hashlib.sha256(
+        ("dcb-invalid-revocation-v1|" + main_key + "|" + str(revocation.get("revoked_row_sha256") or "")).encode("utf-8")
+    ).hexdigest()
+    required = {
+        "schema": _REVOCATION_SCHEMA,
+        "dataschema": _REVOCATION_SCHEMA,
+        "event_type": _REVOCATION_EVENT,
+        "type": _REVOCATION_EVENT,
+        "specversion": "1.0",
+        "datacontenttype": "application/json",
+        "source": "dcb_invalid_observation_recovery",
+        "url": previous_url,
+        "target_key": main_key,
+        "stream_id": main_key,
+        "subject": main_key,
+        "stream_sequence": previous_sequence + 1,
+        "expected_previous_stream_sequence": previous_sequence,
+        "previous_event_hash": previous.get("event_hash"),
+        "content_hash": previous.get("content_hash"),
+        "previous_content_hash": previous.get("content_hash"),
+        "revoked_event_id": invalid.get("event_id"),
+        "revoked_stored_event_hash": invalid_hash,
+        "revoked_calculated_event_hash": canonical_event_hash(invalid),
+        "revoked_record_sha256": _revoked_record_hash(invalid),
+        "revoked_stream_id": invalid.get("stream_id"),
+        "revoked_url": invalid_url,
+        "reason": "foreign_invalid_observation",
+        "event_id": expected_id,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    return (
+        all(revocation.get(key) == value for key, value in required.items())
+        and isinstance(revocation.get("revoked_row_sha256"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", revocation["revoked_row_sha256"]))
+        and revocation.get("time") == revocation.get("captured_at")
+        == revocation.get("observed_at") == revocation.get("ingested_at")
+        and parse_snapshot_timestamp(revocation.get("time")) is not None
+        and revocation.get("event_hash") == canonical_event_hash(revocation)
+    )
+
+
 def _validate_text_snapshot_chain(
     snapshots: list[dict[str, Any]],
 ) -> dict[str, tuple[int, str]]:
     """既存の stream head を検証し、stream ごとの sequence と hash を返す。"""
 
     heads: dict[str, tuple[int, str]] = {}
-    for snapshot in _logical_text_snapshot_rows(snapshots):
+    logical = list(_logical_text_snapshot_rows(snapshots))
+    index = 0
+    while index < len(logical):
+        snapshot = logical[index]
+        if (
+            index + 1 < len(logical)
+            and logical[index + 1].get("event_type") == _REVOCATION_EVENT
+        ):
+            if index == 0 or not _valid_revocation_pair(snapshot, logical[index + 1], logical[index - 1]):
+                raise CheckpointCorruptError("snapshot revocation pair is invalid")
+            index += 1
+            snapshot = logical[index]
+        _validate_snapshot_stream_binding(snapshot)
         stream_id = _snapshot_stream_id(snapshot)
         if not stream_id:
             if _is_chained_text_snapshot(snapshot):
                 raise CheckpointCorruptError("snapshot stream binding is missing")
+            index += 1
             continue
         previous_sequence, previous_hash = heads.get(stream_id, (0, ""))
         next_sequence = previous_sequence + 1
@@ -1569,7 +1718,21 @@ def _validate_text_snapshot_chain(
         else:
             event_hash = _durable_snapshot_event_hash(snapshot)
         heads[stream_id] = (next_sequence, event_hash)
+        index += 1
     return heads
+
+
+def _verify_physical_revocation_hashes(path: Path, snapshots: list[dict[str, Any]]) -> None:
+    if not any(row.get("event_type") == _REVOCATION_EVENT for row in snapshots):
+        return
+    lines = [line for line in path.read_bytes().split(b"\n") if line.strip()]
+    if len(lines) != len(snapshots):
+        raise CheckpointCorruptError("snapshot revocation physical rows are invalid")
+    for index, row in enumerate(snapshots):
+        if row.get("event_type") != _REVOCATION_EVENT:
+            continue
+        if index == 0 or hashlib.sha256(lines[index - 1]).hexdigest() != row.get("revoked_row_sha256"):
+            raise CheckpointCorruptError("snapshot revoked row bytes changed")
 
 
 def _append_text_snapshot_transaction(
@@ -1598,6 +1761,7 @@ def _append_text_snapshots_transaction(
             raise CheckpointCorruptError("snapshot ledger requires exclusive file")
         snapshots = load_text_snapshots(path)
         heads = _validate_text_snapshot_chain(snapshots)
+        _verify_physical_revocation_hashes(path, snapshots)
         # 永続化するJSON表現を事前に確定し、冪等性・検証・再読照合で共用する。
         candidates = [
             json.loads(json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False))
@@ -1651,6 +1815,7 @@ def _append_text_snapshots_transaction(
         _append_store_relative_chunks(path.parent, path, encoded_rows)
         read_back = load_text_snapshots(path)
         _validate_text_snapshot_chain(read_back)
+        _verify_physical_revocation_hashes(path, read_back)
         if read_back != expected:
             raise CheckpointCorruptError("snapshot append read-back is invalid")
         return len(additions), candidates, read_back
@@ -1665,9 +1830,92 @@ def append_text_snapshot(
     return appended
 
 
+def revoke_invalid_snapshot_observation(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """正規stream末尾に紛れた単一の不正alias観測を原行不変で失効する。"""
+    path = Path(path)
+    store = CaptureCheckpointStore(path.parent)
+    with store.transition_lock(_text_snapshot_lock_id(path)):
+        metadata = path.lstat()
+        if metadata.st_nlink != 1:
+            raise CheckpointCorruptError("snapshot ledger requires exclusive file")
+        snapshots = load_text_snapshots(path)
+        if len(snapshots) < 2:
+            raise CheckpointCorruptError("snapshot revocation requires a durable predecessor")
+        if snapshots[-1].get("event_type") == _REVOCATION_EVENT:
+            _validate_text_snapshot_chain(snapshots)
+            _verify_physical_revocation_hashes(path, snapshots)
+            return {"saved": True, "already_revoked": True, "outbound_actions": "disabled"}
+        raw_data = path.read_bytes()
+        if raw_data and not raw_data.endswith(b"\n"):
+            raise CheckpointCorruptError("snapshot revocation physical row is unterminated")
+        raw_lines = [line for line in raw_data.split(b"\n") if line.strip()]
+        if len(raw_lines) != len(snapshots):
+            raise CheckpointCorruptError("snapshot revocation physical rows are invalid")
+        previous, invalid = snapshots[-2:]
+        heads = _validate_text_snapshot_chain(snapshots[:-1])
+        main_key = target_key_for_url(str(previous.get("url") or ""))
+        if heads.get(main_key) != (previous.get("stream_sequence"), previous.get("event_hash")):
+            raise CheckpointCorruptError("snapshot revocation predecessor is not the stream head")
+        row_hash = hashlib.sha256(raw_lines[-1]).hexdigest()
+        event_id = hashlib.sha256(
+            ("dcb-invalid-revocation-v1|" + main_key + "|" + row_hash).encode("utf-8")
+        ).hexdigest()
+        captured_at = utc_now()
+        event = {
+            "schema": _REVOCATION_SCHEMA,
+            "dataschema": _REVOCATION_SCHEMA,
+            "event_type": _REVOCATION_EVENT,
+            "type": _REVOCATION_EVENT,
+            "specversion": "1.0",
+            "datacontenttype": "application/json",
+            "source": "dcb_invalid_observation_recovery",
+            "event_id": event_id,
+            "url": previous["url"],
+            "target_key": main_key,
+            "stream_id": main_key,
+            "subject": main_key,
+            "stream_sequence": previous["stream_sequence"] + 1,
+            "expected_previous_stream_sequence": previous["stream_sequence"],
+            "previous_event_hash": previous["event_hash"],
+            "content_hash": previous.get("content_hash"),
+            "previous_content_hash": previous.get("content_hash"),
+            "revoked_row_sha256": row_hash,
+            "revoked_record_sha256": _revoked_record_hash(invalid),
+            "revoked_event_id": invalid.get("event_id"),
+            "revoked_stored_event_hash": invalid.get("event_hash"),
+            "revoked_calculated_event_hash": canonical_event_hash(invalid),
+            "revoked_stream_id": invalid.get("stream_id"),
+            "revoked_url": invalid.get("url"),
+            "reason": "foreign_invalid_observation",
+            "time": captured_at,
+            "captured_at": captured_at,
+            "observed_at": captured_at,
+            "ingested_at": captured_at,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        event["event_hash"] = canonical_event_hash(event)
+        _validate_text_snapshot_chain(snapshots + [event])
+        if dry_run:
+            return {"saved": False, "ready_to_append": True, "outbound_actions": "disabled"}
+        _append_store_relative_chunks(
+            path.parent,
+            path,
+            [(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")],
+        )
+        read_back = load_text_snapshots(path)
+        _validate_text_snapshot_chain(read_back)
+        _verify_physical_revocation_hashes(path, read_back)
+        if read_back != snapshots + [event]:
+            raise CheckpointCorruptError("snapshot revocation read-back is invalid")
+        return {"saved": True, "already_revoked": False, "outbound_actions": "disabled"}
+
+
 def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> dict[str, Any] | None:
     for snapshot in reversed(load_text_snapshots(path)):
-        if snapshot.get("target_key") == target_key:
+        if (snapshot.get("target_key") == target_key
+            and snapshot.get("event_type") == "discord.visible_text.snapshot_observed"):
             return snapshot
     return None
 
@@ -1776,15 +2024,24 @@ def select_latest_snapshot(
     snapshots = load_text_snapshots(path)
     if target_key:
         for snapshot in reversed(snapshots):
-            if snapshot.get("target_key") == target_key:
+            if (snapshot.get("target_key") == target_key
+                and snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")):
                 return snapshot
         return None
     if url:
         for snapshot in reversed(snapshots):
-            if snapshot.get("url") == url:
+            if (snapshot.get("url") == url
+                and snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")
+                and (snapshot.get("target_key") == target_key_for_url(url)
+                     or not snapshot.get("event_type"))):
                 return snapshot
         return None
-    return snapshots[-1] if snapshots else None
+    return next(
+        (snapshot for snapshot in reversed(snapshots)
+         if snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")
+         and snapshot.get("target_key")),
+        None,
+    )
 
 
 def build_latest_snapshot_report(
@@ -2570,7 +2827,11 @@ def snapshot_visible_text(
         return snapshot
 
     _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
-    snapshot_count = sum(1 for item in read_back if _snapshot_stream_id(item) == target_key)
+    snapshot_count = sum(
+        1
+        for item in load_content_snapshot_records(Path(path))
+        if _snapshot_stream_id(item) == target_key
+    )
     previous_hash = snapshot["previous_content_hash"]
     changed = bool(snapshot["changed"])
     return {

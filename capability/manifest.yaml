@@ -24,10 +24,14 @@ stoplines:
   - no_visible_read_route_expansion_after_blocked_need_chrome_visible_read_go
   - no_cross_route_webhook_or_bot_guessing
 required_commands:
+  - command: python3 scripts/revoke_invalid_snapshot_observation.py --snapshot-store <private-store>
+    purpose: 不正な公式観測の原行保全・失効event追記可否をprivate storeで事前検証する。--applyは個別の復旧判断後だけ使う
   - command: python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json
     purpose: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
   - command: python3 scripts/discord_rest_backfill.py --url <discord-url> --json
     purpose: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
+  - command: python3 scripts/discord_archived_thread_inventory.py --url <parent-channel-url> --json
+    purpose: 公式GET-only APIでpublic/private/joined private archiveを終端まで列挙し、private inventoryとmetadata-only判定を作る
   - command: thread-capture-plan
     purpose: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
   - command: full-capture-gate
@@ -71,3 +75,5 @@ verification_commands:
     purpose: test / smoke / secret scan / GitHub account をまとめて確認する
   - command: python3 scripts/codex_chrome_bundle_smoke.py --json
     purpose: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
+  - command: python3 scripts/archived_thread_inventory_smoke.py --json
+    purpose: archive列挙の全scope終端、private保存、metadata-only出力、page-limit時のfail-closedをfixtureで検証する

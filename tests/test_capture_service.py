@@ -17,6 +17,7 @@ from discord_context_bridge.capture.service import (
     merge_persisted_capture_window,
     start_capture_loop,
 )
+from discord_context_bridge.capture.loop import validate_observed_full_receipt
 from discord_context_bridge.capture.store import (
     CaptureCheckpointStore,
     CheckpointCorruptError,
@@ -184,18 +185,21 @@ def test_capture_loop_cli_does_not_echo_invalid_event(tmp_path, capsys) -> None:
 
 
 def _capture_with_ledger(
-    tmp_path, *, stable: bool = True, with_attachment: bool = False
+    tmp_path, *, stable: bool = True, with_attachment: bool = False,
+    route: str = "saved_artifacts", observed_full: bool = False,
+    edited_on_second_pass: bool = False, window_source: str = "chrome_visible_dom",
 ) -> str:
     store = CaptureCheckpointStore(tmp_path)
     status = start_capture_loop(
-        store, "private-target", "saved_artifacts", "message-2"
+        store, "private-target", route, "message-2",
+        tag_context={"observed_full": observed_full},
     )
     merge_persisted_capture_window(
         store,
         status["capture_id"],
         {
             "window_id": "window-1",
-            "source": "chrome_visible_dom",
+            "source": window_source,
             "direction": "toward_latest",
             "scan_pass": 1,
             "oldest_reached": True,
@@ -217,7 +221,7 @@ def _capture_with_ledger(
             status["capture_id"],
             {
                 "window_id": "window-2",
-                "source": "chrome_visible_dom",
+                "source": window_source,
                 "direction": "toward_latest",
                 "scan_pass": 2,
                 "oldest_reached": True,
@@ -226,7 +230,7 @@ def _capture_with_ledger(
                     {"message_id": "message-1", "content_hash": "hash-1"},
                     {
                         "message_id": "message-2",
-                        "content_hash": "hash-2",
+                        "content_hash": "hash-2-edited" if edited_on_second_pass else "hash-2",
                         "attachment_ids": ["attachment-1"] if with_attachment else [],
                     },
                 ],
@@ -234,6 +238,115 @@ def _capture_with_ledger(
             expected_window_count=1,
         )
     return status["capture_id"]
+
+
+@pytest.mark.parametrize("route", ["in_app_browser", "chrome_extension"])
+def test_observed_closeout_uses_strict_gate_without_persisting_receipt(
+    tmp_path, capsys, route
+) -> None:
+    capture_id = _capture_with_ledger(
+        tmp_path, route=route, observed_full=True
+    )
+    store = CaptureCheckpointStore(tmp_path)
+
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--date-continuity-operator-attested", "--json",
+    ])
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["state"] == "observed_full_verified"
+    assert payload["observed_full"]["pass_count"] == 2
+    assert payload["observed_full"]["last_pass_new_message_count"] == 0
+    assert payload["observed_full"]["edited_message_count"] == 0
+    assert payload["observed_full"]["date_continuity_operator_attested"] is True
+    assert payload["observed_full"]["date_continuity_independently_verified"] is False
+    assert payload["api_full"]["verified"] is False
+    assert validate_observed_full_receipt(payload)["valid"] is True
+    assert payload["raw_text_returned"] is False
+    assert "private-target" not in output
+    assert store.load_full_capture_receipt(capture_id, consumer="context_acquisition") is None
+
+
+def test_observed_closeout_blocks_missing_attestation_and_incomplete_scan(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(
+        tmp_path, stable=False, route="chrome_extension", observed_full=True
+    )
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["state"] == "partial_or_blocked"
+    assert "strict_full_capture_not_confirmed" in payload["blockers"]
+    assert "date_continuity_operator_attestation_missing" in payload["blockers"]
+    assert "stable_repeat_pass_missing" in payload["blockers"]
+    assert payload["api_full"]["verified"] is False
+
+
+def test_observed_closeout_blocks_same_id_with_new_content_hash(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(
+        tmp_path, route="chrome_extension", observed_full=True,
+        edited_on_second_pass=True,
+    )
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--date-continuity-operator-attested", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["observed_full"]["last_pass_new_message_count"] == 0
+    assert payload["observed_full"]["edited_message_count"] == 1
+    assert "content_versions_changed_during_capture" in payload["blockers"]
+    assert payload["api_full"]["verified"] is False
+
+
+def test_observed_closeout_requires_visible_final_passes(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(
+        tmp_path, route="chrome_extension", observed_full=True,
+        window_source="saved_snapshot",
+    )
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--date-continuity-operator-attested", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert "visible_source_not_observed" in payload["blockers"]
+
+
+def test_observed_closeout_blocks_desktop_route_without_distinct_source(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(
+        tmp_path, route="discord_desktop_accessibility", observed_full=True
+    )
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--date-continuity-operator-attested", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert "visible_route_required" in payload["blockers"]
+
+
+def test_observed_closeout_rejects_nonvisible_route_and_unmarked_run(tmp_path, capsys) -> None:
+    capture_id = _capture_with_ledger(tmp_path)
+    code = main([
+        "capture-loop", "observed-closeout", "--store-root", str(tmp_path),
+        "--capture-id", capture_id, "--date-continuity-operator-attested", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert "visible_route_required" in payload["blockers"]
+    assert "observed_full_not_requested_at_capture_start" in payload["blockers"]
+    assert payload["api_full"]["verified"] is False
 
 
 def test_capture_loop_cli_reconcile_reports_partial_without_receipt(tmp_path, capsys) -> None:

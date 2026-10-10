@@ -38,7 +38,7 @@ from .topic_classification import (
     import_topic_classification_result,
 )
 from .full_capture import build_capture_route_policy, evaluate_full_capture
-from .capture.loop import build_capture_status_projection
+from .capture.loop import build_capture_status_projection, build_observed_full_closeout
 from .capture.orchestrator import capture_watermark_digest
 from .capture.service import (
     advance_persisted_capture,
@@ -515,7 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         choices=[
             "start", "advance", "observe", "attachment-save",
-            "attachment-seal", "reconcile", "status",
+            "attachment-seal", "reconcile", "observed-closeout", "status",
         ],
     )
     capture_loop.add_argument(
@@ -545,6 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_loop.add_argument("--refresh-check", action="store_true")
     capture_loop.add_argument("--observed-full", action="store_true")
+    capture_loop.add_argument("--date-continuity-operator-attested", action="store_true")
     capture_loop.add_argument("--scan-pass-budget", type=int, default=2)
     capture_loop.add_argument("--retry-budget", type=int, default=3)
     capture_loop.add_argument("--event", default="")
@@ -1712,6 +1713,22 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
             if not args.capture_id:
                 raise CaptureStoreError("reconcileには--capture-idが必要です")
             result = _reconcile_persisted_capture(store, args.capture_id)
+        elif args.action == "observed-closeout":
+            if not args.capture_id:
+                raise CaptureStoreError("observed-closeout requires --capture-id")
+            reconciliation = _reconcile_persisted_capture(
+                store, args.capture_id, persist_receipt=False
+            )
+            result = build_observed_full_closeout(
+                reconciliation,
+                visible_route=reconciliation["visible_route"],
+                visible_source_observed=reconciliation["visible_source_observed"],
+                observed_full_requested=reconciliation["observed_full_requested"],
+                date_continuity_operator_attested=args.date_continuity_operator_attested,
+                scan_pass_count=reconciliation["scan_pass_count"],
+                last_pass_new_message_count=reconciliation["last_pass_new_message_count"],
+                edited_message_count=reconciliation["edited_message_count"],
+            )
         elif args.action == "attachment-save":
             if args.attempt_id is not None:
                 raise CaptureStoreError("--attempt-idはstartでのみ指定できます")
@@ -1747,7 +1764,7 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 raise CaptureStoreError("statusには--capture-idが必要です")
             result = read_capture_loop_status(store, args.capture_id)
         print(_json(result))
-        return 0
+        return 0 if args.action != "observed-closeout" or result["observed_full"]["verified"] else 2
     except (CaptureStoreError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
         print(
             _json(
@@ -1780,6 +1797,8 @@ class _AlreadyLockedCaptureStore:
 def _reconcile_persisted_capture(
     store: CaptureCheckpointStore,
     capture_id: str,
+    *,
+    persist_receipt: bool = True,
 ) -> dict[str, Any]:
     """Rebuild, gate, and persist one receipt under one capture lock."""
 
@@ -1859,7 +1878,7 @@ def _reconcile_persisted_capture(
         if confirmed != bool(rebuilt_gate.get("full_capture_confirmed")):
             raise CaptureStoreError("full capture gate disagreement")
         receipt_persisted = False
-        if confirmed:
+        if confirmed and persist_receipt:
             persist_strict_full_capture_receipt(
                 _AlreadyLockedCaptureStore(store),
                 capture_id,
@@ -1867,12 +1886,30 @@ def _reconcile_persisted_capture(
                 consumer="context_acquisition",
             )
             receipt_persisted = True
+        scan_passes = list(coverage.get("scan_passes") or [])
+        final_pass_numbers = [item.get("scan_pass") for item in scan_passes[-2:]]
+        final_passes_visible = len(final_pass_numbers) == 2 and all(
+            (pass_windows := [
+                window for window in coverage.get("windows") or []
+                if window.get("scan_pass") == pass_number
+            ])
+            and all(window.get("source") == "chrome_visible_dom" for window in pass_windows)
+            for pass_number in final_pass_numbers
+        )
         return {
             "schema": "dcb-capture-loop-reconcile.v1",
             "capture_id": capture_id,
             "status": "full" if confirmed else "partial",
             "full_capture_confirmed": confirmed,
             "receipt_persisted": receipt_persisted,
+            # Desktop accessibility has no distinct window source in the current
+            # capture schema, so it cannot yet prove an observed-visible pass.
+            "visible_route": run.get("route") in {"in_app_browser", "chrome_extension"},
+            "visible_source_observed": bool(final_passes_visible),
+            "observed_full_requested": "observed-full" in (run.get("operational_tags") or []),
+            "scan_pass_count": len(scan_passes),
+            "last_pass_new_message_count": coverage.get("final_pass_new_message_count"),
+            "edited_message_count": int(coverage.get("edited_message_count") or 0),
             "blockers": list(canonical_gate.get("blockers") or []),
             "raw_text_returned": False,
             "url_output": "omitted",
