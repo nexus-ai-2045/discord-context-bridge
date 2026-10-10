@@ -1705,6 +1705,108 @@ def test_human_sent_closeout_rejects_unsafe_saved_record(tmp_path):
     assert "post_send_snapshot_record_unsafe" in closeout["blockers"]
 
 
+def closeout_staged_copy_block(tmp_path, staging, *, mutate_copy_block=None):
+    dry_run = verify_chrome_extension_fill_only_dry_run(
+        staging,
+        socket_preflight=True,
+        target_url_verified=True,
+        socket_after_navigation=True,
+        latest_target_snapshot_confirmed=True,
+        reply_ui_candidates=1,
+        draft_matches_copy_block=True,
+        socket_pre_send=True,
+    )
+    assert dry_run["dry_run_status"] == "ready_to_fill"
+    saved, snapshot_store, observed_at = persist_post_send_snapshot(tmp_path)
+    if mutate_copy_block is not None:
+        mutate_copy_block(staging["copy_block"])
+    return build_discord_post_send_closeout_packet(
+        staging_packet=staging,
+        dry_run_report=dry_run,
+        snapshot_receipt=saved,
+        _trusted_snapshot_store_override=snapshot_store,
+        human_sent_observed=True,
+        human_send_observed_at=timestamp_before(observed_at),
+        human_reviewed=True,
+        observed_text_status="human_edited_and_reviewed",
+        unread_check_status="none_unread",
+        observed_url=POST_SEND_URL,
+    )
+
+
+@pytest.mark.parametrize("draft,expected_status", [
+    ("公開時期の前提を確認して返信します。", "ready"),
+    ("最悪です。前提を確認して返信します。", "ready"),
+    ("投稿 123456789012345678 の前提を確認します。", "ready"),
+    ("前提を確認して返信します。" * 180, "split"),
+], ids=["plain", "rewritten", "redacted", "split"])
+def test_closeout_accepts_reviewed_copy_block_payload(tmp_path, draft, expected_status):
+    staging = build_discord_send_staging_packet(
+        draft, parse_visible_text(FIXTURE.read_text(encoding="utf-8")),
+        mode="reply", target_url=POST_SEND_URL, understanding_confirmed=True,
+    )
+    assert staging["copy_block"]["status"] == expected_status
+    closeout = closeout_staged_copy_block(tmp_path, staging)
+    assert closeout["closeout_status"] == "closed"
+    assert closeout["operation_binding"]["status"] == "verified"
+
+
+@pytest.mark.parametrize("draft,field", [
+    ("公開時期の前提を確認して返信します。", "text"),
+    ("公開時期の前提を確認して返信します。", "parts"),
+    ("前提を確認して返信します。" * 180, "parts"),
+    ("前提を確認して返信します。" * 180, "text"),
+    ("前提を確認して返信します。" * 180, "partition"),
+], ids=["plain-text", "plain-parts", "split-parts", "split-text", "split-partition"])
+def test_closeout_rejects_changed_copy_block_payload(tmp_path, draft, field):
+    staging = build_discord_send_staging_packet(
+        draft, parse_visible_text(FIXTURE.read_text(encoding="utf-8")),
+        mode="reply", target_url=POST_SEND_URL, understanding_confirmed=True,
+    )
+
+    def mutate(copy_block):
+        if field == "parts":
+            copy_block["parts"][0] += "改変"
+        elif field == "partition":
+            first, second = copy_block["parts"]
+            copy_block["parts"] = [first[:-1], first[-1:] + second]
+        else:
+            copy_block["text"] += "改変"
+
+    closeout = closeout_staged_copy_block(tmp_path, staging, mutate_copy_block=mutate)
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_operation_correlation_mismatch" in closeout["blockers"]
+
+
+def test_distinct_split_copy_block_payloads_have_distinct_correlations(tmp_path):
+    correlations = set()
+    for index, draft in enumerate(["あ" * 2100, "あ" * 2000 + "い" * 100]):
+        staging = build_discord_send_staging_packet(
+            draft, parse_visible_text(FIXTURE.read_text(encoding="utf-8")),
+            mode="reply", target_url=POST_SEND_URL, understanding_confirmed=True,
+        )
+        assert staging["copy_block"]["status"] == "split"
+        assert staging["copy_block"]["text"] == ""
+        correlations.add(staging["operation_binding"]["correlation_id"])
+        assert closeout_staged_copy_block(tmp_path / str(index), staging)["closeout_status"] == "closed"
+    assert len(correlations) == 2
+
+
+def test_plain_copy_block_keeps_existing_operation_correlation():
+    draft = "公開時期の前提を確認して返信します。"
+    staging = build_discord_send_staging_packet(
+        draft, parse_visible_text(FIXTURE.read_text(encoding="utf-8")),
+        mode="reply", target_url=POST_SEND_URL, understanding_confirmed=True,
+    )
+    assert staging["operation_binding"]["correlation_id"] == core_module.stable_text_hash(
+        "|".join([
+            "discord_send_operation.v1", "reply",
+            staging["operation_binding"]["route_fingerprint"],
+            core_module.stable_text_hash(draft),
+        ])
+    )
+
+
 def test_human_sent_closeout_rejects_mismatched_pre_send_correlation(tmp_path):
     events = parse_visible_text(FIXTURE.read_text(encoding="utf-8"))
     staging = build_discord_send_staging_packet(

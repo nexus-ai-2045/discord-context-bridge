@@ -4310,6 +4310,26 @@ def _enforce_discord_fill_only_guard(packet: dict[str, Any]) -> dict[str, Any]:
     return packet
 
 
+def _copy_block_payload_hash(copy_block: dict[str, Any]) -> str:
+    text = copy_block.get("text")
+    parts = copy_block.get("parts")
+    if (
+        copy_block.get("schema") != "discord_copy_block.v1"
+        or not isinstance(text, str)
+        or not isinstance(parts, list)
+        or not parts
+        or any(not isinstance(part, str) or not part for part in parts)
+        or type(copy_block.get("part_count")) is not int
+        or copy_block["part_count"] != len(parts)
+    ):
+        return ""
+    if copy_block.get("status") == "ready" and parts == [text]:
+        return stable_text_hash(text)
+    if copy_block.get("status") == "split" and text == "" and len(parts) > 1:
+        return canonical_event_hash({"schema": "discord_copy_block.v1", "parts": parts})
+    return ""
+
+
 def build_discord_send_staging_packet(
     draft: str,
     events: Iterable[DiscordEvent],
@@ -4367,7 +4387,7 @@ def build_discord_send_staging_packet(
                     "discord_send_operation.v1",
                     normalized_mode,
                     route_fingerprint,
-                    stable_text_hash(draft),
+                    _copy_block_payload_hash(copy_block),
                 ]
             )
         )
@@ -4941,13 +4961,14 @@ def build_discord_post_send_closeout_packet(
     if formal_operation_binding:
         staging_copy_block = (staging_packet or {}).get("copy_block")
         staging_copy_block = dict(staging_copy_block) if isinstance(staging_copy_block, dict) else {}
+        copy_block_payload_hash = _copy_block_payload_hash(staging_copy_block)
         expected_operation_correlation_id = stable_text_hash(
             "|".join(
                 [
                     "discord_send_operation.v1",
                     str((staging_packet or {}).get("mode") or "").strip().casefold(),
                     str(staging_operation_binding.get("route_fingerprint") or ""),
-                    stable_text_hash(str(staging_copy_block.get("text") or "")),
+                    copy_block_payload_hash,
                 ]
             )
         )
@@ -4964,6 +4985,7 @@ def build_discord_post_send_closeout_packet(
             or not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(
                 str(staging_operation_binding.get("route_fingerprint") or "")
             )
+            or not copy_block_payload_hash
             or staging_operation_binding.get("correlation_id") != expected_operation_correlation_id
         ):
             operation_binding_blockers.append("post_send_operation_correlation_mismatch")
