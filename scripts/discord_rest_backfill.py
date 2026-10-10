@@ -24,6 +24,9 @@ from discord_context_bridge import (  # noqa: E402
     rest_backfill_config_safety,
     write_rest_backfill_capture,
 )
+from discord_context_bridge.live_verification import normalize_expected_target  # noqa: E402
+
+import discord_bot_route_preflight  # noqa: E402
 
 
 API_BASE = "https://discord.com/api/v10"
@@ -139,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fixture-input", type=Path, help="テスト用 JSON/JSONL。token は不要です")
     parser.add_argument("--raw-output", type=Path, default=DEFAULT_REST_BACKFILL_RAW_OUTPUT, help="private raw JSONL 保存先。出力には表示しません")
     parser.add_argument("--manifest-output", type=Path, default=DEFAULT_REST_BACKFILL_MANIFEST, help="metadata-only manifest 保存先。出力には表示しません")
+    parser.add_argument(
+        "--channel-dir",
+        type=Path,
+        default=discord_bot_route_preflight.default_channel_dir(),
+        help="live verification receiptを読むprivate設定directory",
+    )
     parser.add_argument("--full-thread-confirmed", action="store_true", help="取得範囲が対象全文であると確認済みの場合だけ指定")
     parser.add_argument("--json", action="store_true", help="互換用。常に JSON を出力します")
     return parser
@@ -166,13 +175,32 @@ def main(argv: list[str] | None = None) -> int:
         messages = read_fixture_messages(args.fixture_input)
         warnings.append("fixture_input_used")
     else:
-        token_result = load_bot_token_from_provider()
+        token_result = load_bot_token_from_provider(
+            channel_env_path=args.channel_dir / ".env"
+        )
         if not token_result.ok:
             payload = blocked_payload(token_result.failure_stage or "bot_token_missing")
             payload["credential_provider"] = token_result.public_status()
             print(_json(payload))
             return 2
-        channel_id = str(route.get("message_or_thread_id") or route.get("channel_id") or "")
+        preflight = discord_bot_route_preflight.build_preflight(
+            args.channel_dir, expected_url=args.url, credential=token_result
+        )
+        if not preflight["ok"]:
+            reason = str(
+                preflight.get("blockers", ["live_verification_required"])[0]
+            )
+            print(_json(blocked_payload(reason)))
+            return 2
+        if not preflight["live_verification"]["message_history_supported"]:
+            payload = blocked_payload("message_history_channel_type_not_supported")
+            payload["next"] = "run_discord_archived_thread_inventory"
+            payload["channel_type_class"] = preflight["live_verification"][
+                "channel_type_class"
+            ]
+            print(_json(payload))
+            return 2
+        channel_id = normalize_expected_target(args.url)["channel_id"]
         messages, blocked = fetch_discord_messages(
             channel_id=channel_id,
             token=token_result.token,
