@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: c634e8de38bf76d2b71a14e6a43bb9419b7caed7
+ssot_commit: 914e7a02168cb31d68ce61b8f0abca2c174ff31f
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: d17979691ceeb6b3e01f34037ec7909247a4494da88720f339f65fc190568796
-contract_checksum: 3e87244b538b668a153f7cb44a19f140c20ed6a7405064d2395a460e529679c4
-generated_at: 2026-10-10T02:58:19+00:00
+manifest_checksum: bcdf36072a2f1e5215118a6bf4f65277ac05771faaebb945010bdebca13d2ad4
+contract_checksum: 7d01f9876f2df83f5c2ebe2ceb3a2b28aa1e603ad6d6f3862c8f1f9c7086c055
+generated_at: 2026-10-10T03:14:34+00:00
 runtime_target: antigravity
 ---
 
@@ -33,6 +33,7 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - `no_unapproved_visible_ui_automation`: Computer Use 的な画面操作、`SendKeys`、`AppActivate`、クリック、スクロール、スクショ取得、Chromeを勝手に開く・遷移する操作は、ユーザーの明示許可なしに実行しない。DCB の Chrome visible fallback は、正規 adapter / DOM取得口 / clipboard / local file が使える場合だけ進め、Windows UI 自動操作へ迂回しない。
 - `no_browser_before_dcb_preflight`: Discord URL、Discord画面、チャンネル用途、投稿先、投稿本文、返信案を扱う時は、内部ブラウザやChromeより先にDCB ingress、cache-first、coverage、route判定を通す。ブラウザ操作前は `--preflight-only` の `ready_for_browser_preflight`、対象タブ到達後は `ready_for_bridge` を別段階で確認し、visible fallbackが次の正規経路であることを確認するまで本文読取へ進まない。ambient UIのDiscord URLだけを根拠にDCBを迂回しない。
 - `no_visible_read_without_snapshot_closeout`: Discordの可視DOMを読んだ場合は、その読取ターン内で直ちに`bridge-intake`へ渡し、`snapshot.saved=true`、対象一致、鮮度更新を確認する。保存確認より先に要約、判断、返信案、完了報告を返さない。読取または保存が失敗した場合は本文未保存として停止し、原因と再開手順を返す。
+- `no_human_sent_closeout_without_fresh_exact_snapshot_receipt`: `human_sent` では受領記録の `capture_id` を設定された共有保存領域から検索し、一意な観測記録の対象・時刻・イベントと本文のハッシュ値・安全属性を照合する。保存先は呼び出しごとに変更できず、`MCP` の明示指定はサーバー起動時に限る。タイムゾーン付きの `human_send_observed_at` 以後かつ現在から 15 分以内の記録が必須。送信前の準備記録か試験実行の記録を渡す場合は両方を必須とし、操作の識別子と投稿先の照合値を検査する。事後確認は `retrospective_snapshot_only` として送信前の検査通過を主張しない。`not_sent` はこれらの条件を適用しない。
 - Bot REST backfill は read-only 主経路として扱う。bot token は環境変数または private control plane にだけ置き、値を stdout、manifest、repo-tracked file、runtime skill に出さない。Keychain / credential store の継続利用は `DISCORD_CONTEXT_BRIDGE_TOKEN_COMMAND` などの secret-command 経由に限定し、DCB 本体は token 値や vault 内部を保持しない。
 - Chrome profile から user token、cookie、localStorage、profile directory を抽出して REST / selfbot に流用しない。Chrome は既存タブの可視読取、手動コピー支援、限定 fallback に留める。
 - Codex内部ブラウザ（`in_app_browser`）を可視ブラウザ経路の既定にする。API / inbox / private adapter が利用できない場合は、DCB preflight後に内部ブラウザの既存タブを使う。Chrome拡張は内部ブラウザが利用できない場合の二次fallbackとして扱い、自動で開かない。
@@ -43,6 +44,11 @@ This skill is generated from `nexus-ai-2045/discord-context-bridge`. Do not edit
 - 判断は `[事実: source]` / `[推測]` / `[不明]` に分け、未確認の文脈を断定しない。
 - Chronica、Markdown、latest report、context reconstruction、TODO、`private-working` 配下の生成物は projection / view であり、canonical capture の代替証拠にしない。これらが存在しても、対象一致した canonical gate と freshness evidence が当日runで成立しない限り「最新」「完全」「全部理解した」と言わない。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
+
+- `mandatory_context_claim_gate`: ユーザーへ「完全」「最新」「理解済み」と肯定的に伝える直前に、`context_claim_gate.py` が対象runとcanonical completeness DBを再監査する。任意JSONの持ち込みは受け付けない。`complete` はcanonical full + persisted、`current` はそれにcanonical inventory観測時刻のfreshness、`understood` はさらに理解確認を要求する。該当claimの `allowed=true` を同一ターンで取得できない場合、肯定表現を返さず `partial` / `blocked` とreason codeを返す。runtime独自の再判定やprojectionからの推定は禁止する。
+- `context-claim-gate-trusted.yml` は `pull_request_target` のbase側コードで候補treeを静的監査する。候補コードは実行せず、secret・write権限を渡さない。小型gate、canonical再監査、manifest、全runtime投影、ops smoke、このtrusted workflow自身のいずれかが外れた候補を `blocked` にする。初回導入はbase側guardがまだ存在しないため人間bootstrap reviewを必須とし、導入後の変更はbase SHAとhead SHAの組で再監査する。
+
+静的検査は関数・配線・実行環境への投影の欠落を検出する補助です。機能の正しさや任意の実装変更による迂回防止を証明しません。変更時は回帰テストと独立レビューを併用します。初回導入の判断は既存のプルリクエスト承認経路で行います。
 
 ## Discord OSS 参照境界
 
@@ -134,6 +140,7 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - `previous_event_hash` と `event_hash` で target stream 内の hash chain を作る。これは改ざん検知を助ける local-private metadata であり、公開証明や外部監査への提出を意味しない。
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
+- `human_sent` では、`snapshot-discord-url-text` または `bridge-intake` が保存後に返した `discord_saved_snapshot_receipt.v1` を必須とする。受領記録の自己申告だけを信頼せず、保存先の実際の記録と照合する。本文保存と送信後の照合は別操作のまま受領記録で結ぶ。
 - `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
 - 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
 - ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
@@ -225,6 +232,20 @@ python3 scripts/lint_runtime_skill_sync.py \
 
 `lint_runtime_skill_sync.py` は target file を読み、`dist/skills/<runtime>/SKILL.md` と完全一致するか、`ssot_commit` / checksum / privacy pattern を確認する。更新が必要な場合でも、この script は書き込みを行わない。
 
+
+## ボット経路の対象別アクセス確認
+
+- 資格情報の設定だけでは本文取得経路を利用可能と判定しない。`discord_bot_live_verify.py --expected-url` による実測と、現在の資格情報・対象に結び付いた有効な受領記録を要求する。
+- 実測はボット本人、対象サーバーへの所属、対象チャンネルへのアクセスを `GET` だけで確認する。資格情報・対象・期限・署名の不一致では停止する。
+- 本文履歴の対応種別は `MESSAGE_HISTORY_CHANNEL_TYPES` に限定する。フォーラムとメディアの親チャンネルではスレッド一覧の取得へ案内し、本文履歴を要求しない。
+- 履歴取得に使う資格情報は一度だけ読み込み、同じ値で受領記録を検証する。受領記録はローカルの同じ資格情報に結び付けるためのもので、その資格情報を持つ主体から独立した証明ではない。
+- 通常の状態確認は記録を検証するだけで、`Discord` の実測要求を自動実行しない。内部ブラウザを可視読取の既定にする順序と、取得試行の識別は維持する。
+
+実行方法と保存範囲は 正本リポジトリの `docs/bot-live-verification.md` に従う。
+### 送信後のローカル照合の保証範囲
+
+`closed` と受領記録の `verified` は、設定された非公開の保存先に一意な観測記録が存在し、対象・時刻・本文とイベントのハッシュ値・外部操作無効の属性を照合できたことを表します。保存する本文と人間の送信観測時刻は信頼された操作担当から受け取るため、実際の `Discord` アクセスや送信、投稿の真偽を認証するものではありません。取得試行の `capture_id` / `attempt_id` と、送信後受領記録が参照する観測記録の `event_id` は別の契約です。
+
 ## Stoplines
 
 - `no_public_core_direct_discord_send`
@@ -247,8 +268,10 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/codex_discord_ingress_smoke.py --preflight-only --current-url <discord-url> --json`: 内部ブラウザやChromeより先にDiscord URLをsafe metadataとしてDCB ingressへ通す
 - `python3 scripts/discord_rest_backfill.py --url <discord-url> --json`: Bot REST API で履歴を read-only backfill し、private raw artifact と metadata-only manifest を作る
 - `python3 scripts/discord_archived_thread_inventory.py --url <parent-channel-url> --json`: 公式GET-only APIでpublic/private/joined private archiveを終端まで列挙し、private inventoryとmetadata-only判定を作る
+- `python3 scripts/discord_bot_live_verify.py --expected-url <discord-url> --json`: Bot本人、対象guild所属、対象channel読取をGETだけで実測し、署名済みprivate receiptを作る
 - `thread-capture-plan`: Discord スレッド全文取得に必要な route 配線状態を本文なしで確認する
 - `full-capture-gate`: 対象結合、境界、ID集合と順序、添付inventory、再走査、再試行残件を照合し、全文取得をfail-closedで判定する
+- `python3 scripts/context_claim_gate.py --run-dir <canonical-run> --completeness-db <canonical-db> --parent-target-key <target> --claim <complete|current|understood> --json`: 完全・最新・理解済みという表明を既存の正本検証へ束縛する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
 - `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
@@ -272,3 +295,6 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/ops_check.py --gh`: test / smoke / secret scan / GitHub account をまとめて確認する
 - `python3 scripts/codex_chrome_bundle_smoke.py --json`: Chrome browser bundleのhost process衝突回帰を外部操作なしで検出する
 - `python3 scripts/archived_thread_inventory_smoke.py --json`: archive列挙の全scope終端、private保存、metadata-only出力、page-limit時のfail-closedをfixtureで検証する
+- `python3 scripts/context_claim_gate_smoke.py --json`: 正本・鮮度・理解確認の停止条件を検証する
+- `python3 scripts/lint_context_claim_gate_wiring.py --json`: 表明判定の正本と各投影の配線を確認する
+- `python3 scripts/verify_context_claim_gate_head.py --head-root <candidate-tree> --json`: 信頼する側の検査コードで候補の配線を静的に確認する
