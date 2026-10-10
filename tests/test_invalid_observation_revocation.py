@@ -40,9 +40,9 @@ def test_content_projection_terminates_with_unbound_legacy_row(tmp_path):
     assert completed.returncode == 0, completed.stderr
 
 
-def _bad_store(path, *, bad_url=CHROME_URL, bad_stream_id=None):
+def _bad_store(path, *, bad_url=CHROME_URL, bad_stream_id=None, valid_text="second"):
     core.snapshot_visible_text(text="first", url=IAB_URL, path=path)
-    core.snapshot_visible_text(text="second", url=IAB_URL, path=path)
+    core.snapshot_visible_text(text=valid_text, url=IAB_URL, path=path)
     original = path.read_bytes()
     prior = core.load_text_snapshots(path)[-1]
     bad = copy.deepcopy(prior)
@@ -193,3 +193,50 @@ def test_recovery_cli_is_read_only_by_default_and_metadata_only(tmp_path):
     }
     assert path.read_bytes() == before
     assert str(path) not in completed.stdout
+
+
+def test_topic_candidates_survive_verified_revocation_without_foreign_text(tmp_path):
+    from discord_context_bridge.topic_classification import build_topic_classification_packet
+
+    store = tmp_path / "text-snapshots.ndjson"
+    _bad_store(store, valid_text="member-a: 題分類に残す会話")
+    core.revoke_invalid_snapshot_observation(store)
+    registry = tmp_path / "topics.json"
+    registry.write_text(json.dumps({
+        "schema": "dcb.topic_assignment_registry.v1",
+        "private_local_only": True,
+        "topics": [],
+        "assignments": [],
+    }))
+    output = tmp_path / "packet.json"
+    result = build_topic_classification_packet(
+        snapshot_store=store, topic_registry=registry, output_path=output,
+    )
+    packet = json.loads(output.read_text())
+    assert result["candidate_count"] == 1
+    assert [item["text"] for item in packet["items"]] == ["題分類に残す会話"]
+    assert "foreign text" not in output.read_text()
+
+
+def test_topic_candidates_reject_changed_revoked_row_bytes(tmp_path):
+    from discord_context_bridge.topic_classification import build_topic_classification_packet
+
+    store = tmp_path / "text-snapshots.ndjson"
+    _bad_store(store)
+    core.revoke_invalid_snapshot_observation(store)
+    lines = store.read_bytes().split(b"\n")
+    lines[2] += b" "
+    store.write_bytes(b"\n".join(lines))
+    registry = tmp_path / "topics.json"
+    registry.write_text(json.dumps({
+        "schema": "dcb.topic_assignment_registry.v1",
+        "private_local_only": True,
+        "topics": [],
+        "assignments": [],
+    }))
+    output = tmp_path / "packet.json"
+    with pytest.raises(CheckpointCorruptError, match="bytes changed"):
+        build_topic_classification_packet(
+            snapshot_store=store, topic_registry=registry, output_path=output,
+        )
+    assert not output.exists()

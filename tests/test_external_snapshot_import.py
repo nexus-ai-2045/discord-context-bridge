@@ -279,3 +279,50 @@ def test_existing_body_corruption_is_not_hidden_by_valid_event_hash(sample):
     row["event_hash"] = canonical_event_hash(row)
     store.write_text(json.dumps(row) + "\n")
     assert invoke(sample)["status"] == "blocked"
+
+
+@pytest.mark.parametrize("source_thread_url", [True, False])
+@pytest.mark.parametrize("target_thread_url", [True, False])
+def test_import_accepts_explicit_thread_identity_and_existing_canonical_rows(
+    sample, source_thread_url, target_thread_url,
+):
+    root, store, source, original = sample
+    thread_url = "https://discord.com/channels/111111111111111111/333333333333333333/threads/222222222222222222"
+    snapshot_visible_text(text="canonical thread observation", url=thread_url, path=store)
+    if source_thread_url:
+        original["url"] = thread_url
+        original["target_key"] = stable_text_hash(thread_url)
+        source.write_text(json.dumps(original) + "\n")
+    before = store.read_bytes()
+    arguments = {
+        "snapshot_root": root,
+        "source_file": source,
+        "target_url": thread_url if target_thread_url else URL,
+        "expected_source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+    assert import_external_snapshot(**arguments)["status"] == "ready"
+    assert store.read_bytes() == before
+    result = import_external_snapshot(**arguments, apply=True)
+    assert result["status"] == "absorbed"
+    assert result["read_back"] is True
+    records = load_text_snapshots(store)
+    _validate_text_snapshot_chain(records)
+    assert records[-1]["url"] == URL
+    assert records[-1]["original_snapshot_provenance"]["url"] == original["url"]
+    after = store.read_bytes()
+    assert import_external_snapshot(**arguments, apply=True)["status"] == "already_present"
+    assert store.read_bytes() == after
+
+
+@pytest.mark.parametrize("suffix", [
+    "/333333333333333333",
+    "/threads/333333333333333333",
+])
+def test_import_rejects_ambiguous_or_different_thread_source(sample, suffix):
+    _, store, source, original = sample
+    original["url"] = URL + suffix
+    original["target_key"] = stable_text_hash(original["url"])
+    source.write_text(json.dumps(original) + "\n")
+    before = store.read_bytes()
+    assert invoke(sample, apply=True)["status"] == "blocked"
+    assert store.read_bytes() == before

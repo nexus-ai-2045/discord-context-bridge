@@ -21,7 +21,7 @@ from .core import (
     canonical_event_hash,
     stable_text_hash,
 )
-from .url_identity import classify_discord_url
+from .url_identity import classify_discord_url, parse_effective_channel_url
 
 SOURCE_LIMIT = 16 * 1024 * 1024
 STORE_LIMIT = 256 * 1024 * 1024
@@ -37,14 +37,14 @@ def _identity(url: str) -> tuple[str, str]:
         raise _Blocked("invalid_target")
     parsed = urlsplit(url)
     parts = parsed.path.rstrip("/").split("/")
-    # A third numeric ID is ambiguous (message or thread); do not guess.
-    if parsed.query or parsed.fragment or len(parts) != 4:
+    identity = parse_effective_channel_url(url)
+    if parsed.query or parsed.fragment or identity is None:
         raise _Blocked("ambiguous_target")
-    guild, channel = parts[2:]
+    identifiers = parts[2:4] + (parts[5:] if len(parts) == 6 else [])
     if any(not part.isascii() or not part.isdigit() or not 17 <= len(part) <= 20
-           for part in (guild, channel)):
+           for part in identifiers):
         raise _Blocked("invalid_target")
-    return guild, channel
+    return identity
 
 
 def _directory(path: Path) -> int:
