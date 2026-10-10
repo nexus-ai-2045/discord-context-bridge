@@ -27,6 +27,11 @@
 - Chronica、Markdown、latest report、context reconstruction、TODO、`private-working` 配下の生成物は projection / view であり、canonical capture の代替証拠にしない。これらが存在しても、対象一致した canonical gate と freshness evidence が当日runで成立しない限り「最新」「完全」「全部理解した」と言わない。
 - 送信補助 workflow の状態は、外部 action 状態と照合して `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` に分ける。下書き入力、添付試行、送信先確認を送信完了として扱わない。
 
+- `mandatory_context_claim_gate`: ユーザーへ「完全」「最新」「理解済み」と肯定的に伝える直前に、`context_claim_gate.py` が対象runとcanonical completeness DBを再監査する。任意JSONの持ち込みは受け付けない。`complete` はcanonical full + persisted、`current` はそれにcanonical inventory観測時刻のfreshness、`understood` はさらに理解確認を要求する。該当claimの `allowed=true` を同一ターンで取得できない場合、肯定表現を返さず `partial` / `blocked` とreason codeを返す。runtime独自の再判定やprojectionからの推定は禁止する。
+- `context-claim-gate-trusted.yml` は `pull_request_target` のbase側コードで候補treeを静的監査する。候補コードは実行せず、secret・write権限を渡さない。小型gate、canonical再監査、manifest、全runtime投影、ops smoke、このtrusted workflow自身のいずれかが外れた候補を `blocked` にする。初回導入はbase側guardがまだ存在しないため人間bootstrap reviewを必須とし、導入後の変更はbase SHAとhead SHAの組で再監査する。
+
+静的検査は関数・配線・実行環境への投影の欠落を検出する補助です。機能の正しさや任意の実装変更による迂回防止を証明しません。変更時は回帰テストと独立レビューを併用します。初回導入の判断は既存のプルリクエスト承認経路で行います。
+
 ## Discord OSS 参照境界
 
 Discord 関連の外部 OSS を参照する場合は、DCB の read-only / metadata-only 境界を先に固定し、実装パターンは次の順に照合する。

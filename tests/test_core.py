@@ -3366,6 +3366,9 @@ def test_ops_check_fast_profile_uses_small_development_gate():
         "send-pdca-preflight smoke",
         "discord-url-measure smoke",
         "アーカイブ棚卸しsmoke",
+        "context claim gate smoke",
+        "context claim gate wiring lint",
+        "context claim gate trusted audit",
         "Bot live verification",
         "ローカルスモーク",
     }

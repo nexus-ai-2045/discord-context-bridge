@@ -730,6 +730,7 @@ class CompletenessStore:
                 "both_latest_scans_complete": both_complete if len(scans) == 2 else False,
                 "evidence_model": evidence_model,
             },
+            "evidence_observed_at": latest["observed_at"] if latest is not None else None,
             "counts": {
                 "inventory_threads": len(thread_ids),
                 "child_certificates": len(certificates),

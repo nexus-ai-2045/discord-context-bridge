@@ -398,6 +398,27 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
             ],
             env=env,
         ),
+        "context claim gate smoke": lambda: run_command(
+            "context claim gate smoke",
+            [sys.executable, "scripts/context_claim_gate_smoke.py", "--json"],
+            env=env,
+        ),
+        "context claim gate wiring lint": lambda: run_command(
+            "context claim gate wiring lint",
+            [sys.executable, "scripts/lint_context_claim_gate_wiring.py", "--json"],
+            env=env,
+        ),
+        "context claim gate trusted audit": lambda: run_command(
+            "context claim gate trusted audit",
+            [
+                sys.executable,
+                "scripts/verify_context_claim_gate_head.py",
+                "--head-root",
+                str(ROOT),
+                "--json",
+            ],
+            env=env,
+        ),
         "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
     }
     if args.profile == "fast":
@@ -413,6 +434,9 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult
                 "send-pdca-preflight smoke",
                 "discord-url-measure smoke",
                 "アーカイブ棚卸しsmoke",
+                "context claim gate smoke",
+                "context claim gate wiring lint",
+                "context claim gate trusted audit",
                 "Bot live verification",
                 "ローカルスモーク",
             )
