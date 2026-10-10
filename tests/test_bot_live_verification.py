@@ -351,3 +351,74 @@ def test_producer_rejects_mismatched_identity_or_target(
         )
 
     assert not receipt.exists()
+
+
+@pytest.mark.parametrize("host", [
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+])
+@pytest.mark.parametrize("path", [
+    "/channels/1/2",
+    "/channels/1/2/3",
+    "/channels/1/9/threads/2",
+    "/channels/1/9/threads/2/3",
+    "/channels/1/9/threads/2/3/?jump=latest#message",
+])
+def test_live_receipts_share_canonical_identity_across_host_aliases(host, path) -> None:
+    target = f"https://{host}{path}"
+    payload = verify_live_target(
+        expected_url=target, token="private-token", fetch_json=_fetch,
+    )
+    canonical_payload = verify_live_target(
+        expected_url=EXPECTED_URL, token="private-token", fetch_json=_fetch,
+    )
+
+    assert normalize_expected_target(target) == {"guild_id": "1", "channel_id": "2"}
+    assert verify_saved_receipt(
+        payload=payload, expected_url=EXPECTED_URL, token="private-token",
+    ) == "verified"
+    assert verify_saved_receipt(
+        payload=canonical_payload, expected_url=target, token="private-token",
+    ) == "verified"
+
+
+@pytest.mark.parametrize("target", [
+    "http://discord.com/channels/1/2",
+    "https://www.discord.com/channels/1/2",
+    "https://discord.com.evil.example/channels/1/2",
+    "https://evil-discord.com/channels/1/2",
+    "https://discordapp.com.evil.example/channels/1/2",
+    "https://canary.discord.com.evil.example/channels/1/2",
+    "https://user@discord.com/channels/1/2",
+    "https://discord.com@evil.example/channels/1/2",
+    "https://discord.com:443/channels/1/2",
+    "https://discord.com./channels/1/2",
+    "https://[discord.com/channels/1/2",
+    "https://dis\ncord.com/channels/1/2",
+    "https://discord.com/channels/１/2",
+    "https://discord.com/channels/1/２",
+    "https://discord.com/channels/1/2/３",
+    "https://discord.com/channels/1/2/threads/３",
+    "https://discord.com/channels/1/2/threads/3/４",
+    "https://discord.com/channels/123456789012345678901/2",
+    "https://discord.com/channels/1/123456789012345678901",
+    "https://discord.com/channels/1/2/threads/123456789012345678901",
+    "https://discord.com/channels/1/2/3/4",
+    "https://discord.com/channels/1/2/threads/3/4/5",
+    "https://discord.com/channels/@me/2",
+])
+def test_live_receipts_reject_unsupported_target_before_fetch(target) -> None:
+    payload = verify_live_target(
+        expected_url=EXPECTED_URL, token="private-token", fetch_json=_fetch,
+    )
+
+    def forbidden_fetch(*_args):
+        pytest.fail("invalid target must not trigger any API request")
+
+    with pytest.raises(LiveVerificationError, match="expected_target_url_invalid"):
+        verify_live_target(
+            expected_url=target, token="private-token", fetch_json=forbidden_fetch,
+        )
+    assert verify_saved_receipt(
+        payload=payload, expected_url=target, token="private-token",
+    ) == "expected_target_url_invalid"

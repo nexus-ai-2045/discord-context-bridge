@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .url_identity import parse_guild_channel_url
+
 
 API_BASE = "https://discord.com/api/v10"
 LIVE_VERIFICATION_RECEIPT = "live-verification.json"
@@ -33,9 +35,9 @@ CHANNEL_TYPE_CLASS = {
     16: "media",
 }
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_TARGET_URL_RE = re.compile(
-    r"^https://discord\.com/channels/(?P<guild>\d{1,20})/(?P<channel>\d{1,20})"
-    r"(?:/threads/(?P<thread>\d{1,20}))?(?:/(?P<message>\d{1,20}))?/?(?:[?#].*)?$"
+_TARGET_PATH_RE = re.compile(
+    r"^/channels/(?P<guild>[0-9]{1,20})/(?P<channel>[0-9]{1,20})"
+    r"(?:/threads/(?P<thread>[0-9]{1,20}))?(?:/(?P<message>[0-9]{1,20}))?/?$"
 )
 
 
@@ -44,14 +46,25 @@ class LiveVerificationError(ValueError):
 
 
 def normalize_expected_target(url: str) -> dict[str, str]:
-
-    match = _TARGET_URL_RE.fullmatch(url.strip())
+    target_url = url.strip()
+    if any(ord(character) < 32 for character in target_url):
+        raise LiveVerificationError("expected_target_url_invalid")
+    try:
+        parsed = urllib.parse.urlsplit(target_url)
+    except ValueError:
+        raise LiveVerificationError("expected_target_url_invalid") from None
+    match = _TARGET_PATH_RE.fullmatch(parsed.path)
     if not match:
         raise LiveVerificationError("expected_target_url_invalid")
-    return {
-        "guild_id": match.group("guild"),
-        "channel_id": match.group("thread") or match.group("channel"),
-    }
+    guild_id = match.group("guild")
+    channel_id = match.group("thread") or match.group("channel")
+    channel_url = parsed._replace(
+        path=f"/channels/{guild_id}/{channel_id}", query="", fragment=""
+    ).geturl()
+    identity = parse_guild_channel_url(channel_url)
+    if identity is None:
+        raise LiveVerificationError("expected_target_url_invalid")
+    return {"guild_id": identity[0], "channel_id": identity[1]}
 
 
 def credential_binding_sha256(token: str) -> str:
