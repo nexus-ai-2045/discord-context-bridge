@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 914e7a02168cb31d68ce61b8f0abca2c174ff31f
+ssot_commit: 97939237e6060e5aaf85cacb23d481bf454f95f0
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: bcdf36072a2f1e5215118a6bf4f65277ac05771faaebb945010bdebca13d2ad4
-contract_checksum: 7d01f9876f2df83f5c2ebe2ceb3a2b28aa1e603ad6d6f3862c8f1f9c7086c055
-generated_at: 2026-10-10T03:14:34+00:00
+contract_checksum: 33fa4ecd17dd589e02c27eabad11a94469b1f60806a45084ed4904cbe4c27cdb
+generated_at: 2026-10-10T03:31:25+00:00
 runtime_target: grok
 ---
 
@@ -245,6 +245,8 @@ python3 scripts/lint_runtime_skill_sync.py \
 ### 送信後のローカル照合の保証範囲
 
 `closed` と受領記録の `verified` は、設定された非公開の保存先に一意な観測記録が存在し、対象・時刻・本文とイベントのハッシュ値・外部操作無効の属性を照合できたことを表します。保存する本文と人間の送信観測時刻は信頼された操作担当から受け取るため、実際の `Discord` アクセスや送信、投稿の真偽を認証するものではありません。取得試行の `capture_id` / `attempt_id` と、送信後受領記録が参照する観測記録の `event_id` は別の契約です。
+
+送信前の準備記録と送信後の照合は、入力された下書きではなく、実際にコピーする本文から同じ操作識別子を計算します。単一本文では `text` と唯一の `parts` 要素の一致を確認し、従来の本文ハッシュを使います。分割本文では順序と分割境界を含む `parts` を既存の正規化ハッシュ処理へ渡します。書換え・秘匿化後の本文を対象にし、本文や分割片が変われば識別子の照合は失敗します。
 
 ## Stoplines
 
