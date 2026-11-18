@@ -1,0 +1,25 @@
+# gitleaks の設定。既定の規則をすべて継承したうえで、誤検知を 1 パターンだけ除外する。
+#
+# なぜ要るか: `src/discord_context_bridge/credentials.py` の 7 行で generic-api-key が当たる。
+# 中身は、鍵を取り出すコマンドが失敗した時に返す「失敗の種類の名前」
+# （例: failure_stage="token_command_parse_failed"）で、資格情報ではない。
+# 鍵の値はこのファイルに書かれておらず、実行時にコマンドの出力から読むだけである。
+#
+# 差分の走査では出ず、ファイル全体が 1 つの追加として走査される時に出る。
+# 公開後に第三者が全履歴を走査しても同じ誤検知に当たるため、判断をリポジトリ側に残す。
+#
+# 除外の効き方を狭くしてある:
+# - 規則を上書きせず、全体の許可（allowlist）で除外する。generic-api-key 自体は生きたまま。
+# - `condition = "AND"` で、パスと行の形の両方に当たった時だけ除外する。
+#   このファイルに将来べつの秘密が混ざっても、この形以外は検知される。
+# - 行の形は、小文字と下線だけの名前に限る。数字や大文字を含む値は除外されない。
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "鍵の取り出しコマンドの失敗の種類の名前（資格情報ではない）"
+condition = "AND"
+paths = ['''src/discord_context_bridge/credentials\.py''']
+regexTarget = "line"
+regexes = ['''provider="secret_command", failure_stage="[a-z_]+"''']
