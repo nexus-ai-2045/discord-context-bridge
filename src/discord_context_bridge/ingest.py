@@ -1,0 +1,770 @@
+"""ADR-0162 Phase 1 W5: 構造化済み capture 入力を単一 append-only ledger へ ingest する。
+
+対応フォーマット (Phase 1 は構造化済み変種のみ):
+
+- `dcb.raw_capture.v1` (`site_adapter_runtime.build_capture` が作る既存 shape。
+  `messages` に複数メッセージのリストを持つ)
+- `dcb.visible_message_record.v1` / `dcb.incremental_visible_message.v1`
+  (実 capture artifact のフラットな 1 行 1 メッセージ shape。`message` object
+  へのネストは持たない。NDJSON の複数行 (= 複数メッセージ) は `list[dict]` として
+  1 回の呼び出しにまとめて渡せる)
+- `discord_context_bridge_text_snapshot_observation.v1`
+  (ADR-0164 Phase 2 の旧 observation。target ごとに分割して再連鎖する)
+
+入力を検証し、メッセージ単位の event (`event_type: "message_observation"`) として
+`text-snapshots.ndjson` へ追記する。event envelope は既存
+`core.snapshot_visible_text` (core.py:2010-2079) が書く V5 フィールド集合
+(event_id/stream_id/stream_sequence/expected_previous_stream_sequence/time/
+content_hash/previous_content_hash/previous_event_hash/event_hash/
+specversion/type/subject/datacontenttype/dataschema/acquisition_context 等)
+と整合させる (`docs/operating-contract.md` の ledger 契約を参照)。
+
+dedupe は message_id 単位 (`duplicate_message_id`) と本文単位
+(`duplicate_content`) を別フラグで表す。同一 message_id でも本文が変われば
+`changed=true` として編集を検知する。message_id が無い場合は
+(ordinal, author_label, visible_timestamp) を代替 identity として使う。
+append-only ledger には必ず追記する (保存を止めない)。取込時に
+target_registry へ自動 upsert する。
+
+target 識別は target_key (明示フィールド) > url > title > stream_id >
+正規化済み本文 の優先順で決める (`docs/operating-contract.md` の `target`
+手順、`core.snapshot_visible_text` と同じ導出をベースに、stream_id のみを
+持つ実 capture artifact 向けの段を追加している)。
+
+stdout は metadata-only。呼び出し側 (`scripts/ingest_capture.py`) はこの
+モジュールが返す dict をそのまま出力してよい (raw text を含まない)。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+import json
+from pathlib import Path
+import re
+from typing import Any
+from urllib.parse import urlsplit
+
+from .core import (
+    DEFAULT_TEXT_SNAPSHOT_STORE,
+    _append_text_snapshots_transaction,
+    _snapshot_stream_history,
+    _validate_text_snapshot_chain,
+    acquisition_context_for_source,
+    canonical_event_hash,
+    load_text_snapshots,
+    normalize_message_text,
+    redact_sensitive_storage_text,
+    stable_text_hash,
+    utc_now,
+)
+from .site_adapter_runtime import MAX_BODY_TEXT_CHARS, MAX_MESSAGES
+from .target_registry import DEFAULT_TARGET_REGISTRY_STORE, register_target
+
+SUPPORTED_SCHEMAS = {
+    "dcb.raw_capture.v1",
+    "dcb.visible_message_record.v1",
+    "dcb.incremental_visible_message.v1",
+    "discord_context_bridge_text_snapshot_observation.v1",
+}
+
+LEGACY_OBSERVATION_SCHEMA = "discord_context_bridge_text_snapshot_observation.v1"
+
+# `message` object へネストせず、1 行そのものが 1 メッセージであるスキーマ。
+FLAT_MESSAGE_SCHEMAS = {
+    "dcb.visible_message_record.v1",
+    "dcb.incremental_visible_message.v1",
+}
+
+
+class IngestValidationError(ValueError):
+    """入力 payload が対応フォーマットとして不正な場合。"""
+
+
+def _require(condition: bool, reason: str) -> None:
+    if not condition:
+        raise IngestValidationError(reason)
+
+
+def normalize_message_metadata(value: Any) -> dict[str, Any]:
+    fields = {"author_id", "attachments", "deleted", "edited_at"}
+    _require(isinstance(value, dict) and fields <= set(value) <= fields | {"embeds", "component_labels"}, "message_metadata_fields_invalid")
+    author_id = value["author_id"]
+    _require(author_id is None or isinstance(author_id, str) and re.fullmatch(r"[0-9]{17,20}", author_id) is not None, "message_author_id_invalid")
+    _require(type(value["deleted"]) is bool, "message_deleted_invalid")
+    edited_at = value["edited_at"]
+    _require(edited_at is None or isinstance(edited_at, str) and len(edited_at) <= 40, "message_edited_at_invalid")
+    if edited_at is not None:
+        try:
+            parsed = datetime.fromisoformat(edited_at.replace("Z", "+00:00"))
+            _require(parsed.tzinfo is not None and "T" in edited_at, "message_edited_at_invalid")
+        except ValueError as error:
+            raise IngestValidationError("message_edited_at_invalid") from error
+    attachments = value["attachments"]
+    _require(isinstance(attachments, list) and len(attachments) <= 100, "message_attachments_invalid")
+    clean_attachments: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for attachment in attachments:
+        allowed = {"id", "filename", "size", "content_type", "url", "proxy_url"}
+        _require(isinstance(attachment, dict) and {"id", "filename"} <= set(attachment) <= allowed, "message_attachment_fields_invalid")
+        attachment_id = attachment["id"]
+        _require(isinstance(attachment_id, str) and re.fullmatch(r"[0-9]{17,20}", attachment_id) is not None and attachment_id not in ids, "message_attachment_id_invalid")
+        ids.add(attachment_id)
+        item: dict[str, Any] = {"id": attachment_id}
+        for key in ("filename", "content_type", "url", "proxy_url"):
+            if key not in attachment:
+                continue
+            text = attachment[key]
+            maximum = 4096 if key in {"url", "proxy_url"} else 1024
+            _require(isinstance(text, str) and bool(text) and len(text) <= maximum and "\x00" not in text, "message_attachment_text_invalid")
+            if key in {"url", "proxy_url"}:
+                try:
+                    parsed_url = urlsplit(text)
+                    _require(parsed_url.scheme == "https" and bool(parsed_url.hostname) and parsed_url.username is None and parsed_url.password is None, "message_attachment_url_invalid")
+                except ValueError as error:
+                    raise IngestValidationError("message_attachment_url_invalid") from error
+            clean_text = redact_sensitive_storage_text(text)
+            _require(bool(clean_text) and len(clean_text) <= maximum, "message_attachment_text_invalid")
+            if key in {"url", "proxy_url"}:
+                try:
+                    sanitized_url = urlsplit(clean_text)
+                except ValueError:
+                    continue
+                if sanitized_url.scheme != "https" or not sanitized_url.hostname:
+                    continue
+            item[key] = clean_text
+        if "size" in attachment:
+            size = attachment["size"]
+            _require(type(size) is int and 0 <= size <= 9007199254740991, "message_attachment_size_invalid")
+            item["size"] = size
+        clean_attachments.append(item)
+    normalized = {"author_id": author_id, "attachments": clean_attachments, "deleted": value["deleted"], "edited_at": edited_at}
+    if "embeds" in value:
+        embeds = value["embeds"]
+        _require(isinstance(embeds, list) and len(embeds) <= 10, "message_embeds_invalid")
+        normalized["embeds"] = []
+        for embed in embeds:
+            _require(isinstance(embed, dict) and set(embed) <= {"title", "description", "fields"}, "message_embed_fields_invalid")
+            clean_embed: dict[str, Any] = {}
+            for key in ("title", "description"):
+                if key in embed:
+                    text = embed[key]
+                    _require(isinstance(text, str) and len(text) <= 8192 and "\x00" not in text, "message_embed_text_invalid")
+                    clean_embed[key] = redact_sensitive_storage_text(text)
+            if "fields" in embed:
+                _require(isinstance(embed["fields"], list) and len(embed["fields"]) <= 25, "message_embed_fields_invalid")
+                clean_embed["fields"] = []
+                for field in embed["fields"]:
+                    _require(isinstance(field, dict) and set(field) == {"name", "value"}, "message_embed_field_invalid")
+                    _require(all(isinstance(field[key], str) and len(field[key]) <= 4096 and "\x00" not in field[key] for key in ("name", "value")), "message_embed_text_invalid")
+                    clean_embed["fields"].append({key: redact_sensitive_storage_text(field[key]) for key in ("name", "value")})
+            normalized["embeds"].append(clean_embed)
+    if "component_labels" in value:
+        labels = value["component_labels"]
+        _require(isinstance(labels, list) and len(labels) <= 100 and all(isinstance(label, str) and len(label) <= 256 and "\x00" not in label for label in labels), "message_component_labels_invalid")
+        normalized["component_labels"] = [redact_sensitive_storage_text(label) for label in labels]
+    _require(_metadata_size(normalized) <= 65536, "message_metadata_limit_exceeded")
+    return normalized
+
+
+def _metadata_size(metadata: dict[str, Any]) -> int:
+    try:
+        return len(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise IngestValidationError("message_metadata_encoding_invalid") from error
+
+
+def message_metadata_hash(metadata: dict[str, Any]) -> str:
+    return stable_text_hash(json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+
+def _normalize_message(message: Any) -> dict[str, Any]:
+    _require(isinstance(message, dict), "message_must_be_object")
+    body_text = message.get("body_text")
+    if body_text is None:
+        body_text = message.get("text")
+    normalized = {
+        "message_id": str(message.get("message_id") or message.get("id") or ""),
+        "author_label": str(message.get("author_label") or message.get("author") or ""),
+        "visible_timestamp": str(message.get("visible_timestamp") or message.get("timestamp") or ""),
+        "body_text": str(body_text or ""),
+        "ordinal": message.get("ordinal"),
+    }
+    if "message_metadata" in message:
+        normalized["message_metadata"] = normalize_message_metadata(message["message_metadata"])
+        _require(re.fullmatch(r"[0-9]{17,20}", normalized["message_id"]) is not None, "message_metadata_requires_message_id")
+        _require(len(normalized["author_label"]) <= 1024 and len(normalized["visible_timestamp"]) <= 128, "message_metadata_label_limit_exceeded")
+        normalized["author_label"] = redact_sensitive_storage_text(normalized["author_label"])
+        normalized["visible_timestamp"] = redact_sensitive_storage_text(normalized["visible_timestamp"])
+    return normalized
+
+
+def _first_nonempty(rows: list[dict[str, Any]], key: str) -> str:
+    for row in rows:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _enforce_message_budget(messages: list[dict[str, Any]]) -> None:
+    """既存 `dcb.raw_capture.v1` schema / `site_adapter_runtime` budget と同じ上限
+    (メッセージ件数 2,000 / 本文 1,000,000 字) を ingest 側でも enforce する
+    (codex review #7)。schema 検証を経ない local artifact 由来の入力でも
+    unbounded な append を防ぐ。
+    """
+    _require(len(messages) <= MAX_MESSAGES, "message_limit_exceeded")
+    _require(
+        all(len(message["body_text"]) <= MAX_BODY_TEXT_CHARS for message in messages),
+        "message_body_limit_exceeded",
+    )
+    _require(sum(_metadata_size(message["message_metadata"]) for message in messages if "message_metadata" in message) <= 1000000, "message_metadata_batch_limit_exceeded")
+
+
+def _require_consistent_identity(rows: list[dict[str, Any]], key: str) -> None:
+    """`rows` 内で `key` が非空の値を持つ行が複数あり、かつ値が食い違う場合は reject する。
+
+    先頭行の identity だけを見て全行を同じ target へ ingest すると、複数
+    target/url が混在する NDJSON バッチを黙って先頭 target の下へ取り込んで
+    しまう (codex review #1)。target 識別に使う全フィールドで一貫性を検証する。
+    """
+    distinct_values = {str(row.get(key) or "").strip() for row in rows}
+    distinct_values.discard("")
+    _require(len(distinct_values) <= 1, "ndjson_batch_mixed_target")
+
+
+def _messages_from_flat_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
+    """`dcb.visible_message_record.v1` / `dcb.incremental_visible_message.v1` 用アダプタ。
+
+    実 capture artifact はネスト `message` object ではなくフラットな 1 行 1
+    メッセージ shape。`rows` に複数件渡すことで NDJSON 複数行を 1 バッチとして
+    扱える。
+    """
+    messages = [_normalize_message(row) for row in rows]
+    _require(len(messages) > 0, "messages_empty")
+    _enforce_message_budget(messages)
+    for key in ("target_key", "url", "title", "stream_id"):
+        _require_consistent_identity(rows, key)
+    target_key_hint = _first_nonempty(rows, "target_key")
+    url = _first_nonempty(rows, "url")
+    title = _first_nonempty(rows, "title")
+    source_hint = _first_nonempty(rows, "source") or "visible_text"
+    stream_id_hint = _first_nonempty(rows, "stream_id")
+    captured_at_hint = _first_nonempty(rows, "captured_at")
+    return messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint
+
+
+def _messages_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
+    """単一 payload dict から (messages, url, title, source_hint, target_key_hint,
+    stream_id_hint, captured_at_hint) を取り出す。"""
+    schema = payload.get("schema")
+    if schema == "dcb.raw_capture.v1":
+        raw_messages = payload.get("messages")
+        _require(isinstance(raw_messages, list), "raw_capture_messages_required")
+        messages = [_normalize_message(item) for item in raw_messages]
+        _require(len(messages) > 0, "messages_empty")
+        _enforce_message_budget(messages)
+        url = str(payload.get("source_url") or "").strip()
+        title = str(payload.get("channel_or_thread_title") or "").strip()
+        source_hint = str(payload.get("capture_method") or "source_command")
+        if source_hint.casefold() == "gateway_live_event":
+            _require(all("message_metadata" in message for message in messages), "gateway_message_metadata_required")
+        captured_at_hint = str(payload.get("captured_at") or "").strip()
+        return messages, url, title, source_hint, "", "", captured_at_hint
+
+    if schema in FLAT_MESSAGE_SCHEMAS:
+        return _messages_from_flat_rows([payload])
+
+    raise IngestValidationError("adapter_not_implemented")
+
+
+def _messages_from_batch(rows: list[Any]) -> tuple[list[dict[str, Any]], str, str, str, str, str, str]:
+    """NDJSON 複数行 (`list[dict]`) を 1 バッチとして扱うアダプタ。"""
+    _require(bool(rows) and all(isinstance(row, dict) for row in rows), "payload_must_be_object")
+    schemas = {row.get("schema") for row in rows}
+    _require(len(schemas) == 1, "ndjson_batch_inconsistent_schema")
+    (schema,) = schemas
+    _require(schema in FLAT_MESSAGE_SCHEMAS, "adapter_not_implemented")
+    return _messages_from_flat_rows(rows)
+
+
+def _fallback_identity_text(messages: list[dict[str, Any]]) -> str:
+    """core.py:2020 の `normalize_message_text` と同じ導出に揃えるための下地文字列。"""
+    mapped = [
+        {
+            "author_label": message["author_label"],
+            "text": message["body_text"],
+            "timestamp": message["visible_timestamp"],
+        }
+        for message in messages
+    ]
+    return normalize_message_text(mapped)
+
+
+def _target_identity(
+    target_key_hint: str,
+    url: str,
+    title: str,
+    stream_id_hint: str,
+    messages: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """(target_key, key_scheme) を返す。
+
+    target_key > url > title > stream_id > 本文由来 の順で決める。実 capture
+    artifact (`dcb.incremental_visible_message.v1`) は target_key/url/title を
+    持たず `stream_id` のみのケースがある。そこで本文ハッシュへフォールバック
+    すると、同一ストリームでもバッチごとに本文が変わるたびに別 target へ分裂
+    してしまう (codex review #8)。stream_id がある時はそれを優先し、
+    `stream_id_hash_16` として登録する。
+
+    本文由来 fallback は core.py:2026 (`normalize_message_text` → redact →
+    先頭120文字 → hash) と同じ導出にし、`title_fallback_16` とは別の
+    `content_fallback_16` を使う (M3)。
+    """
+    if target_key_hint:
+        return target_key_hint, "url_hash_16"
+    if url:
+        return stable_text_hash(url), "url_hash_16"
+    if title:
+        return stable_text_hash(title), "title_fallback_16"
+    if stream_id_hint:
+        return stable_text_hash(stream_id_hint), "stream_id_hash_16"
+    fallback_content = redact_sensitive_storage_text(_fallback_identity_text(messages))
+    return stable_text_hash(fallback_content.strip()[:120]), "content_fallback_16"
+
+
+def validate_ingest_payload(payload: Any) -> None:
+    """payload が対応フォーマットとして構造的に妥当かを検証する。不正なら例外。"""
+    if isinstance(payload, list):
+        _messages_from_batch(payload)
+        return
+    _require(isinstance(payload, dict), "payload_must_be_object")
+    _messages_from_payload(payload)
+
+
+def _safe_adapter_label(schema: Any) -> str:
+    """既知 schema 値の時だけ値を返す。未知値は stdout へ反射しない (C2)。"""
+    return schema if isinstance(schema, str) and schema in SUPPORTED_SCHEMAS else "unknown"
+
+
+def _batch_schema_hint(rows: Any) -> Any:
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return rows[0].get("schema")
+    return None
+
+
+def _error_result(*, schema: Any, apply: bool, reason: str) -> dict[str, Any]:
+    return {
+        "schema": "dcb.ingest_result.v1",
+        "ok": False,
+        "reason": reason,
+        "adapter": _safe_adapter_label(schema),
+        "dry_run": not apply,
+        "events_appended": 0,
+        "duplicates": 0,
+        "target_key": None,
+        "outbound_actions": "disabled",
+    }
+
+
+def ingest_capture(
+    payload: dict[str, Any] | list[dict[str, Any]],
+    *,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    registry_store: Path = DEFAULT_TARGET_REGISTRY_STORE,
+    apply: bool = False,
+    source_ref: str = "",
+) -> dict[str, Any]:
+    """構造化済み capture payload を検証し、message 単位で ledger へ ingest する。
+
+    `payload` は単一 JSON object、または NDJSON 複数行を表す `list[dict]` の
+    どちらでも受け付ける。list の場合は全行が同一 schema (flat message
+    schema) である 1 バッチとして処理し、1 つの target へ ingest する。
+
+    既定は dry-run (何も書き込まず、書き込む予定の件数だけ返す)。
+    `apply=True` の時だけ `snapshot_store` へ追記し、`registry_store` を
+    upsert する。
+    """
+    # 単一 JSON object の旧 observation も1件の batch として同じ adapter に流す。
+    if isinstance(payload, dict) and payload.get("schema") == LEGACY_OBSERVATION_SCHEMA:
+        payload = [payload]
+    if (
+        isinstance(payload, list)
+        and payload
+        and all(isinstance(row, dict) for row in payload)
+        and {row.get("schema") for row in payload} == {LEGACY_OBSERVATION_SCHEMA}
+    ):
+        return _ingest_legacy_observations(
+            payload,
+            snapshot_store=Path(snapshot_store),
+            registry_store=Path(registry_store),
+            apply=apply,
+            source_ref=source_ref,
+        )
+
+    if isinstance(payload, list):
+        schema = _batch_schema_hint(payload)
+        try:
+            messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint = (
+                _messages_from_batch(payload)
+            )
+        except IngestValidationError as exc:
+            return _error_result(schema=schema, apply=apply, reason=str(exc))
+    elif isinstance(payload, dict):
+        schema = payload.get("schema")
+        try:
+            messages, url, title, source_hint, target_key_hint, stream_id_hint, captured_at_hint = (
+                _messages_from_payload(payload)
+            )
+        except IngestValidationError as exc:
+            return _error_result(schema=schema, apply=apply, reason=str(exc))
+    else:
+        return _error_result(schema=None, apply=apply, reason="payload_must_be_object")
+
+    target_key, key_scheme = _target_identity(target_key_hint, url, title, stream_id_hint, messages)
+
+    def build_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _build_message_events(
+            records, messages, target_key=target_key, url=url, title=title,
+            source_hint=source_hint, captured_at_hint=captured_at_hint,
+        )
+
+    if apply:
+        # registry を先に確定し、失敗時は ledger を変更しない。後続 transaction
+        # の失敗時は registry entry のみ残り得るが、観測の保存成功とは扱わない。
+        register_target(
+            target_key=target_key, key_scheme=key_scheme, url=url or None,
+            channel_label=title or None, source="capture", source_ref=source_ref or None,
+            path=registry_store,
+        )
+        appended, new_events, _ = _append_text_snapshots_transaction(build_events, Path(snapshot_store))
+    else:
+        new_events = build_events(load_text_snapshots(snapshot_store))
+        appended = 0
+
+    return {
+        "schema": "dcb.ingest_result.v1",
+        "ok": True,
+        "dry_run": not apply,
+        "adapter": _safe_adapter_label(schema),
+        "events_appended": appended,
+        "events_pending": len(new_events) if not apply else 0,
+        "duplicates": sum(bool(event["duplicate_content"]) for event in new_events),
+        "target_key": target_key,
+        "outbound_actions": "disabled",
+    }
+
+
+def _ingest_legacy_observations(
+    rows: list[dict[str, Any]],
+    *,
+    snapshot_store: Path,
+    registry_store: Path,
+    apply: bool,
+    source_ref: str,
+) -> dict[str, Any]:
+    """ADR-0164 Phase 2: 旧 observation を target ごとに再連鎖して取り込む。"""
+    required_strings = ("event_id", "target_key", "captured_at", "observed_at", "text")
+    try:
+        # 他の adapter と同じ件数上限 (_enforce_message_budget と同じ理由コード)。
+        _require(len(rows) <= MAX_MESSAGES, "message_limit_exceeded")
+    except IngestValidationError as exc:
+        return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+    for row in rows:
+        try:
+            _require(row.get("schema") == LEGACY_OBSERVATION_SCHEMA, "legacy_schema_mismatch")
+            for key in required_strings:
+                _require(isinstance(row.get(key), str) and bool(row[key]), f"legacy_{key}_required")
+            _require(
+                row.get("acquisition_context") is None
+                or isinstance(row.get("acquisition_context"), dict),
+                "legacy_acquisition_context_invalid",
+            )
+            _require(len(row["text"]) <= MAX_BODY_TEXT_CHARS, "message_body_limit_exceeded")
+        except IngestValidationError as exc:
+            return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+
+    legacy_ids = [row["event_id"] for row in rows]
+    if len(set(legacy_ids)) != len(legacy_ids):
+        return _error_result(
+            schema=LEGACY_OBSERVATION_SCHEMA,
+            apply=apply,
+            reason="legacy_duplicate_event_id_in_input",
+        )
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["target_key"], []).append(row)
+    try:
+        for target_rows in grouped.values():
+            # 旧 observation では title / URL が観測時点ごとに変化し得るため、
+            # 正本の stream identity だけを target 内で固定する。
+            _require_consistent_identity(target_rows, "stream_id")
+    except IngestValidationError:
+        return _error_result(
+            schema=LEGACY_OBSERVATION_SCHEMA,
+            apply=apply,
+            reason="legacy_target_identity_mismatch",
+        )
+
+    result_counts = {"skipped": 0}
+
+    def build_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        skipped_total = 0
+        for target_key, target_rows in grouped.items():
+            target_events, skipped = _build_legacy_observation_events(
+                records, target_rows, target_key=target_key
+            )
+            events.extend(target_events)
+            skipped_total += skipped
+        result_counts["skipped"] = skipped_total
+        return events
+
+    try:
+        # 取り込み済み ID の中身が変わっていないかを、registry を触る前に確かめる。
+        # 並行 writer に備え、transaction 内の build_events でも同じ照合をもう一度行う。
+        build_events(load_text_snapshots(snapshot_store))
+        if apply:
+            for target_key, target_rows in grouped.items():
+                first = target_rows[0]
+                register_target(
+                    target_key=target_key,
+                    key_scheme="url_hash_16",
+                    url=str(first.get("url") or "") or None,
+                    channel_label=str(first.get("title") or "") or None,
+                    source="capture",
+                    source_ref=source_ref or None,
+                    path=registry_store,
+                )
+            appended_total, _, _ = _append_text_snapshots_transaction(build_events, snapshot_store)
+            pending_total = 0
+        else:
+            pending_total = len(build_events(load_text_snapshots(snapshot_store)))
+            appended_total = 0
+    except IngestValidationError as exc:
+        return _error_result(schema=LEGACY_OBSERVATION_SCHEMA, apply=apply, reason=str(exc))
+    skipped_total = result_counts["skipped"]
+
+    return {
+        "schema": "dcb.ingest_result.v1",
+        "ok": True,
+        "dry_run": not apply,
+        "adapter": LEGACY_OBSERVATION_SCHEMA,
+        "events_appended": appended_total,
+        "events_pending": pending_total if not apply else 0,
+        "skipped": skipped_total,
+        "skip_reasons": {"legacy_event_already_imported": skipped_total} if skipped_total else {},
+        "input_events": len(rows),
+        "targets_processed": len(grouped),
+        "duplicates": 0,
+        "target_key": None,
+        "outbound_actions": "disabled",
+    }
+
+
+def _build_legacy_observation_events(
+    records: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    target_key: str,
+) -> tuple[list[dict[str, Any]], int]:
+    # 旧 event_id → 取り込み済みの記録。同じ ID の再投入は、中身が同じ時だけ skip する。
+    imported: dict[str, dict[str, Any]] = {}
+    for record in records:
+        context = record.get("acquisition_context")
+        if isinstance(context, dict) and context.get("legacy_observation_event_id"):
+            imported.setdefault(str(context["legacy_observation_event_id"]), record)
+    stream_sequence, previous_event_hash = _validate_text_snapshot_chain(records).get(
+        target_key, (0, "")
+    )
+    history = _snapshot_stream_history(records, target_key)
+    previous_content_hash = str(history[-1].get("content_hash") or "") if history else None
+    ingested_at = utc_now()
+    events: list[dict[str, Any]] = []
+    skipped = 0
+
+    for row in rows:
+        legacy_event_id = row["event_id"]
+        # 正本に平文の認証情報を残さない (snapshot_visible_text / _build_message_events と同じ)。
+        text = redact_sensitive_storage_text(row["text"])
+        content_hash = stable_text_hash(text)
+        stored = imported.get(legacy_event_id)
+        if stored is not None:
+            # ID だけで同一とみなすと、中身が変わった再投入を「成功」と数えてしまう。
+            _require(
+                stored.get("target_key") == target_key
+                and stored.get("captured_at") == row["captured_at"]
+                and stored.get("observed_at") == row["observed_at"]
+                and stored.get("content_hash") == content_hash,
+                "legacy_replay_conflict",
+            )
+            skipped += 1
+            continue
+        stream_sequence += 1
+        acquisition_context = dict(row.get("acquisition_context") or {})
+        acquisition_context["legacy_observation_event_id"] = legacy_event_id
+        acquisition_context["backfill_adapter"] = "adr0164_phase2"
+        event: dict[str, Any] = {
+            "schema": LEGACY_OBSERVATION_SCHEMA,
+            "event_id": stable_text_hash(f"adr0164|{legacy_event_id}|{target_key}"),
+            "event_type": row.get("event_type") or "discord.visible_text.snapshot_observed",
+            "stream_id": target_key,
+            "stream_sequence": stream_sequence,
+            "expected_previous_stream_sequence": stream_sequence - 1,
+            "specversion": "1.0",
+            "type": row.get("type") or row.get("event_type") or "discord.visible_text.snapshot_observed",
+            "subject": target_key,
+            "time": row["captured_at"],
+            "datacontenttype": row.get("datacontenttype") or "text/plain; charset=utf-8",
+            "dataschema": LEGACY_OBSERVATION_SCHEMA,
+            "captured_at": row["captured_at"],
+            "observed_at": row["observed_at"],
+            "ingested_at": ingested_at,
+            "source": str(row.get("source") or ""),
+            "url": str(row.get("url") or ""),
+            "title": str(row.get("title") or ""),
+            "target_key": target_key,
+            "content_hash": content_hash,
+            "previous_content_hash": previous_content_hash,
+            "previous_event_hash": previous_event_hash,
+            "duplicate_content": content_hash == previous_content_hash,
+            "changed": content_hash != previous_content_hash,
+            "observation_index_for_target": stream_sequence,
+            "acquisition_context": acquisition_context,
+            "text": text,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        event["event_hash"] = canonical_event_hash(event)
+        events.append(event)
+        imported[legacy_event_id] = event
+        previous_event_hash = event["event_hash"]
+        previous_content_hash = content_hash
+
+    return events, skipped
+
+
+def _build_message_events(
+    records: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    target_key: str,
+    url: str,
+    title: str,
+    source_hint: str,
+    captured_at_hint: str,
+) -> list[dict[str, Any]]:
+    """apply 時は writer lock 内で読み直した正本から batch 全体を構築する。"""
+    existing_records = _snapshot_stream_history(records, target_key)
+    seen_message_id_hashes: dict[tuple[str, str], Any] = {}
+    seen_metadata_hashes: dict[tuple[str, str], Any] = {}
+    seen_identity_hashes: dict[tuple[Any, ...], Any] = {}
+    for record in existing_records:
+        record_message_id = record.get("message_id")
+        if record_message_id:
+            seen_message_id_hashes[(target_key, record_message_id)] = record.get("content_hash")
+            seen_metadata_hashes[(target_key, record_message_id)] = record.get("metadata_hash")
+        else:
+            identity = (
+                target_key,
+                record.get("ordinal"),
+                record.get("author_label"),
+                record.get("visible_timestamp"),
+            )
+            seen_identity_hashes[identity] = record.get("content_hash")
+
+    # raw の upstream sequence/hash と canonical head の扱いを共通validatorに揃える。
+    stream_sequence, previous_event_hash = _validate_text_snapshot_chain(records).get(target_key, (0, ""))
+    last_record = existing_records[-1] if existing_records else None
+    previous_content_hash = str(last_record.get("content_hash") or "") if last_record else None
+
+    # payload 側の captured_at (capture 時刻) を ingest 時刻で上書きすると、
+    # 遅延 ingest 時に元の観測時刻が失われ freshness 判定・時系列 projection を
+    # 壊す (codex review #4)。capture_timestamp は capture 時刻 (payload 由来、
+    # 無ければ ingest 時刻へフォールバック) を、ingest_timestamp は常に「今」の
+    # ingest metadata を別々に持つ。
+    capture_timestamp = captured_at_hint or utc_now()
+    ingest_timestamp = utc_now()
+    new_events: list[dict[str, Any]] = []
+
+    for message in messages:
+        body_text = redact_sensitive_storage_text(message["body_text"])
+        content_hash = stable_text_hash(body_text)
+        message_id = message["message_id"]
+        ordinal = message["ordinal"]
+
+        if message_id:
+            message_key = (target_key, message_id)
+            duplicate_message_id = message_key in seen_message_id_hashes
+            duplicate_content = duplicate_message_id and seen_message_id_hashes[message_key] == content_hash
+        else:
+            duplicate_message_id = False
+            identity = (target_key, ordinal, message["author_label"], message["visible_timestamp"])
+            duplicate_content = seen_identity_hashes.get(identity) == content_hash
+
+        stream_sequence += 1
+        event: dict[str, Any] = {
+            "schema": "discord_context_bridge_text_snapshot_observation.v1",
+            "event_id": stable_text_hash(
+                "|".join([capture_timestamp, target_key, content_hash, source_hint, str(stream_sequence)])
+            ),
+            "event_type": "message_observation",
+            "stream_id": target_key,
+            "stream_sequence": stream_sequence,
+            "expected_previous_stream_sequence": stream_sequence - 1,
+            "specversion": "1.0",
+            "type": "message_observation",
+            "subject": target_key,
+            "time": capture_timestamp,
+            "datacontenttype": "text/plain; charset=utf-8",
+            "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
+            "captured_at": capture_timestamp,
+            "observed_at": capture_timestamp,
+            "ingested_at": ingest_timestamp,
+            "source": source_hint,
+            "url": url,
+            "title": title,
+            "target_key": target_key,
+            "message_id": message_id,
+            "ordinal": ordinal,
+            "author_label": message["author_label"],
+            "visible_timestamp": message["visible_timestamp"],
+            "content_hash": content_hash,
+            "previous_content_hash": previous_content_hash,
+            "previous_event_hash": previous_event_hash,
+            "duplicate_message_id": duplicate_message_id,
+            "duplicate_content": duplicate_content,
+            "changed": not duplicate_content,
+            "observation_index_for_target": stream_sequence,
+            "acquisition_context": acquisition_context_for_source(source_hint),
+            "text": body_text,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        if "message_metadata" in message:
+            metadata_hash = message_metadata_hash(message["message_metadata"])
+            event["message_metadata"] = message["message_metadata"]
+            event["metadata_hash"] = metadata_hash
+            event["metadata_changed"] = seen_metadata_hashes.get((target_key, message_id)) != metadata_hash
+            seen_metadata_hashes[(target_key, message_id)] = metadata_hash
+        elif message_id:
+            seen_metadata_hashes.pop((target_key, message_id), None)
+        event["event_hash"] = canonical_event_hash(event)
+        previous_event_hash = event["event_hash"]
+        previous_content_hash = content_hash
+
+        if message_id:
+            seen_message_id_hashes[(target_key, message_id)] = content_hash
+        else:
+            identity = (target_key, ordinal, message["author_label"], message["visible_timestamp"])
+            seen_identity_hashes[identity] = content_hash
+
+        new_events.append(event)
+
+    return new_events

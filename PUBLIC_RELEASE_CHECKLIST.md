@@ -1,0 +1,80 @@
+# Public Release Checklist
+
+Discord Context Bridge を public repository に出す前に、この checklist を使います。
+
+## Repository Target
+
+- remote が `nexus-ai-2045/discord-context-bridge` を指している。
+- `python3 scripts/gh_guard.py --json --history-ref HEAD` で repository、GitHub account、git author、禁止名義が正しいことを確認している。
+- 禁止名義は `DISCORD_CONTEXT_BRIDGE_FORBIDDEN_IDENTITIES` または `--forbidden-identity` で外から渡し、リポジトリ本文には具体値を書かない。
+- 期待する repository / owner / git author と一致しない個人名義が remote、active account、git author に混ざっていない。
+- git author name / email が `nexus-ai-2045` の public repository 名義になっている。
+- release commit が、この public package と必要 metadata だけを含んでいる。
+
+## Privacy And Secrets
+
+- Discord user token、bot token、webhook URL、cookie、authorization header がない。
+- 実 guild ID、channel ID、user ID、handle、private message、DM 本文がない。
+- maintainer machine の local absolute path が public docs / tests にない。
+- private `.env`、browser profile、database、cache、event store がない。
+- local context library は `.local/discord-context-bridge/context-library.json` などの非公開領域に置き、実データを commit しない。
+- `0600`はPOSIXの検査条件。Windowsは指定したprivateフォルダーのACLを別途確認する。fixtureの保存往復成功を、Windowsのアクセス権検証成功として扱わない。
+
+## Language Boundary
+
+- 利用者向け文書の基本言語が日本語になっている。
+- CLI / API のユーザー向けメッセージが日本語を既定にしている。
+- PR title / body は日本語を既定にし、`## 概要`、`## 検証`、`## 境界` を含める。
+- `python3 scripts/check_pr_language.py --title "<PR title>" --body-file <PR body file>` が成功している。
+- JSON key、Python identifier、package name、command name は英語のままでよい。
+- 英語だけの説明が増えた場合、対応する日本語説明がある。
+
+## Package Boundary
+
+- pyproject の version と CHANGELOG が今回の public capability を表している。
+- release準備ではREADMEの現在の機能・制約、`pyproject.toml`、`CHANGELOG.md`を更新して検証する。tagは承認された統合commitに対して公開時に作成する。既存version runnerの`--write`と`--tag`を、レビュー前のtag作成に使わない。
+- 公開前は `python3 scripts/bump_version.py --check`、tag公開後の再読取では `--check --require-current-tag` が成功している。検証のためだけに未承認tagを先に公開しない。
+- Browser login と account automation は、この public nucleus の scope 外。
+- outbound sending は既定で disabled で、この package には実装経路がない。
+- MCP server は local event store / local context library を読むだけで、Discord への送信 tool を公開しない。
+- 文脈パスポートはスレッド目的 / 流れ / 前提 / ルール注意 / 温度感の確認だけを行い、Discord 送信はしない。
+- 返信ガイドは context / draft の照合だけを行い、Discord 送信はしない。
+- 自動取得は `--source-command` で local observer の stdout を読むだけにし、browser profile / Discord cookie / token を public package に入れない。
+- ChatGPT connector 用の HTTP MCP は `/mcp` だけを公開し、tunnel 前に event store の private data を確認する。
+- HTTP MCP を tunnel へ出す場合は `--require-safe-store` で起動前監査を必須にできる。
+- import は `dry_run` で保存前 preview できる。
+- clipboard import は local clipboard だけを読み、Discord token / cookie / webhook を要求しない。
+- tunnel 公開前に `audit-store` または MCP `audit_event_store_before_tunnel` を実行できる。
+- tunnel 公開前に `audit-context-store` または MCP `audit_context_library_before_tunnel` を実行できる。
+- fixture は合成データで、公開してよい。
+- README が、この package の「できること / しないこと」を説明している。
+- SECURITY.md が sensitive data exposure の扱いを説明している。
+
+## Verification
+
+```bash
+python3 scripts/ops_check.py
+python3 scripts/ops_check.py --profile release --skip-http
+python3 scripts/gh_guard.py --json --history-ref HEAD
+python3 -m pytest tests -q
+python3 -m compileall src tests
+python3 -m pip install ".[mcp]"
+python3 - <<'PY'
+from discord_context_bridge.mcp_server import build_server
+server = build_server()
+assert getattr(server, "name", "") == "discord-context-bridge"
+PY
+discord-context-bridge-mcp-http --help
+discord-context-bridge-mcp-http --store /tmp/discord-context-events.ndjson --require-safe-store --help
+discord-context-bridge --store /tmp/discord-context-events.ndjson audit-store
+discord-context-bridge --context-store /tmp/discord-context-library.json audit-context-store
+python3 scripts/bump_version.py --check
+rg -n "(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|discord(app)?\\.com/api/webhooks|Authorization|Bearer |mfa\\.|[A-Za-z0-9_-]{24}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27})" .
+```
+
+最後の `rg` command は、この checklist または意図的な fake test string だけに
+match すること。real credential に match してはいけません。
+
+## Human Decision Before Push
+
+public push には、target remote を明示した current-session GO が必要です。

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_target_registry_entry.v1.schema.json",
+  "title": "DCB target registry entry",
+  "type": "object",
+  "required": [
+    "schema",
+    "target_key",
+    "key_scheme",
+    "url",
+    "server_label",
+    "channel_label",
+    "aliases",
+    "first_seen",
+    "source",
+    "source_ref"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dcb.target_registry_entry.v1"
+    },
+    "target_key": {
+      "type": "string"
+    },
+    "key_scheme": {
+      "enum": [
+        "url_hash_16",
+        "title_fallback_16",
+        "content_hash_24",
+        "source_url_hash_64",
+        "content_fallback_16",
+        "stream_id_hash_16"
+      ]
+    },
+    "url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "channel_label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "first_seen": {
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "capture",
+        "backfill",
+        "manual"
+      ]
+    },
+    "source_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,5939 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import mimetypes
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+from .capture.store import (
+    CaptureCheckpointStore,
+    CheckpointCorruptError,
+    EventConflictError,
+    SequenceConflictError,
+    _append_store_relative_chunks,
+)
+from .url_identity import parse_discord_target_url, parse_effective_channel_url
+from .full_capture import build_capture_route_policy
+from .local_config import (
+    LocalConfigError,
+    default_cross_device_snapshot_store,
+    is_cross_device_working_store,
+    resolve_shared_snapshot_root,
+)
+
+DEFAULT_STORE = Path(".local/discord-context-bridge/events.ndjson")
+DEFAULT_CONTEXT_STORE = Path(".local/discord-context-bridge/context-library.json")
+DEFAULT_REVIEW_STORE = Path(".local/discord-context-bridge/review-registry.json")
+DEFAULT_TEXT_SNAPSHOT_STORE = Path(".local/discord-context-bridge/text-snapshots.ndjson")
+DEFAULT_ATTACHMENT_LEDGER = Path(".local/discord-context-bridge/attachment-ledger.md")
+# OS default only, evaluated at import time. Kept for backward compatibility;
+# library defaults resolve the root at call time via
+# ``local_config.resolve_shared_snapshot_root`` (env > config > OS default).
+DEFAULT_SHARED_RAW_SNAPSHOT_ROOT = Path.home() / "Projects/Documents/discord/raw-snapshots"
+DEFAULT_REST_BACKFILL_RAW_OUTPUT = Path(".local/discord-context-bridge/inbox/raw/rest-backfill.ndjson")
+DEFAULT_REST_BACKFILL_MANIFEST = Path(".local/discord-context-bridge/inbox/manifests/rest-backfill.manifest.json")
+DEFAULT_LANGUAGE = "ja"
+POST_SEND_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
+SAVED_SNAPSHOT_CAPTURE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+TIMESTAMP_RE = re.compile(r"^(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*")
+COLON_MESSAGE_RE = re.compile(r"^(?P<author>[^:\n]{1,80}):\s*(?P<text>.+)$")
+# Discord UI が出す日時区切りの表記。英語 UI と日本語 UI (DEFAULT_LANGUAGE = "ja") の両方を持つ。
+# ここに無い表記は「発言者候補」として扱われ、時刻のコロンが `発言者: 本文` と誤認される。
+_WEEKDAY_JA = "[月火水木金土日]"
+_TIMESTAMP_FORMS = (
+    # 英語 UI
+    r"(?:Today|Yesterday) at \d{1,2}:\d{2}\s*(?:AM|PM)?"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?"
+    r"|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}"
+    # 日本語 UI
+    rf"|\d{{4}}年\d{{1,2}}月\d{{1,2}}日(?:{_WEEKDAY_JA}曜日)?\s*\d{{1,2}}:\d{{2}}"
+    r"|(?:昨日|今日)\s*\d{1,2}:\d{2}"
+    rf"|\d{{1,2}}月\s*\d{{1,2}}日\s*[（(]{_WEEKDAY_JA}[）)]\s*\d{{1,2}}:\d{{2}}"
+    rf"|\d{{1,2}}/\d{{1,2}}\s*[（(]{_WEEKDAY_JA}[）)]\s*\d{{1,2}}:\d{{2}}"
+    rf"|{_WEEKDAY_JA}\s+\d{{1,2}}月\s*\d{{1,2}}日\s*[·・]\s*\d{{1,2}}:\d{{2}}"
+    r"|\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}"
+)
+AUTHOR_WITH_TIMESTAMP_RE = re.compile(
+    rf"^(?P<author>.{{1,80}}?)\s+(?:—|–|-)\s+(?:{_TIMESTAMP_FORMS})$",
+    re.IGNORECASE,
+)
+TIMESTAMP_METADATA_RE = re.compile(rf"^(?:{_TIMESTAMP_FORMS})$", re.IGNORECASE)
+DISCORD_WEBHOOK_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d{17,20}/[A-Za-z0-9_-]+")
+DISCORD_TOKEN_RE = re.compile(
+    r"(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})"
+)
+AUTH_HEADER_RE = re.compile(r"(?i)\b(?:authorization\s*:\s*(?:bearer\s+)?|bearer\s+)[^\s,;]+")
+DISCORD_SNOWFLAKE_RE = re.compile(r"(?<!\d)\d{17,20}(?!\d)")
+_USERS = "Us" + "ers"
+_HOME = "ho" + "me"
+LOCAL_ABSOLUTE_PATH_RE = re.compile(
+    rf"(?:/{_USERS}/[^ \n]+|/{_HOME}/[^ \n]+|[A-Za-z]:\\[^ \n]+)"
+)
+CHROME_PROFILE_RE = re.compile(
+    r"(?:Chrome[\\/](?:User Data|Default|Profile)|User Data[\\/]Default|Local State|Cookies|localStorage)",
+    re.IGNORECASE,
+)
+TOPIC_KEYWORDS = {
+    "公開時期": ("公開時期", "リリース", "launch", "launch timing"),
+    "価格": ("価格", "料金", "pricing", "price"),
+    "対象読者": ("対象読者", "読者", "audience"),
+}
+PURPOSE_KEYWORDS = {
+    "相談": ("相談", "困って", "help", "question", "質問"),
+    "雑談": ("雑談", "ノリ", "しりとり", "遊び", "fun", "chat"),
+    "企画": ("企画", "計画", "設計", "strategy", "plan"),
+    "告知": ("告知", "お知らせ", "announce", "release"),
+}
+RULE_KEYWORDS = ("ルール", "禁止", "注意", "ネタバレ", "spoiler", "敬意", "respect", "荒らし", "規約")
+SERIOUS_KEYWORDS = ("困って", "相談", "不安", "問題", "障害", "炎上", "注意", "ルール", "禁止")
+PLAY_KEYWORDS = ("しりとり", "雑談", "ノリ", "笑", "w", "www", "遊び", "冗談")
+
+
+class DisabledCapability(RuntimeError):
+    """外部送信など、意図的に無効化した機能が呼ばれた時の例外。"""
+
+
+@dataclass(frozen=True)
+class DiscordEvent:
+    observed_at: str
+    source: str
+    guild_label: str
+    channel_label: str
+    author_label: str
+    text_snippet: str
+    actions_allowed: list[str] = field(default_factory=lambda: ["read"])
+    private_surface: bool = True
+    confidence: str = "visible"
+    event_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.event_id:
+            identity_payload = self.to_dict(include_id=False)
+            identity_payload.pop("observed_at", None)
+            object.__setattr__(self, "event_id", stable_event_id(identity_payload))
+        if self.actions_allowed != ["read"]:
+            raise ValueError("public nucleus only supports read-only events")
+
+    def to_dict(self, *, include_id: bool = True) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "observed_at": self.observed_at,
+            "source": self.source,
+            "source_label": "Discord の可視テキスト",
+            "guild_label": self.guild_label,
+            "channel_label": self.channel_label,
+            "author_label": self.author_label,
+            "text_snippet": self.text_snippet,
+            "actions_allowed": self.actions_allowed,
+            "actions_allowed_label": "読み取りのみ",
+            "private_surface": self.private_surface,
+            "private_surface_label": "非公開の会話面を含む可能性があります。",
+            "confidence": self.confidence,
+            "confidence_label": "画面上で見えている範囲",
+        }
+        if include_id:
+            payload["event_id"] = self.event_id
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DiscordEvent":
+        return cls(
+            observed_at=str(payload.get("observed_at") or utc_now()),
+            source=str(payload.get("source") or "visible_text"),
+            guild_label=str(payload.get("guild_label") or "example-community"),
+            channel_label=str(payload.get("channel_label") or "general"),
+            author_label=str(payload.get("author_label") or "unknown"),
+            text_snippet=str(payload.get("text_snippet") or ""),
+            actions_allowed=list(payload.get("actions_allowed") or ["read"]),
+            private_surface=bool(payload.get("private_surface", True)),
+            confidence=str(payload.get("confidence") or "visible"),
+            event_id=str(payload.get("event_id") or ""),
+        )
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def stable_event_id(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def stable_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def target_key_for_url(url: str) -> str:
+    return stable_text_hash(url.strip())
+
+
+def parse_snapshot_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_timezone_aware_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def latest_captured_at(records: Iterable[dict[str, Any]]) -> str:
+    latest: datetime | None = None
+    latest_text = ""
+    for record in records:
+        captured_at = record.get("captured_at") or record.get("observed_at") or record.get("timestamp")
+        parsed = parse_snapshot_timestamp(captured_at)
+        if parsed is not None and (latest is None or parsed > latest):
+            latest = parsed
+            latest_text = str(captured_at)
+    return latest_text
+
+
+def analyze_discord_forum_url_shape(url: str) -> dict[str, Any]:
+    match = re.match(
+        r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/"
+        r"([^/?#]+)(?:/([^/?#]+))?(?:/([^/?#]+))?(?:/([^/?#]+))?",
+        url.strip(),
+    )
+    if not match:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_forum_url_shape.v1",
+            "valid_discord_channel_url": False,
+            "shape": "invalid",
+            "path_id_count": 0,
+            "guild_id_present": False,
+            "parent_channel_id_present": False,
+            "thread_id_present": False,
+            "message_id_present": False,
+            "blocked_reason": "discord_channel_url_required",
+            "same_guild_fuzzy_match_allowed": False,
+        }
+
+    guild_id, first_channel_id, thread_or_message_id, message_id = match.groups()
+    path_id_count = len([part for part in (guild_id, first_channel_id, thread_or_message_id, message_id) if part])
+    blocked_reason = ""
+    if path_id_count < 2:
+        blocked_reason = "discord_channel_url_required"
+    elif path_id_count == 2:
+        blocked_reason = "forum_parent_channel_missing"
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_forum_url_shape.v1",
+        "valid_discord_channel_url": path_id_count >= 2,
+        "shape": {
+            1: "guild_only",
+            2: "channel_or_thread_without_parent",
+            3: "forum_parent_thread_or_message",
+            4: "forum_parent_thread_message",
+        }.get(path_id_count, "unknown"),
+        "path_id_count": path_id_count,
+        "guild_id_present": bool(guild_id),
+        "parent_channel_id_present": path_id_count >= 3,
+        "thread_id_present": path_id_count >= 3,
+        "message_id_present": path_id_count >= 4,
+        "blocked_reason": blocked_reason,
+        "same_guild_fuzzy_match_allowed": False,
+    }
+
+
+def snapshot_freshness(
+    records: list[dict[str, Any]],
+    *,
+    generated_at: str,
+    source: str,
+    max_age_hours: int = 24,
+) -> dict[str, Any]:
+    newest_captured_at = latest_captured_at(records)
+    if not records:
+        return {
+            "status": "missing",
+            "reason": "no_exact_url_or_target_key_match",
+            "source": source,
+            "newest_captured_at": "",
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+        }
+
+    now = parse_snapshot_timestamp(generated_at) or datetime.now(timezone.utc)
+    newest = parse_snapshot_timestamp(newest_captured_at)
+    if newest is None:
+        return {
+            "status": "unknown",
+            "reason": "snapshot_timestamp_unparseable",
+            "source": source,
+            "newest_captured_at": newest_captured_at,
+            "age_seconds": None,
+            "max_age_hours": max_age_hours,
+        }
+
+    age_seconds = max(0, int((now - newest).total_seconds()))
+    status = "recent" if age_seconds <= max_age_hours * 3600 else "stale"
+    return {
+        "status": status,
+        "reason": "snapshot_within_recency_window" if status == "recent" else "snapshot_older_than_recency_window",
+        "source": source,
+        "newest_captured_at": newest_captured_at,
+        "age_seconds": age_seconds,
+        "max_age_hours": max_age_hours,
+    }
+
+
+def stale_policy_for_freshness(freshness: dict[str, Any]) -> dict[str, Any]:
+    is_stale = freshness.get("status") == "stale"
+    return {
+        "usable_for_reply": not is_stale and freshness.get("status") != "missing",
+        "usable_for_routing": freshness.get("status") in {"recent", "stale", "unknown"},
+        "required_action": "refresh_exact_url_snapshot" if is_stale else "none",
+        "fallback_allowed": "manual_visible_text_or_chrome_extension_only",
+        "reason": "stale_snapshot_requires_refresh" if is_stale else str(freshness.get("reason") or ""),
+    }
+
+
+def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    plain_text_rows = 0
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割し、text にそれらを含む
+    # JSON 行が plain_text fallback へ silent に分断される。"\n" だけで区切る。
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        line = line.rstrip("\r")
+        if not line.strip():
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError:
+            loaded = {"text": line, "line_no": line_no, "source_format": "plain_text"}
+            plain_text_rows += 1
+        if isinstance(loaded, dict):
+            loaded.setdefault("line_no", line_no)
+            records.append(loaded)
+    if plain_text_rows and any(_is_canonical_ledger_row(record) for record in records):
+        raise ValueError("canonical snapshot ledger contains an unparseable row")
+    return records
+
+
+def snapshot_record_matches(record: dict[str, Any], *, url: str, target_key: str) -> bool:
+    if record.get("url") == url or record.get("target_key") == target_key:
+        return True
+    return bool(url and url in json.dumps(record, ensure_ascii=False))
+
+
+def matching_snapshot_records(
+    path: Path, *, url: str, target_key: str, canonical: bool = False
+) -> list[dict[str, Any]]:
+    """正式な観測台帳（canonical=True）は常に本文用の厳密な読み込みを通す。取り込み元のキャッシュだけが退避読みを使う。"""
+    if canonical:
+        records = load_content_snapshot_records(path)
+    else:
+        records = load_snapshot_like_records(path)
+        if any(record.get("event_type") in _NON_CONTENT_LEDGER_EVENTS for record in records):
+            records = load_content_snapshot_records(path)
+    return [
+        record
+        for record in records
+        if snapshot_record_matches(record, url=url, target_key=target_key)
+    ]
+
+
+def append_snapshot_like_record(path: Path, record: dict[str, Any], *, url: str, target_key: str) -> None:
+    payload = {key: value for key, value in record.items() if key not in {"line_no", "source_format"}}
+    if _is_chained_text_snapshot(payload):
+        _import_chained_snapshot(payload, Path(path), url=url, target_key=target_key)
+        return
+    payload["url"] = url
+    payload["target_key"] = target_key
+    # event ID に結び付く入力へ再試行ごとに変わる時刻を注入しない。
+    # 元の観測時刻がない場合は、鮮度不明のまま保存する。
+    if not payload.get("event_id"):
+        payload.setdefault("captured_at", utc_now())
+    payload.setdefault("private_local_only", True)
+    payload.setdefault("external_share_allowed", False)
+    payload.setdefault("outbound_actions", "disabled")
+    append_text_snapshot(payload, path)
+
+
+def _import_chained_snapshot(source: dict[str, Any], path: Path, *, url: str, target_key: str) -> None:
+    """元eventを検証し、保存先のheadに結合した新eventとしてprivateに取り込む。"""
+    source = json.loads(json.dumps(source, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    _validate_snapshot_stream_binding(source)
+    if not source.get("event_id") or source.get("event_hash") != canonical_event_hash(source):
+        raise CheckpointCorruptError("import source event hash is invalid")
+    sequence = source.get("stream_sequence")
+    expected = source.get("expected_previous_stream_sequence")
+    previous_hash = source.get("previous_event_hash")
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in (sequence, expected))
+        or expected < 0 or sequence != expected + 1):
+        raise CheckpointCorruptError("import source sequence is invalid")
+    # legacy predecessorの保存済みhashはopaque文字列。元chain全体の証明とは分離する。
+    if (not isinstance(previous_hash, str)
+        or (expected == 0 and previous_hash != "")
+        or (expected > 0 and not previous_hash)):
+        raise CheckpointCorruptError("import source previous hash is invalid")
+    imported_id = stable_text_hash(json.dumps(
+        ["canonical_import", source["stream_id"], source["event_id"], target_key],
+        ensure_ascii=False,
+    ))
+
+    def build(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+        for existing in snapshots:
+            if existing.get("event_id") == imported_id:
+                if (existing.get("import_source_event_hash") != source["event_hash"]
+                    or existing.get("url") != url or existing.get("target_key") != target_key):
+                    raise EventConflictError("import source event is bound to different content")
+                return existing
+            if existing == source and source.get("url") == url and source.get("target_key") == target_key:
+                return existing
+        sequence, previous_hash = _validate_text_snapshot_chain(snapshots).get(target_key, (0, ""))
+        history = _snapshot_stream_history(snapshots, target_key)
+        previous = history[-1] if history else None
+        previous_content_hash = str(previous.get("content_hash") or "") if previous else None
+        candidate = dict(source)
+        candidate.update(
+            event_id=imported_id, target_key=target_key, stream_id=target_key, subject=target_key,
+            url=url, stream_sequence=sequence + 1, expected_previous_stream_sequence=sequence,
+            observation_index_for_target=sequence + 1, previous_event_hash=previous_hash,
+            previous_content_hash=previous_content_hash,
+            changed=previous_content_hash != source.get("content_hash"),
+            duplicate_content=previous_content_hash == source.get("content_hash"),
+            import_source_event_hash=source["event_hash"], import_source_event_id=source["event_id"],
+            private_local_only=True, external_share_allowed=False, outbound_actions="disabled",
+        )
+        candidate["event_hash"] = canonical_event_hash(candidate)
+        return candidate
+
+    _append_text_snapshot_transaction(build, path)
+
+
+def build_url_intake_gate(
+    url: str,
+    *,
+    raw_cache_path: Path | None,
+    ai_log_path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str | None = None,
+    sync: bool = False,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    url_shape = analyze_discord_forum_url_shape(url)
+    payload: dict[str, Any] = {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_url_intake_gate.v1",
+        "generated_at": generated,
+        "message": "Discord URL intake gate を確認しました。",
+        "url_output": "omitted",
+        "target_key": key,
+        "url_shape": url_shape,
+        "snapshot_status": "unknown",
+        "freshness": snapshot_freshness([], generated_at=generated, source="none"),
+        "recency": {
+            "status": "missing",
+            "reason": "no_exact_url_or_target_key_match",
+            "source": "none",
+        },
+        "raw_cache_checked": "no",
+        "ai_log_compared": "no",
+        "sync_performed": "no",
+        "exact_coverage": "no",
+        "fallback_allowed": "no",
+        "fallback_policy": "dom_export_or_manual_paste_only",
+        "ocr_allowed": False,
+        "outbound_actions": "disabled",
+        "raw_text_returned": False,
+        "state": "blocked",
+        "blocked_reason": "",
+        "route_failure": "none",
+        "paths_output": "omitted",
+    }
+
+    if raw_cache_path is None:
+        payload["blocked_reason"] = "raw_cache_gate_skipped"
+        payload["route_failure"] = "raw_cache_gate_skipped"
+        payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+        return payload
+
+    payload["raw_cache_checked"] = "yes"
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=key)
+    raw_freshness = snapshot_freshness(raw_matches, generated_at=generated, source="raw_cache")
+    payload["raw_cache"] = {"exists": raw_cache_path.exists(), "match_count": len(raw_matches)}
+
+    ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key, canonical=True)
+    ai_freshness = snapshot_freshness(ai_matches, generated_at=generated, source="ai_log")
+    payload["ai_log_compared"] = "yes"
+    payload["ai_log"] = {"exists": ai_log_path.exists(), "match_count": len(ai_matches)}
+
+    if raw_matches and ai_matches:
+        payload["state"] = "ready"
+        payload["exact_coverage"] = "yes"
+        payload["sync_performed"] = "not_needed"
+        payload["blocked_reason"] = ""
+        payload["snapshot_status"] = "ready"
+        payload["freshness"] = ai_freshness
+        payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
+        payload["stale_policy"] = stale_policy_for_freshness(ai_freshness)
+        return payload
+
+    if raw_matches and not ai_matches:
+        payload["state"] = "ai_log_stale"
+        payload["blocked_reason"] = "ai_log_stale"
+        payload["snapshot_status"] = "ai_log_stale"
+        payload["freshness"] = raw_freshness
+        payload["recency"] = {
+            "status": raw_freshness["status"],
+            "reason": "raw_cache_exact_match_but_ai_log_missing",
+            "source": "raw_cache",
+        }
+        if sync:
+            append_snapshot_like_record(ai_log_path, raw_matches[0], url=url, target_key=key)
+            ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key, canonical=True)
+            ai_freshness = snapshot_freshness(ai_matches, generated_at=generated, source="ai_log")
+            payload["sync_performed"] = "yes"
+            payload["exact_coverage"] = "yes"
+            payload["state"] = "ready"
+            payload["blocked_reason"] = ""
+            payload["snapshot_status"] = "ready"
+            payload["freshness"] = ai_freshness
+            payload["recency"] = {key: ai_freshness[key] for key in ("status", "reason", "source")}
+            payload["ai_log"]["exists"] = True
+            payload["ai_log"]["match_count"] = len(ai_matches)
+        payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+        return payload
+
+    payload["state"] = "raw_cache_missing"
+    payload["blocked_reason"] = url_shape["blocked_reason"] or "raw_cache_missing"
+    payload["snapshot_status"] = "raw_cache_missing"
+    payload["freshness"] = snapshot_freshness([], generated_at=generated, source="none")
+    payload["recency"] = {
+        "status": "missing",
+        "reason": "no_exact_url_or_target_key_match",
+        "source": "none",
+    }
+    payload["fallback_allowed"] = "yes"
+    payload["stale_policy"] = stale_policy_for_freshness(payload["freshness"])
+    return payload
+
+
+def _load_acquisition_full_capture_receipt(
+    path: Path | None,
+) -> tuple[dict[str, Any] | None, str]:
+    if path is None:
+        from .acquisition_gate import load_full_capture_receipt
+
+        return load_full_capture_receipt(path)
+
+    receipt_path = path.absolute()
+    receipt_directory = receipt_path.parent
+    is_managed_receipt_path = (
+        receipt_directory.name == "full-capture"
+        and receipt_directory.parent.name == "receipts"
+    )
+    if is_managed_receipt_path:
+        from .capture.store import CaptureCheckpointStore, CheckpointCorruptError
+
+        capture_id = receipt_path.stem
+        if not capture_id:
+            return None, "full_capture_receipt_evidence_invalid"
+        store = CaptureCheckpointStore(receipt_directory.parent.parent)
+        try:
+            verified = store.load_full_capture_receipt(
+                capture_id,
+                consumer="context_acquisition",
+            )
+        except (CheckpointCorruptError, ValueError):
+            return None, "full_capture_receipt_evidence_invalid"
+        if verified is None:
+            return None, "full_capture_receipt_evidence_invalid"
+        return verified, ""
+
+    from .acquisition_gate import load_full_capture_receipt
+
+    receipt, load_error = load_full_capture_receipt(path)
+    if receipt is None:
+        return None, load_error
+    if receipt.get("schema") == "dcb-strict-full-capture-receipt.v1":
+        return None, "full_capture_receipt_evidence_invalid"
+    return receipt, load_error
+
+
+def build_coverage_report(
+    *,
+    url: str = "",
+    target_key: str = "",
+    raw_cache_path: Path | None = None,
+    ai_log_path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    source_kind: str = "saved_log",
+    dedupe_policy: str = "by_hash",
+    generated_at: str | None = None,
+    requested_start: str = "",
+    requested_end: str = "",
+    user_confirmed: bool = False,
+    full_capture_receipt_path: Path | None = None,
+) -> dict[str, Any]:
+    from .acquisition_gate import build_acquisition_completion_gate
+
+    generated = generated_at or utc_now()
+    key = target_key or (target_key_for_url(url) if url else "")
+    raw_matches = (
+        matching_snapshot_records(raw_cache_path, url=url, target_key=key)
+        if raw_cache_path is not None and url and key
+        else []
+    )
+    ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key, canonical=True) if url and key else []
+    exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
+    selected_records = ai_matches or raw_matches
+    freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
+    full_capture_receipt, receipt_load_error = _load_acquisition_full_capture_receipt(
+        full_capture_receipt_path
+    )
+    receipt_capture_id = str((full_capture_receipt or {}).get("capture_id") or "").strip()
+    # receipt がある場合は ai_log 優先で raw-cache を落とさず、capture_id 一致レコードを選ぶ。
+    gate_records = selected_records
+    if receipt_capture_id:
+        combined_records = list(ai_matches) + list(raw_matches)
+        receipt_matched = [
+            row
+            for row in combined_records
+            if str(row.get("capture_id") or row.get("evidence_id") or "").strip() == receipt_capture_id
+        ]
+        if receipt_matched:
+            gate_records = receipt_matched
+            freshness_source = "receipt_matched_records"
+    freshness = snapshot_freshness(gate_records, generated_at=generated, source=freshness_source)
+    url_shape = analyze_discord_forum_url_shape(url) if url else {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_forum_url_shape.v1",
+        "valid_discord_channel_url": False,
+        "shape": "missing",
+        "path_id_count": 0,
+        "guild_id_present": False,
+        "parent_channel_id_present": False,
+        "thread_id_present": False,
+        "message_id_present": False,
+        "blocked_reason": "url_missing",
+        "same_guild_fuzzy_match_allowed": False,
+    }
+    completion_gate = build_acquisition_completion_gate(
+        gate_records,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        freshness_status=str(freshness.get("status") or "unknown"),
+        source_kind=source_kind,
+        user_confirmed=user_confirmed,
+        full_capture_receipt=full_capture_receipt,
+        receipt_load_error=receipt_load_error,
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_coverage_report.v1",
+        "generated_at": generated,
+        "message": "Discord URL coverage report を作成しました。",
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": url_shape,
+        "snapshot_status": "ready" if exact_coverage else "raw_cache_missing" if raw_cache_path is not None else "unknown",
+        "freshness": freshness,
+        "recency": {key: freshness[key] for key in ("status", "reason", "source")},
+        "stale_policy": stale_policy_for_freshness(freshness),
+        "source_kind": source_kind,
+        "dedupe_policy": dedupe_policy,
+        "coverage": {
+            "raw_cache_checked": raw_cache_path is not None,
+            "raw_cache_match_count": len(raw_matches),
+            "ai_log_checked": True,
+            "ai_log_match_count": len(ai_matches),
+            "exact_coverage": exact_coverage,
+            "target_match": exact_coverage,
+            "full_capture_confirmed": completion_gate["coverage_state"] == "full",
+            "full_capture_gate": "strict_full_capture_v1",
+        },
+        "acquisition_completion_gate": completion_gate,
+        "fallback_policy": {
+            "allowed": "dom_export_or_manual_paste_only",
+            "ocr_allowed": False,
+            "outbound_actions": "disabled",
+            "raw_text_returned": False,
+        },
+        "same_guild_fuzzy_match_allowed": False,
+        "path_output": "omitted",
+    }
+
+
+def build_url_intake_fast_path(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    hook_snapshot_status: str = "",
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    latest = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
+    url_shape = analyze_discord_forum_url_shape(url)
+    snapshot_ready = bool(latest.get("ok"))
+    decision = "snapshot_metadata_ready" if snapshot_ready else "need_visible_text"
+    next_step = "use_saved_snapshot_metadata" if snapshot_ready else "ask_for_visible_text_or_paste"
+    observed_snapshot_status = "ready" if snapshot_ready else str(latest.get("reason") or hook_snapshot_status or "snapshot_missing")
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_url_intake_fast_path.v1",
+        "generated_at": generated,
+        "message": "Discord URL intake の最短判定を作成しました。",
+        "decision": decision,
+        "next_step": next_step,
+        "recommended_command": "report-latest",
+        "command_budget": {
+            "when_hook_status_present": "zero_extra_commands",
+            "when_measurement_requested": "report-latest_once",
+            "full_intake_policy_check": "verify-url-intake_once",
+        },
+        "hook_snapshot_status": hook_snapshot_status or "not_provided",
+        "observed_snapshot_status": observed_snapshot_status,
+        "text_required_tools_allowed": False,
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": url_shape,
+        "latest_snapshot_report": {
+            "ok": bool(latest.get("ok")),
+            "reason": str(latest.get("reason") or ""),
+            "requested_filter": str(latest.get("requested_filter") or ""),
+            "raw_text_returned": bool(latest.get("raw_text_returned")),
+            "path_output": "omitted",
+        },
+        "operations": {
+            "discord_outbound_actions": "disabled",
+            "browser_access": "not_performed",
+            "new_capture": False,
+            "raw_text_returned": False,
+            "paths_output": "omitted",
+        },
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "paths_output": "omitted",
+        "outbound_actions": "disabled",
+        "route_failure": "none",
+    }
+
+
+def _bridge_intake_passport_summary(passport: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "built": True,
+        "parsed": int(passport.get("parsed") or 0),
+        "thread_purpose": str(passport.get("thread_purpose") or ""),
+        "people_temperature": str(passport.get("people_temperature") or ""),
+        "context_ready": bool(passport.get("context_ready")),
+        "external_context_used": bool(passport.get("external_context_used")),
+        "send_capability": "disabled",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+    }
+
+
+def _bridge_intake_guide_summary(guide: dict[str, Any]) -> dict[str, Any]:
+    review = dict(guide.get("reply_review") or {})
+    missing = review.get("missing_knowledge") or []
+    understanding = dict(review.get("understanding_gate") or {})
+    return {
+        "built": True,
+        "parsed": int(guide.get("parsed") or 0),
+        "quick_verdict": str(review.get("quick_verdict") or ""),
+        "ok_to_reply": str(review.get("ok_to_reply") or ""),
+        "understanding_gate_status": str(understanding.get("status") or ""),
+        "missing_knowledge_count": len(missing) if isinstance(missing, list) else int(bool(missing)),
+        "send_capability": "disabled",
+        "raw_text_returned": False,
+        "draft_text_returned": False,
+    }
+
+
+# Compatibility for known adapter labels only. `source` remains a free label;
+# new browser callers must declare capture_route instead of encoding semantics
+# in an arbitrary source name.
+_BRIDGE_BROWSER_SOURCES = {
+    "in_app_browser_accessibility": "in_app_browser",
+    "in_app_browser": "in_app_browser",
+    "chrome_extension": "chrome_extension",
+    "chrome_dom": "chrome_extension",
+}
+_BRIDGE_CAPTURE_ROUTES = {"manual_visible_text", "in_app_browser", "chrome_extension"}
+
+
+def _bridge_source_binding(*, url: str, observed_url: str, capture_route: str, source: str) -> dict[str, Any]:
+    route = _BRIDGE_BROWSER_SOURCES.get(source, capture_route)
+    required = route in {"in_app_browser", "chrome_extension"}
+    reason = ""
+    matched = False
+    if capture_route not in _BRIDGE_CAPTURE_ROUTES:
+        reason = "unsupported_capture_route"
+    elif required or observed_url:
+        requested = parse_discord_target_url(url)
+        observed = parse_discord_target_url(observed_url)
+        if not observed_url.strip():
+            reason = "observed_url_missing"
+        elif observed is None:
+            reason = "observed_url_invalid"
+        elif requested is None:
+            reason = "requested_url_invalid"
+        elif requested != observed:
+            reason = "observed_target_mismatch"
+        else:
+            matched = True
+    return {
+        "capture_route": route if route in _BRIDGE_CAPTURE_ROUTES else "unknown",
+        "required": required,
+        "observed_url_present": bool(observed_url.strip()),
+        "observed_url_output": "omitted",
+        "target_match": matched,
+        "blocked_reason": reason,
+        "verification_scope": "caller_input_only",
+        "browser_truth_verified": False,
+        "body_verified": False,
+    }
+
+
+def build_bridge_intake(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    raw_cache_path: Path | None = None,
+    text: str = "",
+    draft: str = "",
+    understanding_confirmed: bool = False,
+    title: str = "",
+    source: str = "bridge_intake",
+    capture_route: str = "manual_visible_text",
+    observed_url: str = "",
+    target_key: str = "",
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    generated_at: str | None = None,
+    reply_context_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Message-found -> bridge intake の一本化入口。
+
+    snapshot 保存、coverage、context passport、任意で guide-reply までを
+    1 回の呼び出しで進め、stdout 向けには metadata-only を返す。
+    """
+    key = target_key or target_key_for_url(url)
+    generated = generated_at or utc_now()
+    steps_completed: list[str] = []
+    content = text.strip()
+    binding = _bridge_source_binding(url=url, observed_url=observed_url, capture_route=capture_route, source=source)
+    binding["input_text_present"] = bool(content)
+    if binding["required"] and not content and not binding["blocked_reason"]:
+        binding["blocked_reason"] = "visible_text_missing"
+    binding_blocked = bool(binding["blocked_reason"])
+    snapshot_meta: dict[str, Any] = {
+        "saved": False,
+        "changed": False,
+        "duplicate_content": False,
+        "target_key": key,
+        "content_hash": "",
+        "raw_text_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+        "snapshot_receipt": {},
+    }
+
+    if content and not binding_blocked:
+        snapshot_payload = snapshot_visible_text(
+            text=content,
+            url=url,
+            title=title,
+            source=source,
+            path=snapshot_store,
+        )
+        steps_completed.append("snapshot")
+        snapshot_meta = {
+            "saved": bool(snapshot_payload.get("saved")),
+            "changed": bool(snapshot_payload.get("changed")),
+            "duplicate_content": bool(snapshot_payload.get("duplicate_content")),
+            "target_key": str(snapshot_payload.get("target_key") or key),
+            "content_hash": str(snapshot_payload.get("content_hash") or ""),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+            "snapshot_receipt": dict(snapshot_payload.get("snapshot_receipt") or {}),
+        }
+        key = str(snapshot_payload.get("target_key") or key)
+
+    coverage: dict[str, Any] = {}
+    latest_report: dict[str, Any] = {}
+    saved_text = ""
+    if not binding_blocked:
+        coverage = build_coverage_report(
+            url=url,
+            target_key=key,
+            raw_cache_path=raw_cache_path,
+            ai_log_path=snapshot_store,
+            source_kind="saved_log",
+            generated_at=generated,
+        )
+        steps_completed.append("coverage")
+
+        latest = select_latest_snapshot(path=snapshot_store, target_key=key, url=url)
+        saved_text = str((latest or {}).get("text") or "").strip()
+        latest_report = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
+
+    payload: dict[str, Any] = {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_intake.v1",
+        "generated_at": generated,
+        "message": "message found -> bridge intake を実行しました。",
+        "target": {
+            "target_key": key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "url_shape": analyze_discord_forum_url_shape(url),
+        "pipeline": {
+            "requested": ["snapshot", "coverage", "context_passport", "guide_reply"],
+            "completed": steps_completed,
+            "draft_requested": bool(draft.strip()),
+        },
+        "snapshot": snapshot_meta,
+        "source_binding": binding,
+        "coverage": {
+            "exact_coverage": bool(coverage.get("coverage", {}).get("exact_coverage")),
+            "target_match": bool(coverage.get("coverage", {}).get("target_match")),
+            "full_capture_confirmed": False,
+            "full_capture_gate": "strict_full_capture_v1",
+            "snapshot_status": str(coverage.get("snapshot_status") or ""),
+            "recency": dict(coverage.get("recency") or {}),
+            "stale_policy": dict(coverage.get("stale_policy") or {}),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+        },
+        "latest_snapshot_report": {
+            "ok": bool(latest_report.get("ok")),
+            "reason": str(latest_report.get("reason") or ""),
+            "raw_text_returned": False,
+            "path_output": "omitted",
+        },
+        "context_passport": {
+            "built": False,
+            "raw_text_returned": False,
+        },
+        "guide_reply": {
+            "built": False,
+            "skipped": not bool(draft.strip()),
+            "raw_text_returned": False,
+            "draft_text_returned": False,
+        },
+        "decision": "need_visible_text",
+        "next_step": "ask_for_visible_text_or_paste",
+        "recommended_command": "snapshot-discord-url-text",
+        "blocked_reason": "snapshot_missing",
+        "route_failure": "snapshot_missing",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "paths_output": "omitted",
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+    }
+
+    if binding_blocked:
+        payload["message"] = "観測URLの対象一致または現在の可視本文を確認できないため、保存せず停止しました。"
+        payload["decision"] = "source_binding_blocked"
+        payload["blocked_reason"] = binding["blocked_reason"]
+        payload["route_failure"] = binding["blocked_reason"]
+        payload["next_step"] = "verify_browser_target_then_recapture_visible_text"
+        payload["recommended_command"] = "bridge-intake"
+        return payload
+
+    if not saved_text:
+        payload["message"] = "保存済み snapshot が無いため bridge intake を完了できません。"
+        payload["pipeline"]["completed"] = steps_completed
+        return payload
+
+    passport = context_passport_from_text(
+        saved_text,
+        guild_label=guild_label,
+        channel_label=channel_label,
+    )
+    steps_completed.append("context_passport")
+    payload["context_passport"] = _bridge_intake_passport_summary(passport)
+    payload["pipeline"]["completed"] = list(steps_completed)
+    payload["blocked_reason"] = ""
+    payload["route_failure"] = "none"
+    payload["decision"] = "passport_ready"
+    payload["next_step"] = "review_context_then_optional_guide_reply"
+    payload["recommended_command"] = "guide-reply"
+    payload["message"] = "snapshot / coverage / context passport まで完了しました。"
+
+    if not draft.strip():
+        return payload
+
+    effective_reply_context_gate = reply_context_gate or build_reply_context_gate(
+        thread_root_present=False,
+        reply_target_present=False,
+        prior_message_count=0,
+    )
+    guide = guide_reply_from_text(
+        saved_text,
+        draft,
+        guild_label=guild_label,
+        channel_label=channel_label,
+        understanding_confirmed=understanding_confirmed,
+        reply_context_gate=effective_reply_context_gate,
+    )
+    steps_completed.append("guide_reply")
+    payload["pipeline"]["completed"] = list(steps_completed)
+    payload["guide_reply"] = _bridge_intake_guide_summary(guide)
+    payload["guide_reply"]["skipped"] = False
+
+    verdict = str(payload["guide_reply"].get("quick_verdict") or "")
+    if verdict == "reply-context-blocked":
+        payload["decision"] = "reply_context_blocked"
+        payload["next_step"] = "acquire_required_reply_context_then_retry"
+        payload["recommended_command"] = "reply-context-plan"
+        payload["blocked_reason"] = str(effective_reply_context_gate.get("reason_code") or "reply_context_required")
+        payload["route_failure"] = payload["blocked_reason"]
+        payload["message"] = "passport は完了。guide は返信前文脈gateで停止しました。"
+        return payload
+
+    if verdict == "understanding-blocked":
+        payload["decision"] = "understanding_blocked"
+        payload["next_step"] = "confirm_understanding_then_retry_with_draft"
+        payload["recommended_command"] = "bridge-intake"
+        payload["blocked_reason"] = "understanding_not_confirmed"
+        payload["route_failure"] = "understanding_not_confirmed"
+        payload["message"] = "passport は完了。guide は文脈理解確認待ちです。"
+        return payload
+
+    payload["decision"] = "guide_ready"
+    payload["next_step"] = "human_reviews_draft_then_optional_stage_send"
+    payload["recommended_command"] = "stage-discord-send"
+    payload["blocked_reason"] = ""
+    payload["route_failure"] = "none"
+    payload["message"] = "snapshot / coverage / passport / guide まで完了しました。送信は人間が行います。"
+    return payload
+
+
+def load_events(path: Path = DEFAULT_STORE) -> list[DiscordEvent]:
+    if not path.exists():
+        return []
+    events: list[DiscordEvent] = []
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
+        if line.strip():
+            events.append(DiscordEvent.from_dict(json.loads(line)))
+    return events
+
+
+def find_private_issues(fields: dict[str, str], *, event_id: str = "", event_index: int = 0) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    checks = [
+        ("discord_webhook_url", DISCORD_WEBHOOK_RE),
+        ("discord_token", DISCORD_TOKEN_RE),
+        ("local_absolute_path", LOCAL_ABSOLUTE_PATH_RE),
+        ("discord_snowflake_id", DISCORD_SNOWFLAKE_RE),
+    ]
+    for field, value in fields.items():
+        for kind, pattern in checks:
+            if pattern.search(value):
+                issues.append(
+                    {
+                        "event_index": event_index,
+                        "event_id": event_id,
+                        "field": field,
+                        "kind": kind,
+                    }
+                )
+                break
+    return issues
+
+
+def audit_event_store(path: Path = DEFAULT_STORE) -> dict[str, Any]:
+    events = load_events(path)
+    issues: list[dict[str, Any]] = []
+    for index, event in enumerate(events):
+        issues.extend(
+            find_private_issues(
+                {
+                    "author_label": event.author_label,
+                    "guild_label": event.guild_label,
+                    "channel_label": event.channel_label,
+                    "text_snippet": event.text_snippet,
+                },
+                event_id=event.event_id,
+                event_index=index,
+            )
+        )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "保存データの安全監査が完了しました。",
+        "store": str(path),
+        "event_count": len(events),
+        "issue_count": len(issues),
+        "safe_for_tunnel": not issues,
+        "safe_for_tunnel_label": "外部公開前の監査を通過しました。" if not issues else "外部公開前に確認が必要です。",
+        "issues": issues,
+    }
+
+
+def ops_view_summary(path: Path = DEFAULT_STORE) -> dict[str, Any]:
+    events = load_events(path)
+    audit = audit_event_store(path)
+    labels = sorted({event.channel_label for event in events})
+    last_seen = max((event.observed_at for event in events), default=None)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "運用ログ表示を作成しました。",
+        "store": str(path),
+        "safe_labels": labels,
+        "event_count": len(events),
+        "last_seen": last_seen,
+        "delta_count": len(events),
+        "gate_verdict": "pass" if audit["safe_for_tunnel"] else "review_required",
+        "gate_verdict_label": audit["safe_for_tunnel_label"],
+        "issue_count": audit["issue_count"],
+        "outbound": "disabled",
+        "outbound_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def status_dashboard(path: Path = DEFAULT_STORE, *, github_state: str = "not_checked") -> dict[str, Any]:
+    events = load_events(path)
+    audit = audit_event_store(path)
+    labels = sorted({event.channel_label for event in events})
+    broken: list[str] = []
+    blocked: list[str] = []
+    next_steps: list[str] = []
+
+    if audit["issue_count"]:
+        broken.append("保存データの安全監査に確認事項があります。")
+        blocked.append("外部公開前に audit-store を確認してください。")
+    if not events:
+        blocked.append("Discord 可視本文はまだ取り込まれていません。")
+        next_steps.append("private adapter probe または import-visible-text を実行します。")
+    else:
+        next_steps.append("context-passport または review-draft で返信前確認を行えます。")
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_status_dashboard.v1",
+        "message": "Discord bridge status dashboard を作成しました。",
+        "now": {
+            "context_available": bool(events),
+            "event_count": len(events),
+            "safe_label_count": len(labels),
+            "latest_seen": max((event.observed_at for event in events), default=None),
+            "text_returned": False,
+            "text_saved_in_status": False,
+        },
+        "done": [
+            "read-only event store",
+            "ops-view",
+            "context-passport",
+            "review-draft",
+            "private-adapter-probe",
+        ],
+        "broken": broken,
+        "blocked": blocked,
+        "next": next_steps,
+        "github": {"state": github_state},
+        "residual": [
+            "Discord への送信、削除、reaction は無効です。",
+            "実 Discord 本文取得は private adapter 側で扱います。",
+        ],
+        "safety_boundary": {
+            "outbound_actions": "disabled",
+            "raw_text_included": False,
+            "participant_names_included": False,
+            "local_paths_included": False,
+        },
+    }
+
+
+def load_context_library(path: Path = DEFAULT_CONTEXT_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, list):
+        raise ValueError("文脈庫の形式が不正です。list JSON が必要です。")
+    return [dict(item) for item in loaded]
+
+
+def save_context_library(entries: list[dict[str, Any]], path: Path = DEFAULT_CONTEXT_STORE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_review_registry(path: Path = DEFAULT_REVIEW_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, list):
+        raise ValueError("review registry の形式が不正です。list JSON が必要です。")
+    return [dict(item) for item in loaded]
+
+
+def save_review_registry(entries: list[dict[str, Any]], path: Path = DEFAULT_REVIEW_STORE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def context_entry_id(kind: str, key: str) -> str:
+    return stable_event_id({"kind": kind, "key": key})
+
+
+def normalize_safe_label(label: str) -> str:
+    return " ".join(label.strip().lstrip("#").casefold().split())
+
+
+def unique_safe_labels(labels: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        cleaned = " ".join(str(label).strip().split())
+        normalized = normalize_safe_label(cleaned)
+        if cleaned and normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(cleaned)
+    return unique
+
+
+def context_binding_candidates(kind: str, *, guild_label: str, channel_label: str) -> list[str]:
+    guild = guild_label.strip()
+    channel = channel_label.strip().lstrip("#")
+    if kind == "server":
+        return unique_safe_labels([guild])
+    if kind == "channel":
+        return unique_safe_labels(
+            [
+                channel,
+                f"{guild}/{channel}",
+                f"{guild}:{channel}",
+                f"{guild}#{channel}",
+            ]
+        )
+    if kind == "thread":
+        return unique_safe_labels(
+            [
+                channel,
+                f"{channel}:thread",
+                f"{guild}/{channel}",
+                f"{guild}/{channel}/thread",
+                f"{guild}:{channel}",
+            ]
+        )
+    raise ValueError("kind は server / channel / thread のいずれかです。")
+
+
+def resolve_context_binding(
+    kind: str,
+    *,
+    guild_label: str,
+    channel_label: str,
+    path: Path = DEFAULT_CONTEXT_STORE,
+) -> dict[str, str] | None:
+    candidates = {
+        normalize_safe_label(label)
+        for label in context_binding_candidates(kind, guild_label=guild_label, channel_label=channel_label)
+    }
+    for entry in load_context_library(path):
+        if entry.get("kind") != kind:
+            continue
+        labels = unique_safe_labels([str(entry.get("key") or ""), *list(entry.get("labels") or [])])
+        for label in labels:
+            if normalize_safe_label(label) in candidates:
+                return {
+                    "kind": kind,
+                    "key": str(entry.get("key") or ""),
+                    "matched_label": label,
+                }
+    return None
+
+
+def resolve_context_bindings(
+    *,
+    guild_label: str,
+    channel_label: str,
+    path: Path = DEFAULT_CONTEXT_STORE,
+) -> dict[str, dict[str, str]]:
+    bindings: dict[str, dict[str, str]] = {}
+    for kind in ("server", "channel", "thread"):
+        binding = resolve_context_binding(
+            kind,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            path=path,
+        )
+        if binding:
+            bindings[kind] = binding
+    return bindings
+
+
+def upsert_context_document(
+    kind: str,
+    key: str,
+    text: str,
+    *,
+    path: Path = DEFAULT_CONTEXT_STORE,
+    source: str = "manual",
+    labels: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    if kind not in {"server", "channel", "thread"}:
+        raise ValueError("kind は server / channel / thread のいずれかです。")
+    if not key.strip():
+        raise ValueError("key は空にできません。")
+    if not text.strip():
+        raise ValueError("text は空にできません。")
+    entries = load_context_library(path)
+    entry_id = context_entry_id(kind, key)
+    entry = {
+        "id": entry_id,
+        "kind": kind,
+        "key": key,
+        "labels": unique_safe_labels(labels or []),
+        "source": source,
+        "text": text.strip(),
+        "summary": compact_context_text(text),
+        "updated_at": utc_now(),
+    }
+    replaced = False
+    for index, existing in enumerate(entries):
+        if existing.get("id") == entry_id:
+            entries[index] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+    save_context_library(entries, path)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫を更新しました。",
+        "changed": True,
+        "created": not replaced,
+        "context_store": str(path),
+        "entry": {key: value for key, value in entry.items() if key != "text"},
+    }
+
+
+def get_context_document(kind: str, key: str, *, path: Path = DEFAULT_CONTEXT_STORE) -> str:
+    entry_id = context_entry_id(kind, key)
+    for entry in load_context_library(path):
+        if entry.get("id") == entry_id:
+            return str(entry.get("text") or "")
+    return ""
+
+
+def list_context_documents(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
+    entries = load_context_library(path)
+    public_entries = [{key: value for key, value in entry.items() if key != "text"} for entry in entries]
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫の一覧を取得しました。",
+        "context_store": str(path),
+        "count": len(entries),
+        "entries": public_entries,
+    }
+
+
+def audit_context_store(path: Path = DEFAULT_CONTEXT_STORE) -> dict[str, Any]:
+    entries = load_context_library(path)
+    issues: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        issues.extend(
+            find_private_issues(
+                {
+                    "key": str(entry.get("key") or ""),
+                    "labels": " ".join(str(label) for label in entry.get("labels") or []),
+                    "source": str(entry.get("source") or ""),
+                    "summary": str(entry.get("summary") or ""),
+                    "text": str(entry.get("text") or ""),
+                },
+                event_id=str(entry.get("id") or ""),
+                event_index=index,
+            )
+        )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "文脈庫の安全監査が完了しました。",
+        "context_store": str(path),
+        "entry_count": len(entries),
+        "issue_count": len(issues),
+        "safe_for_tunnel": not issues,
+        "safe_for_tunnel_label": "外部公開前の監査を通過しました。" if not issues else "外部公開前に確認が必要です。",
+        "issues": issues,
+    }
+
+
+def review_state_id(thread_key: str) -> str:
+    return stable_event_id({"kind": "review_state", "thread_key": thread_key})
+
+
+def upsert_review_state(
+    thread_key: str,
+    review: dict[str, Any],
+    *,
+    path: Path = DEFAULT_REVIEW_STORE,
+    read_scope: Iterable[str] | None = None,
+    gate_decision: str = "pending",
+) -> dict[str, Any]:
+    if not thread_key.strip():
+        raise ValueError("thread_key は空にできません。")
+    safe_thread_key = redact_artifact_text(thread_key) or "manual-thread"
+    human_gate = dict(review.get("human_gate") or {})
+    copy_block = dict(review.get("copy_block") or {})
+    scope = [redact_artifact_text(str(item)) for item in (read_scope or ["visible_text", "review_draft"]) if str(item).strip()]
+    entry = {
+        "schema": "discord_review_state.v1",
+        "id": review_state_id(safe_thread_key),
+        "thread_key": safe_thread_key,
+        "updated_at": utc_now(),
+        "gate_decision": redact_artifact_text(gate_decision) or "pending",
+        "recommended_option": str(human_gate.get("recommended_option") or "copy"),
+        "copy_block_status": str(copy_block.get("status") or "unknown"),
+        "quick_verdict": str(review.get("quick_verdict") or "unknown"),
+        "ok_to_reply": str(review.get("ok_to_reply") or "unknown"),
+        "alignment": str(review.get("alignment") or "unknown"),
+        "missing_premise_count": len(review.get("missing_knowledge") or []),
+        "read_scope": scope,
+        "next_action": next_action_from_review_state(
+            recommended_option=str(human_gate.get("recommended_option") or "copy"),
+            copy_block_status=str(copy_block.get("status") or "unknown"),
+        ),
+        "stopline": [
+            "Discord send/reaction/edit/delete disabled",
+            "raw Discord text omitted",
+            "participant names omitted",
+        ],
+        "outbound_actions": "disabled",
+    }
+    entries = load_review_registry(path)
+    replaced = False
+    for index, existing in enumerate(entries):
+        if existing.get("id") == entry["id"]:
+            entries[index] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+    save_review_registry(entries, path)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "review registry を更新しました。",
+        "changed": True,
+        "created": not replaced,
+        "path_output": "omitted",
+        "entry": entry,
+    }
+
+
+def next_action_from_review_state(*, recommended_option: str, copy_block_status: str) -> str:
+    if copy_block_status == "blocked":
+        return "copy block を短く編集して再レビューしてください。"
+    if recommended_option == "copy":
+        return "copy block を人間が確認して Discord 側で貼り付けます。"
+    if recommended_option == "read-more":
+        return "追加文脈を読んでから再レビューしてください。"
+    if recommended_option == "wait":
+        return "今は送らず待機してください。"
+    if recommended_option == "no-reply":
+        return "返信しない判断を記録してください。"
+    return "人間が下書きを編集して再レビューしてください。"
+
+
+def get_review_state(thread_key: str, *, path: Path = DEFAULT_REVIEW_STORE) -> dict[str, Any] | None:
+    state_id = review_state_id(redact_artifact_text(thread_key) or "manual-thread")
+    for entry in load_review_registry(path):
+        if entry.get("id") == state_id:
+            return dict(entry)
+    return None
+
+
+def build_handoff_packet(
+    *,
+    thread_key: str = "manual-thread",
+    review_state: dict[str, Any] | None = None,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    status = status or {}
+    review_state = review_state or {}
+    read_scope = list(review_state.get("read_scope") or [])
+    next_action = str(review_state.get("next_action") or "review-draft で返信前レビューを作成してください。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_handoff_packet.v1",
+        "message": "handoff packet を作成しました。",
+        "thread_key": redact_artifact_text(thread_key) or "manual-thread",
+        "current_state": {
+            "review_state_available": bool(review_state),
+            "context_available": bool((status.get("now") or {}).get("context_available")),
+            "gate_decision": review_state.get("gate_decision", "not_recorded"),
+            "copy_block_status": review_state.get("copy_block_status", "not_recorded"),
+        },
+        "read_scope": read_scope,
+        "next_action": next_action,
+        "stopline": review_state.get(
+            "stopline",
+            [
+                "Discord send/reaction/edit/delete disabled",
+                "raw Discord text omitted",
+                "participant names omitted",
+            ],
+        ),
+        "residual": [
+            "実 Discord 本文取得はMVP外の任意 adapter です。",
+            "公開、告知、外部送信は現在会話の明示承認が必要です。",
+        ],
+        "path_output": "omitted",
+        "safety_boundary": {
+            "raw_discord_text_output": "omitted",
+            "participant_names_output": "omitted",
+            "local_paths_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+    }
+
+
+def parse_json_object_line(line: str) -> dict[str, Any]:
+    """NDJSONの1行をJSONオブジェクトとして読む。配列やキーと値の組の並びは辞書に変換しない。"""
+    loaded = json.loads(line)
+    if not isinstance(loaded, dict):
+        raise ValueError("ndjson row must be a JSON object")
+    return loaded
+
+
+def load_text_snapshots(path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    snapshots: list[dict[str, Any]] = []
+    # `str.splitlines()` は U+2028/U+2029/U+0085 等の Unicode 行区切りも分割対象にし、
+    # text にそれらを含む ledger 行を途中で分断する (json.dumps ensure_ascii=False は
+    # これらをエスケープしない)。NDJSON は "\n" 区切りの契約なので "\n" だけで区切る。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
+        if line.strip():
+            snapshots.append(parse_json_object_line(line))
+    return snapshots
+
+
+def load_content_snapshot_records(path: Path) -> list[dict[str, Any]]:
+    """正式ledgerを検証し、本文ではない失効証拠と失効対象を除いた観測を返す。"""
+    snapshots = load_text_snapshots(path)
+    if not any(_is_canonical_ledger_row(row) for row in snapshots):
+        return snapshots
+    _validate_text_snapshot_chain(snapshots)
+    _verify_physical_revocation_hashes(path, snapshots)
+    excluded: set[int] = set()
+    for index, row in enumerate(snapshots):
+        if row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked":
+            excluded.update((index - 1, index))
+        elif row.get("event_type") == "discord.snapshot_store.alias_continuation_acknowledged":
+            excluded.add(index)
+    return [row for index, row in enumerate(snapshots) if index not in excluded]
+
+
+def _snapshot_stream_id(snapshot: dict[str, Any]) -> str:
+    if not _is_chained_text_snapshot(snapshot):
+        return str(snapshot.get("target_key") or snapshot.get("stream_id") or "")
+    return str(snapshot.get("stream_id") or snapshot.get("target_key") or "")
+
+
+def _validate_snapshot_stream_binding(snapshot: dict[str, Any]) -> None:
+    """chain対象のevent IDとcanonical stream bindingを検証する。"""
+
+    if not _is_chained_text_snapshot(snapshot):
+        return
+    expected_schema = {
+        "discord.snapshot_store.invalid_observation_revoked": "dcb.invalid_observation_revocation.v1",
+        "discord.snapshot_store.alias_continuation_acknowledged": "dcb.alias_continuation_acknowledgement.v1",
+    }.get(str(snapshot.get("event_type") or ""), "discord_context_bridge_text_snapshot_observation.v1")
+    if snapshot.get("schema") != expected_schema:
+        raise CheckpointCorruptError("snapshot chain schema is invalid")
+    event_id = snapshot.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise CheckpointCorruptError("snapshot event id must be a nonempty string")
+    stream_id = str(snapshot.get("stream_id") or "")
+    target_key = str(snapshot.get("target_key") or "")
+    if not stream_id or not target_key or stream_id != target_key:
+        raise CheckpointCorruptError("snapshot stream binding does not match target")
+
+
+def _durable_snapshot_event_hash(snapshot: dict[str, Any]) -> str:
+    """ledger上で次eventが参照すべきhashを返す。"""
+
+    if not _is_chained_text_snapshot(snapshot):
+        stored_hash = str(snapshot.get("event_hash") or "")
+        if stored_hash:
+            return stored_hash
+    return canonical_event_hash(snapshot)
+
+
+def _text_snapshot_lock_id(path: Path) -> str:
+    """同じ物理root内のcase/Unicode/Win32末尾aliasへ作成前から同じlockを割り当てる。
+
+    case-sensitive FSでは一部の別ledgerも直列化する保守的な契約。
+    inodeや存在状態でkeyを切り替えず、初回作成・置換でもlockを分裂させない。
+    rootのaliasは同じ物理lock directoryへ到達する。symlinkは既存store検証で拒否する。
+    """
+    import unicodedata
+
+    # Win32通常pathが無視する末尾dot/spaceも保守的に同じlockへ束ねる。
+    name = unicodedata.normalize("NFD", Path(path).name.casefold()).rstrip(". ")
+    ledger_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    return f"canonical-text-snapshots-{ledger_key}"
+
+
+def _is_chained_text_snapshot(snapshot: dict[str, Any]) -> bool:
+    # canonicalな前event参照がある行は、schemaを改変してもlegacy扱いに戻さない。
+    # rawのupstream stream/sequence/event_hash単独は互換性のため区別する。
+    if "expected_previous_stream_sequence" in snapshot or "previous_event_hash" in snapshot:
+        return True
+    return snapshot.get("schema") == "discord_context_bridge_text_snapshot_observation.v1" and any(
+        key in snapshot
+        for key in (
+            "event_id",
+            "event_hash",
+            "stream_id",
+            "stream_sequence",
+            "expected_previous_stream_sequence",
+            "previous_event_hash",
+        )
+    )
+
+
+def _is_canonical_ledger_row(row: dict[str, Any]) -> bool:
+    """この行があれば台帳は正式な連鎖台帳として、全行を厳密に検証して読む。"""
+    return "expected_previous_stream_sequence" in row or row.get("event_type") in _NON_CONTENT_LEDGER_EVENTS
+
+
+def _same_snapshot_json(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Pythonのbool/int/float同値性ではなく、永続JSON表現でreplayを照合する。"""
+    return json.dumps(left, ensure_ascii=False, sort_keys=True) == json.dumps(
+        right, ensure_ascii=False, sort_keys=True
+    )
+
+
+def _logical_text_snapshot_rows(snapshots: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    """物理行は保持し、旧writerの完全同一canonical replayだけを論理履歴から除く。"""
+    event_ids: dict[str, dict[str, Any]] = {}
+    for snapshot in snapshots:
+        event_id = str(snapshot.get("event_id") or "")
+        if event_id:
+            existing = event_ids.get(event_id)
+            if existing is not None:
+                if not _same_snapshot_json(existing, snapshot):
+                    raise CheckpointCorruptError("snapshot event id is bound to different content")
+                if _is_chained_text_snapshot(snapshot):
+                    continue
+                # 旧writerの同一raw event再追記は改変せず物理観測数として数える。
+            event_ids[event_id] = snapshot
+        yield snapshot
+
+
+def _snapshot_stream_history(snapshots: list[dict[str, Any]], target_key: str) -> list[dict[str, Any]]:
+    """validatorと各producerで共用するtarget単位の論理履歴。"""
+    return [row for row in _logical_text_snapshot_rows(snapshots) if _snapshot_stream_id(row) == target_key]
+
+
+_REVOCATION_EVENT = "discord.snapshot_store.invalid_observation_revoked"
+_REVOCATION_SCHEMA = "dcb.invalid_observation_revocation.v1"
+_ALIAS_CONTINUATION_EVENT = "discord.snapshot_store.alias_continuation_acknowledged"
+_ALIAS_CONTINUATION_SCHEMA = "dcb.alias_continuation_acknowledgement.v1"
+_NON_CONTENT_LEDGER_EVENTS = frozenset({_REVOCATION_EVENT, _ALIAS_CONTINUATION_EVENT})
+
+
+def _revoked_record_hash(record: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _discord_thread_identity(url: str) -> tuple[str, str] | None:
+    """共有のDiscord host/path契約で、表記に依らない論理スレッドを返す。"""
+    return parse_effective_channel_url(url)
+
+
+def _valid_revocation_pair(
+    invalid: dict[str, Any], revocation: dict[str, Any], previous: dict[str, Any]
+) -> bool:
+    if any(key in invalid for key in ("target_key", "subject", "dataschema", "type", "datacontenttype")):
+        return False
+    previous_url = previous.get("url")
+    invalid_url = invalid.get("url")
+    if (
+        not isinstance(previous_url, str)
+        or not isinstance(invalid_url, str)
+        or invalid_url == previous_url
+        or _discord_thread_identity(previous_url) is None
+        or _discord_thread_identity(previous_url) != _discord_thread_identity(invalid_url)
+        or previous.get("event_type") not in (
+            "discord.visible_text.snapshot_observed",
+            _ALIAS_CONTINUATION_EVENT,
+        )
+    ):
+        return False
+    previous_sequence = previous.get("stream_sequence")
+    invalid_sequence = invalid.get("stream_sequence")
+    if any(not isinstance(value, int) or isinstance(value, bool)
+           for value in (previous_sequence, invalid_sequence)):
+        return False
+    invalid_hash = invalid.get("event_hash")
+    if (
+        invalid.get("schema") != "discord_context_bridge_text_snapshot_observation.v1"
+        or invalid.get("event_type") != "discord.visible_text.snapshot_observed"
+        or not isinstance(invalid.get("event_id"), str)
+        or not invalid.get("event_id")
+        or invalid.get("stream_id") != target_key_for_url(invalid_url)
+        or invalid.get("stream_id") == target_key_for_url(previous_url)
+        or invalid.get("expected_previous_stream_sequence") != previous_sequence
+        or invalid_sequence != previous_sequence + 1
+        or invalid.get("previous_event_hash") != previous.get("event_hash")
+        or invalid.get("previous_content_hash") != previous.get("content_hash")
+        or not isinstance(invalid.get("text"), str)
+        or invalid.get("content_hash") != stable_text_hash(invalid["text"])
+        or not isinstance(invalid_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", invalid_hash)
+        or invalid_hash == canonical_event_hash(invalid)
+        or invalid.get("private_local_only") is not True
+        or invalid.get("external_share_allowed") is not False
+        or invalid.get("outbound_actions") != "disabled"
+    ):
+        return False
+    main_key = target_key_for_url(previous_url)
+    expected_id = hashlib.sha256(
+        ("dcb-invalid-revocation-v1|" + main_key + "|" + str(revocation.get("revoked_row_sha256") or "")).encode("utf-8")
+    ).hexdigest()
+    required = {
+        "schema": _REVOCATION_SCHEMA,
+        "dataschema": _REVOCATION_SCHEMA,
+        "event_type": _REVOCATION_EVENT,
+        "type": _REVOCATION_EVENT,
+        "specversion": "1.0",
+        "datacontenttype": "application/json",
+        "source": "dcb_invalid_observation_recovery",
+        "url": previous_url,
+        "target_key": main_key,
+        "stream_id": main_key,
+        "subject": main_key,
+        "stream_sequence": previous_sequence + 1,
+        "expected_previous_stream_sequence": previous_sequence,
+        "previous_event_hash": previous.get("event_hash"),
+        "content_hash": previous.get("content_hash"),
+        "previous_content_hash": previous.get("content_hash"),
+        "revoked_event_id": invalid.get("event_id"),
+        "revoked_stored_event_hash": invalid_hash,
+        "revoked_calculated_event_hash": canonical_event_hash(invalid),
+        "revoked_record_sha256": _revoked_record_hash(invalid),
+        "revoked_stream_id": invalid.get("stream_id"),
+        "revoked_url": invalid_url,
+        "reason": "foreign_invalid_observation",
+        "event_id": expected_id,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    return (
+        all(revocation.get(key) == value for key, value in required.items())
+        and isinstance(revocation.get("revoked_row_sha256"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", revocation["revoked_row_sha256"]))
+        and revocation.get("time") == revocation.get("captured_at")
+        == revocation.get("observed_at") == revocation.get("ingested_at")
+        and parse_snapshot_timestamp(revocation.get("time")) is not None
+        and revocation.get("event_hash") == canonical_event_hash(revocation)
+    )
+
+
+def _validate_text_snapshot_chain(
+    snapshots: list[dict[str, Any]],
+) -> dict[str, tuple[int, str]]:
+    """既存の stream head を検証し、stream ごとの sequence と hash を返す。"""
+
+    heads, _, _ = _walk_text_snapshot_chain(snapshots)
+    return heads
+
+
+def _alias_continuation_acknowledgement_id(stream_id: str, row_sha256: str) -> str:
+    return hashlib.sha256(
+        ("dcb-alias-continuation-v1|" + stream_id + "|" + row_sha256).encode("utf-8")
+    ).hexdigest()
+
+
+def _valid_alias_stream_observation(
+    snapshot: dict[str, Any], previous_content: dict[str, Any] | None
+) -> bool:
+    """別表記の続きとして認めた対象の観測行を、先頭行と後続行で同じ基準で検証する。"""
+    url = snapshot.get("url")
+    return (
+        isinstance(url, str)
+        and _discord_thread_identity(url) is not None
+        and _snapshot_stream_id(snapshot) == target_key_for_url(url)
+        and snapshot.get("schema") == "discord_context_bridge_text_snapshot_observation.v1"
+        and snapshot.get("event_type") == "discord.visible_text.snapshot_observed"
+        and snapshot.get("event_hash") == canonical_event_hash(snapshot)
+        and isinstance(snapshot.get("text"), str)
+        and snapshot.get("content_hash") == stable_text_hash(snapshot["text"])
+        and previous_content is not None
+        and snapshot.get("previous_content_hash") == previous_content.get("content_hash")
+        and snapshot.get("private_local_only") is True
+        and snapshot.get("external_share_allowed") is False
+        and snapshot.get("outbound_actions") == "disabled"
+    )
+
+
+def _alias_continuation_predecessor(
+    snapshot: dict[str, Any],
+    heads: dict[str, tuple[int, str]],
+    head_events: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    """論理スレッドの別表記の先頭行が、他表記streamの現在headである本文観測へ結合しているかを返す。"""
+    url = snapshot.get("url")
+    stream_id = _snapshot_stream_id(snapshot)
+    sequence = snapshot.get("stream_sequence")
+    expected_previous = snapshot.get("expected_previous_stream_sequence")
+    previous_hash = snapshot.get("previous_event_hash")
+    if (
+        not isinstance(url, str)
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in (sequence, expected_previous))
+        or expected_previous < 1
+        or sequence != expected_previous + 1
+        or not isinstance(previous_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", previous_hash)
+    ):
+        return None
+    candidates = [
+        candidate_id
+        for candidate_id, head in heads.items()
+        if candidate_id != stream_id and head == (expected_previous, previous_hash)
+    ]
+    if len(candidates) != 1:
+        return None
+    predecessor_stream = candidates[0]
+    predecessor = head_events.get(predecessor_stream)
+    if (
+        predecessor is None
+        or predecessor.get("event_type") != "discord.visible_text.snapshot_observed"
+        or not _is_chained_text_snapshot(predecessor)
+        or not isinstance(predecessor.get("event_id"), str)
+        or not predecessor["event_id"]
+        or predecessor.get("event_hash") != canonical_event_hash(predecessor)
+        or not isinstance(predecessor.get("url"), str)
+        or predecessor["url"] == url
+        or _discord_thread_identity(predecessor["url"]) != _discord_thread_identity(url)
+        or predecessor_stream != target_key_for_url(predecessor["url"])
+        or not _valid_alias_stream_observation(snapshot, predecessor)
+    ):
+        return None
+    return predecessor_stream, predecessor
+
+
+def _valid_alias_continuation_acknowledgement(
+    snapshot: dict[str, Any],
+    acknowledgement: dict[str, Any],
+    predecessor_stream: str,
+    predecessor: dict[str, Any],
+) -> bool:
+    stream_id = _snapshot_stream_id(snapshot)
+    row_sha256 = acknowledgement.get("acknowledged_row_sha256")
+    required = {
+        "schema": _ALIAS_CONTINUATION_SCHEMA,
+        "dataschema": _ALIAS_CONTINUATION_SCHEMA,
+        "event_type": _ALIAS_CONTINUATION_EVENT,
+        "type": _ALIAS_CONTINUATION_EVENT,
+        "specversion": "1.0",
+        "datacontenttype": "application/json",
+        "source": "dcb_alias_continuation_recovery",
+        "url": snapshot.get("url"),
+        "target_key": stream_id,
+        "stream_id": stream_id,
+        "subject": stream_id,
+        "acknowledged_event_id": snapshot.get("event_id"),
+        "acknowledged_event_hash": snapshot.get("event_hash"),
+        "acknowledged_record_sha256": _revoked_record_hash(snapshot),
+        "acknowledged_stream_sequence": snapshot.get("stream_sequence"),
+        "predecessor_stream_id": predecessor_stream,
+        "predecessor_url": predecessor.get("url"),
+        "predecessor_event_id": predecessor.get("event_id"),
+        "predecessor_event_hash": snapshot.get("previous_event_hash"),
+        "predecessor_stream_sequence": snapshot.get("expected_previous_stream_sequence"),
+        "reason": "logical_thread_alias_continuation",
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    return (
+        all(acknowledgement.get(key) == value for key, value in required.items())
+        and isinstance(row_sha256, str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", row_sha256))
+        and acknowledgement.get("event_id") == _alias_continuation_acknowledgement_id(stream_id, row_sha256)
+    )
+
+
+def _walk_text_snapshot_chain(
+    snapshots: list[dict[str, Any]],
+    *,
+    collect_unacknowledged: bool = False,
+) -> tuple[
+    dict[str, tuple[int, str]],
+    dict[str, dict[str, Any]],
+    list[tuple[dict[str, Any], str, dict[str, Any]]],
+]:
+    """chainを一度だけ再生し、head・head行・未訂正の別表記継続を返す。
+
+    未訂正の別表記継続は `collect_unacknowledged=True` の時だけ受理して返す。
+    通常の検証では、後続の訂正eventが同じ行と直前headを束縛している場合だけ受理する。
+    """
+    heads: dict[str, tuple[int, str]] = {}
+    head_rows: dict[str, dict[str, Any]] = {}
+    head_events: dict[str, dict[str, Any]] = {}
+    unacknowledged: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+    non_content_event_ids: set[str] = set()
+    for row in snapshots:
+        if row.get("event_type") not in _NON_CONTENT_LEDGER_EVENTS:
+            continue
+        event_id = str(row.get("event_id") or "")
+        if not event_id or event_id in non_content_event_ids:
+            raise CheckpointCorruptError("snapshot recovery event is duplicated")
+        non_content_event_ids.add(event_id)
+    logical = list(_logical_text_snapshot_rows(snapshots))
+    acknowledgements: dict[str, dict[str, Any]] = {}
+    for row in snapshots:
+        if row.get("event_type") != _ALIAS_CONTINUATION_EVENT:
+            continue
+        acknowledged_id = row.get("acknowledged_event_id")
+        if not isinstance(acknowledged_id, str) or not acknowledged_id or acknowledged_id in acknowledgements:
+            raise CheckpointCorruptError("snapshot alias continuation acknowledgement is invalid")
+        acknowledgements[acknowledged_id] = row
+    acknowledged_rows: set[str] = set()
+    alias_streams: set[str] = set()
+    index = 0
+    while index < len(logical):
+        snapshot = logical[index]
+        if (
+            index + 1 < len(logical)
+            and logical[index + 1].get("event_type") == _REVOCATION_EVENT
+        ):
+            if index == 0 or not _valid_revocation_pair(snapshot, logical[index + 1], logical[index - 1]):
+                raise CheckpointCorruptError("snapshot revocation pair is invalid")
+            index += 1
+            snapshot = logical[index]
+        _validate_snapshot_stream_binding(snapshot)
+        stream_id = _snapshot_stream_id(snapshot)
+        if not stream_id:
+            if _is_chained_text_snapshot(snapshot):
+                raise CheckpointCorruptError("snapshot stream binding is missing")
+            index += 1
+            continue
+        previous_sequence, previous_hash = heads.get(stream_id, (0, ""))
+        next_sequence = previous_sequence + 1
+
+        if (
+            _is_chained_text_snapshot(snapshot)
+            and stream_id not in heads
+            and snapshot.get("stream_sequence") != 1
+            and snapshot.get("event_type") == "discord.visible_text.snapshot_observed"
+        ):
+            continuation = _alias_continuation_predecessor(snapshot, heads, head_events)
+            acknowledgement = acknowledgements.get(str(snapshot.get("event_id") or ""))
+            if continuation is None or (
+                acknowledgement is None and not collect_unacknowledged
+            ) or (
+                acknowledgement is not None
+                and not _valid_alias_continuation_acknowledgement(snapshot, acknowledgement, *continuation)
+            ):
+                raise CheckpointCorruptError("snapshot stream sequence is invalid")
+            if acknowledgement is None:
+                unacknowledged.append((snapshot, *continuation))
+            else:
+                acknowledged_rows.add(str(snapshot["event_id"]))
+            heads[stream_id] = (snapshot["stream_sequence"], snapshot["event_hash"])
+            head_rows[stream_id] = snapshot
+            head_events[stream_id] = snapshot
+            alias_streams.add(stream_id)
+            index += 1
+            continue
+
+        if snapshot.get("event_type") == _ALIAS_CONTINUATION_EVENT:
+            head_row = head_rows.get(stream_id)
+            if (
+                str(snapshot.get("acknowledged_event_id") or "") not in acknowledged_rows
+                or head_row is None
+                or snapshot.get("content_hash") != head_row.get("content_hash")
+                or snapshot.get("previous_content_hash") != head_row.get("content_hash")
+                or not (
+                    snapshot.get("time") == snapshot.get("captured_at")
+                    == snapshot.get("observed_at") == snapshot.get("ingested_at")
+                )
+                or parse_snapshot_timestamp(snapshot.get("time")) is None
+            ):
+                raise CheckpointCorruptError("snapshot alias continuation acknowledgement is invalid")
+
+        if (
+            stream_id in alias_streams
+            and snapshot.get("event_type") not in _NON_CONTENT_LEDGER_EVENTS
+            and (
+                not _is_chained_text_snapshot(snapshot)
+                or not _valid_alias_stream_observation(snapshot, head_rows.get(stream_id))
+            )
+        ):
+            raise CheckpointCorruptError("snapshot alias stream observation is invalid")
+
+        if _is_chained_text_snapshot(snapshot):
+            sequence = snapshot.get("stream_sequence")
+            expected_previous = snapshot.get("expected_previous_stream_sequence")
+            if (
+                not isinstance(sequence, int)
+                or isinstance(sequence, bool)
+                or not isinstance(expected_previous, int)
+                or isinstance(expected_previous, bool)
+                or sequence != next_sequence
+                or expected_previous != previous_sequence
+            ):
+                raise CheckpointCorruptError("snapshot stream sequence is invalid")
+            if str(snapshot.get("previous_event_hash") or "") != previous_hash:
+                raise CheckpointCorruptError("snapshot previous event hash is invalid")
+            event_hash = str(snapshot.get("event_hash") or "")
+            if event_hash != canonical_event_hash(snapshot):
+                raise CheckpointCorruptError("snapshot event hash is invalid")
+        else:
+            event_hash = _durable_snapshot_event_hash(snapshot)
+        heads[stream_id] = (next_sequence, event_hash)
+        head_events[stream_id] = snapshot
+        if snapshot.get("event_type") not in _NON_CONTENT_LEDGER_EVENTS:
+            head_rows[stream_id] = snapshot
+        index += 1
+    if set(acknowledgements) != acknowledged_rows:
+        raise CheckpointCorruptError("snapshot alias continuation acknowledgement is invalid")
+    return heads, head_rows, unacknowledged
+
+
+def _verify_physical_revocation_hashes(path: Path, snapshots: list[dict[str, Any]]) -> None:
+    if not any(row.get("event_type") in _NON_CONTENT_LEDGER_EVENTS for row in snapshots):
+        return
+    lines = [line for line in path.read_bytes().split(b"\n") if line.strip()]
+    if len(lines) != len(snapshots):
+        raise CheckpointCorruptError("snapshot revocation physical rows are invalid")
+    first_index_by_event_id: dict[str, int] = {}
+    for index, row in enumerate(snapshots):
+        event_id = row.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            first_index_by_event_id.setdefault(event_id, index)
+    for index, row in enumerate(snapshots):
+        if row.get("event_type") == _REVOCATION_EVENT:
+            if index == 0 or hashlib.sha256(lines[index - 1]).hexdigest() != row.get("revoked_row_sha256"):
+                raise CheckpointCorruptError("snapshot revoked row bytes changed")
+        elif row.get("event_type") == _ALIAS_CONTINUATION_EVENT:
+            acknowledged = first_index_by_event_id.get(str(row.get("acknowledged_event_id") or ""))
+            if (
+                acknowledged is None
+                or acknowledged >= index
+                or hashlib.sha256(lines[acknowledged]).hexdigest() != row.get("acknowledged_row_sha256")
+            ):
+                raise CheckpointCorruptError("snapshot acknowledged row bytes changed")
+
+
+def _append_text_snapshot_transaction(
+    build_snapshot: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    path: Path,
+) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
+    appended, candidates, read_back = _append_text_snapshots_transaction(
+        lambda snapshots: [build_snapshot(snapshots)], path
+    )
+    return bool(appended), candidates[0], read_back
+
+
+def _append_text_snapshots_transaction(
+    build_snapshots: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    path: Path,
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """batch全体の生成・事前検証・一括追記・再読を同じwriter lockで閉じる。"""
+    path = Path(path)
+    store = CaptureCheckpointStore(path.parent)
+    with store.transition_lock(_text_snapshot_lock_id(path)):
+        try:
+            ledger_metadata = path.lstat()
+        except FileNotFoundError:
+            ledger_metadata = None
+        if ledger_metadata is not None and ledger_metadata.st_nlink != 1:
+            raise CheckpointCorruptError("snapshot ledger requires exclusive file")
+        snapshots = load_text_snapshots(path)
+        heads = _validate_text_snapshot_chain(snapshots)
+        _verify_physical_revocation_hashes(path, snapshots)
+        # 永続化するJSON表現を事前に確定し、冪等性・検証・再読照合で共用する。
+        candidates = [
+            json.loads(json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False))
+            for row in build_snapshots(snapshots)
+        ]
+        if any(not isinstance(row, dict) for row in candidates):
+            raise CheckpointCorruptError("snapshot candidate must be a JSON object")
+        additions: list[dict[str, Any]] = []
+        by_event_id = {str(row["event_id"]): row for row in snapshots if row.get("event_id")}
+        for snapshot in candidates:
+            _validate_snapshot_stream_binding(snapshot)
+            event_id = str(snapshot.get("event_id") or "")
+            if event_id and event_id in by_event_id:
+                if not _same_snapshot_json(by_event_id[event_id], snapshot):
+                    raise EventConflictError("snapshot event id is already bound to other content")
+                continue
+            stream_id = _snapshot_stream_id(snapshot)
+            current_sequence, current_hash = heads.get(stream_id, (0, ""))
+            if _is_chained_text_snapshot(snapshot):
+                if not event_id or not stream_id:
+                    raise CheckpointCorruptError("snapshot identity binding is missing")
+                if str(snapshot.get("event_hash") or "") != canonical_event_hash(snapshot):
+                    raise CheckpointCorruptError("snapshot event hash is invalid")
+                expected_previous = snapshot.get("expected_previous_stream_sequence")
+                sequence = snapshot.get("stream_sequence")
+                if any(not isinstance(value, int) or isinstance(value, bool)
+                       for value in (sequence, expected_previous)):
+                    raise CheckpointCorruptError("snapshot stream sequence must be an integer")
+                if expected_previous != current_sequence:
+                    raise SequenceConflictError("snapshot expected sequence is stale")
+                if sequence != current_sequence + 1:
+                    raise SequenceConflictError("snapshot sequence is not the next durable sequence")
+                if str(snapshot.get("previous_event_hash") or "") != current_hash:
+                    raise SequenceConflictError("snapshot previous event hash is stale")
+            additions.append(snapshot)
+            if event_id:
+                by_event_id[event_id] = snapshot
+            if stream_id:
+                heads[stream_id] = (
+                    current_sequence + 1,
+                    _durable_snapshot_event_hash(snapshot),
+                )
+        expected = snapshots + additions
+        _validate_text_snapshot_chain(expected)
+        if not additions:
+            return 0, candidates, snapshots
+        encoded_rows = (
+            (json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+            for row in additions
+        )
+        _append_store_relative_chunks(path.parent, path, encoded_rows)
+        read_back = load_text_snapshots(path)
+        _validate_text_snapshot_chain(read_back)
+        _verify_physical_revocation_hashes(path, read_back)
+        if read_back != expected:
+            raise CheckpointCorruptError("snapshot append read-back is invalid")
+        return len(additions), candidates, read_back
+
+
+def append_text_snapshot(
+    snapshot: dict[str, Any], path: Path = DEFAULT_TEXT_SNAPSHOT_STORE
+) -> bool:
+    """Canonical ledger へ CAS・冪等性・耐障害性を保って一件追記する。"""
+
+    appended, _, _ = _append_text_snapshot_transaction(lambda _: snapshot, Path(path))
+    return appended
+
+
+def revoke_invalid_snapshot_observation(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """正規stream末尾に紛れた単一の不正alias観測を原行不変で失効する。"""
+    path = Path(path)
+    store = CaptureCheckpointStore(path.parent)
+    with store.transition_lock(_text_snapshot_lock_id(path)):
+        metadata = path.lstat()
+        if metadata.st_nlink != 1:
+            raise CheckpointCorruptError("snapshot ledger requires exclusive file")
+        snapshots = load_text_snapshots(path)
+        if len(snapshots) < 2:
+            raise CheckpointCorruptError("snapshot revocation requires a durable predecessor")
+        if snapshots[-1].get("event_type") == _REVOCATION_EVENT:
+            _walk_text_snapshot_chain(snapshots, collect_unacknowledged=True)
+            _verify_physical_revocation_hashes(path, snapshots)
+            return {"saved": True, "already_revoked": True, "outbound_actions": "disabled"}
+        raw_data = path.read_bytes()
+        if raw_data and not raw_data.endswith(b"\n"):
+            raise CheckpointCorruptError("snapshot revocation physical row is unterminated")
+        raw_lines = [line for line in raw_data.split(b"\n") if line.strip()]
+        if len(raw_lines) != len(snapshots):
+            raise CheckpointCorruptError("snapshot revocation physical rows are invalid")
+        previous, invalid = snapshots[-2:]
+        heads, _, _ = _walk_text_snapshot_chain(snapshots[:-1], collect_unacknowledged=True)
+        main_key = target_key_for_url(str(previous.get("url") or ""))
+        if heads.get(main_key) != (previous.get("stream_sequence"), previous.get("event_hash")):
+            raise CheckpointCorruptError("snapshot revocation predecessor is not the stream head")
+        row_hash = hashlib.sha256(raw_lines[-1]).hexdigest()
+        event_id = hashlib.sha256(
+            ("dcb-invalid-revocation-v1|" + main_key + "|" + row_hash).encode("utf-8")
+        ).hexdigest()
+        captured_at = utc_now()
+        event = {
+            "schema": _REVOCATION_SCHEMA,
+            "dataschema": _REVOCATION_SCHEMA,
+            "event_type": _REVOCATION_EVENT,
+            "type": _REVOCATION_EVENT,
+            "specversion": "1.0",
+            "datacontenttype": "application/json",
+            "source": "dcb_invalid_observation_recovery",
+            "event_id": event_id,
+            "url": previous["url"],
+            "target_key": main_key,
+            "stream_id": main_key,
+            "subject": main_key,
+            "stream_sequence": previous["stream_sequence"] + 1,
+            "expected_previous_stream_sequence": previous["stream_sequence"],
+            "previous_event_hash": previous["event_hash"],
+            "content_hash": previous.get("content_hash"),
+            "previous_content_hash": previous.get("content_hash"),
+            "revoked_row_sha256": row_hash,
+            "revoked_record_sha256": _revoked_record_hash(invalid),
+            "revoked_event_id": invalid.get("event_id"),
+            "revoked_stored_event_hash": invalid.get("event_hash"),
+            "revoked_calculated_event_hash": canonical_event_hash(invalid),
+            "revoked_stream_id": invalid.get("stream_id"),
+            "revoked_url": invalid.get("url"),
+            "reason": "foreign_invalid_observation",
+            "time": captured_at,
+            "captured_at": captured_at,
+            "observed_at": captured_at,
+            "ingested_at": captured_at,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        event["event_hash"] = canonical_event_hash(event)
+        _walk_text_snapshot_chain(snapshots + [event], collect_unacknowledged=True)
+        if dry_run:
+            return {"saved": False, "ready_to_append": True, "outbound_actions": "disabled"}
+        _append_store_relative_chunks(
+            path.parent,
+            path,
+            [(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")],
+        )
+        read_back = load_text_snapshots(path)
+        _walk_text_snapshot_chain(read_back, collect_unacknowledged=True)
+        _verify_physical_revocation_hashes(path, read_back)
+        if read_back != snapshots + [event]:
+            raise CheckpointCorruptError("snapshot revocation read-back is invalid")
+        return {"saved": True, "already_revoked": False, "outbound_actions": "disabled"}
+
+
+def acknowledge_alias_continuations(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """同じ論理スレッドの別表記へ番号を継いだ先頭行を、原行不変の訂正eventで束縛する。"""
+    path = Path(path)
+    store = CaptureCheckpointStore(path.parent)
+    with store.transition_lock(_text_snapshot_lock_id(path)):
+        metadata = path.lstat()
+        if metadata.st_nlink != 1:
+            raise CheckpointCorruptError("snapshot ledger requires exclusive file")
+        snapshots = load_text_snapshots(path)
+        raw_data = path.read_bytes()
+        if raw_data and not raw_data.endswith(b"\n"):
+            raise CheckpointCorruptError("snapshot acknowledgement physical row is unterminated")
+        raw_lines = [line for line in raw_data.split(b"\n") if line.strip()]
+        if len(raw_lines) != len(snapshots):
+            raise CheckpointCorruptError("snapshot acknowledgement physical rows are invalid")
+        _verify_physical_revocation_hashes(path, snapshots)
+        heads, head_rows, unacknowledged = _walk_text_snapshot_chain(snapshots, collect_unacknowledged=True)
+        if not unacknowledged:
+            _validate_text_snapshot_chain(snapshots)
+            already = sum(1 for row in snapshots if row.get("event_type") == _ALIAS_CONTINUATION_EVENT)
+            return {
+                "saved": False,
+                "ready_to_append": False,
+                "already_acknowledged": already,
+                "acknowledgements": 0,
+                "outbound_actions": "disabled",
+            }
+        physical_index: dict[str, int] = {}
+        for index, row in enumerate(snapshots):
+            event_id = row.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                physical_index.setdefault(event_id, index)
+        captured_at = utc_now()
+        events: list[dict[str, Any]] = []
+        for snapshot, predecessor_stream, predecessor in unacknowledged:
+            stream_id = _snapshot_stream_id(snapshot)
+            sequence, previous_hash = heads[stream_id]
+            content_hash = head_rows[stream_id].get("content_hash")
+            row_sha256 = hashlib.sha256(raw_lines[physical_index[str(snapshot["event_id"])]]).hexdigest()
+            event = {
+                "schema": _ALIAS_CONTINUATION_SCHEMA,
+                "dataschema": _ALIAS_CONTINUATION_SCHEMA,
+                "event_type": _ALIAS_CONTINUATION_EVENT,
+                "type": _ALIAS_CONTINUATION_EVENT,
+                "specversion": "1.0",
+                "datacontenttype": "application/json",
+                "source": "dcb_alias_continuation_recovery",
+                "event_id": _alias_continuation_acknowledgement_id(stream_id, row_sha256),
+                "url": snapshot["url"],
+                "target_key": stream_id,
+                "stream_id": stream_id,
+                "subject": stream_id,
+                "stream_sequence": sequence + 1,
+                "expected_previous_stream_sequence": sequence,
+                "previous_event_hash": previous_hash,
+                "content_hash": content_hash,
+                "previous_content_hash": content_hash,
+                "acknowledged_event_id": snapshot["event_id"],
+                "acknowledged_event_hash": snapshot["event_hash"],
+                "acknowledged_record_sha256": _revoked_record_hash(snapshot),
+                "acknowledged_row_sha256": row_sha256,
+                "acknowledged_stream_sequence": snapshot["stream_sequence"],
+                "predecessor_stream_id": predecessor_stream,
+                "predecessor_url": predecessor["url"],
+                "predecessor_event_id": predecessor.get("event_id"),
+                "predecessor_event_hash": snapshot["previous_event_hash"],
+                "predecessor_stream_sequence": snapshot["expected_previous_stream_sequence"],
+                "reason": "logical_thread_alias_continuation",
+                "time": captured_at,
+                "captured_at": captured_at,
+                "observed_at": captured_at,
+                "ingested_at": captured_at,
+                "private_local_only": True,
+                "external_share_allowed": False,
+                "outbound_actions": "disabled",
+            }
+            event["event_hash"] = canonical_event_hash(event)
+            events.append(json.loads(json.dumps(event, ensure_ascii=False, sort_keys=True)))
+        _validate_text_snapshot_chain(snapshots + events)
+        summary = {
+            "acknowledgements": len(events),
+            "streams": len({_snapshot_stream_id(snapshot) for snapshot, _, _ in unacknowledged}),
+            "outbound_actions": "disabled",
+        }
+        if dry_run:
+            return {"saved": False, "ready_to_append": True, **summary}
+        _append_store_relative_chunks(
+            path.parent,
+            path,
+            [b"".join(
+                (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+                for event in events
+            )],
+        )
+        read_back = load_text_snapshots(path)
+        _validate_text_snapshot_chain(read_back)
+        _verify_physical_revocation_hashes(path, read_back)
+        if read_back != snapshots + events or not path.read_bytes().startswith(raw_data):
+            raise CheckpointCorruptError("snapshot acknowledgement read-back is invalid")
+        return {"saved": True, "already_acknowledged": 0, **summary}
+
+
+def latest_snapshot_for_target(target_key: str, path: Path = DEFAULT_TEXT_SNAPSHOT_STORE) -> dict[str, Any] | None:
+    for snapshot in reversed(load_text_snapshots(path)):
+        if (snapshot.get("target_key") == target_key
+            and snapshot.get("event_type") == "discord.visible_text.snapshot_observed"):
+            return snapshot
+    return None
+
+
+def snapshot_observation_event_id(
+    *,
+    captured_at: str,
+    target_key: str,
+    content_hash: str,
+    source: str,
+    stream_sequence: int,
+) -> str:
+    return stable_text_hash("|".join([captured_at, target_key, content_hash, source, str(stream_sequence)]))
+
+
+def canonical_event_hash(record: dict[str, Any]) -> str:
+    payload = {key: value for key, value in record.items() if key != "event_hash"}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def source_kind_from_source(source: str) -> str:
+    lowered = source.casefold()
+    if lowered == "gateway_live_event":
+        return "Discord Gateway"
+    if lowered == "rest_backfill":
+        return "Discord REST"
+    if "chrome" in lowered or "dom" in lowered or "browser" in lowered:
+        return "Chrome DOM"
+    if "cache" in lowered:
+        return "cache"
+    if "clipboard" in lowered:
+        return "clipboard"
+    if "source-command" in lowered or "source_command" in lowered or "adapter" in lowered:
+        return "source-command"
+    if "visible" in lowered or "snapshot" in lowered:
+        return "visible_text"
+    return "unknown"
+
+
+def acquisition_context_for_source(source: str) -> dict[str, Any]:
+    source_kind = source_kind_from_source(source)
+    base = {
+        "schema": "discord_bridge_acquisition_context.v1",
+        "source_kind": source_kind,
+        "source_route": source or "unknown",
+        "record_origin": "local_visible_text_snapshot",
+        "token_or_cookie_read": False,
+        "outbound_actions": "disabled",
+    }
+    if source_kind == "Discord REST":
+        return {
+            **base,
+            "record_origin": "discord_rest_message_history",
+            "capture_method": "discord_rest_backfill",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "Discord Gateway":
+        return {
+            **base,
+            "record_origin": "discord_gateway_message_event",
+            "capture_method": "discord_gateway_event",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "Chrome DOM":
+        return {
+            **base,
+            "capture_method": "chrome_dom_visible_range",
+            "live_browser_access_required_for_capture": True,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "cache":
+        return {
+            **base,
+            "capture_method": "local_cache_snapshot",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": False,
+        }
+    if source_kind == "source-command":
+        return {
+            **base,
+            "capture_method": "local_source_command_stdout",
+            "live_browser_access_required_for_capture": None,
+            "private_adapter_required_for_capture": True,
+        }
+    if source_kind == "clipboard":
+        return {
+            **base,
+            "capture_method": "local_clipboard_visible_text",
+            "live_browser_access_required_for_capture": False,
+            "private_adapter_required_for_capture": False,
+        }
+    return {
+        **base,
+        "capture_method": "manual_or_visible_text_snapshot",
+        "live_browser_access_required_for_capture": False,
+        "private_adapter_required_for_capture": False,
+    }
+
+
+def compact_snapshot_body_evidence(text: str, *, include_preview: bool = False, max_preview_chars: int = 24) -> dict[str, Any]:
+    stripped = " ".join(text.split())
+    preview = stripped[:max_preview_chars] if include_preview and stripped else "omitted"
+    return {
+        "schema": "discord_bridge_snapshot_body_evidence.v1",
+        "raw_text_returned": False,
+        "full_content_returned": False,
+        "preview_returned": bool(include_preview and stripped),
+        "preview": preview,
+        "preview_char_count": len(preview) if include_preview and stripped else 0,
+        "char_count": len(text),
+        "line_count": len([line for line in text.splitlines() if line.strip()]),
+        "content_hash": stable_text_hash(text) if text else "",
+    }
+
+
+def select_latest_snapshot(
+    *,
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    url: str = "",
+) -> dict[str, Any] | None:
+    snapshots = load_text_snapshots(path)
+    if target_key:
+        for snapshot in reversed(snapshots):
+            if (snapshot.get("target_key") == target_key
+                and snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")):
+                return snapshot
+        return None
+    if url:
+        for snapshot in reversed(snapshots):
+            if (snapshot.get("url") == url
+                and snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")
+                and (snapshot.get("target_key") == target_key_for_url(url)
+                     or not snapshot.get("event_type"))):
+                return snapshot
+        return None
+    return next(
+        (snapshot for snapshot in reversed(snapshots)
+         if snapshot.get("event_type") in (None, "", "discord.visible_text.snapshot_observed")
+         and snapshot.get("target_key")),
+        None,
+    )
+
+
+def build_latest_snapshot_report(
+    *,
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    target_key: str = "",
+    url: str = "",
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    snapshot = select_latest_snapshot(path=path, target_key=target_key, url=url)
+    requested_filter = "target_key" if target_key else "url" if url else "latest"
+    report_acquisition_context = {
+        "schema": "discord_bridge_report_acquisition_context.v1",
+        "mode": "existing_saved_snapshot",
+        "description": "この report は保存済み snapshot store だけを読みます。Chrome 接続、DOM 再取得、新規 capture は行いません。",
+        "live_browser_access": False,
+        "new_capture": False,
+        "snapshot_store_read": True,
+    }
+    if not snapshot:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_bridge_latest_snapshot_report.v1",
+            "ok": False,
+            "message": "該当する保存済み snapshot がありません。",
+            "reason": "snapshot_missing",
+            "requested_filter": requested_filter,
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "path_output": "omitted",
+            "report_acquisition_context": report_acquisition_context,
+            "outbound_actions": "disabled",
+        }
+
+    text = str(snapshot.get("text") or "")
+    source = str(snapshot.get("source") or "unknown")
+    stored_acquisition_context = dict(snapshot.get("acquisition_context") or acquisition_context_for_source(source))
+    events = parse_visible_text(text)
+    latest_event = events[-1].to_dict() if events else {}
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_bridge_latest_snapshot_report.v1",
+        "ok": True,
+        "message": "保存済み snapshot から最新 report を作成しました。",
+        "requested_filter": requested_filter,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "target": {
+            "target_key": str(snapshot.get("target_key") or ""),
+            "url_present": bool(snapshot.get("url")),
+            "url_output": "omitted",
+            "title_present": bool(snapshot.get("title")),
+            "title_output": "omitted",
+        },
+        "latest_saved_or_visible_message": {
+            "observed_at": str(snapshot.get("captured_at") or ""),
+            "speaker": "omitted",
+            "speaker_returned": False,
+            "parsed_message_available": bool(events),
+            "parsed_observed_at": str(latest_event.get("observed_at") or "") if latest_event else "",
+            "body_evidence": compact_snapshot_body_evidence(text, include_preview=include_preview),
+        },
+        "input_state": {
+            "state": "not_applicable",
+            "reason": "保存済み snapshot store の metadata-only report のため、Discord 入力欄は観測しません。",
+        },
+        "source_summary": {
+            "source_kind": stored_acquisition_context.get("source_kind", source_kind_from_source(source)),
+            "source_route": source,
+            "stored_acquisition_context": stored_acquisition_context,
+            "report_acquisition_context": report_acquisition_context,
+        },
+        "uncaptured_range": {
+            "before_first_saved_snapshot": "unknown",
+            "after_latest_saved_snapshot": "unknown",
+            "reason": "保存済み snapshot 以外の Discord 画面範囲はこの report では取得しません。",
+        },
+        "outbound_actions": "disabled",
+    }
+
+
+def normalize_message_text(messages: Iterable[Any]) -> str:
+    lines: list[str] = []
+    for message in messages:
+        if isinstance(message, dict):
+            author = str(message.get("author") or message.get("author_label") or "").strip()
+            text = str(message.get("text") or message.get("content") or message.get("text_snippet") or "").strip()
+            timestamp = str(message.get("timestamp") or message.get("observed_at") or "").strip()
+            prefix = " ".join(part for part in [author, timestamp] if part)
+            lines.append(f"{prefix}: {text}" if prefix and text else text or prefix)
+        else:
+            lines.append(str(message).strip())
+    return "\n".join(line for line in lines if line)
+
+
+def plan_discord_url_read(url: str) -> dict[str, Any]:
+    match = re.match(r"^https://discord\.com/channels/([^/]+)/([^/]+)(?:/([^/?#]+))?", url.strip())
+    if not match:
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": "Discord URL として読めませんでした。",
+            "ok_to_open": False,
+            "reason": "discord_channel_url_required",
+            "outbound_actions": "disabled",
+        }
+    guild_id, channel_id, message_or_thread_id = match.groups()
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord URL の読み取り計画を作成しました。",
+        "ok_to_open": True,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_or_thread_id": message_or_thread_id or "",
+        "read_method": "browser_visible_text",
+        "save_target": str(DEFAULT_TEXT_SNAPSHOT_STORE),
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def plan_full_thread_capture(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    raw_cache_path: Path | None = None,
+    gateway_configured: bool = False,
+    rest_configured: bool = False,
+    bot_inbox_ready: bool = False,
+    private_adapter_configured: bool = False,
+    visible_dom_available: bool = False,
+    browser_route: str = "in_app_browser",
+) -> dict[str, Any]:
+    """Return a metadata-only plan for capturing an entire Discord thread.
+
+    A one-shot visible DOM snapshot is partial evidence. A browser DOM route may
+    perform full capture only when it traverses the scoped message list from
+    oldest to latest, repeats the scan until stable, and passes the strict
+    completion gate.
+    """
+    from .acquisition_gate import build_acquisition_completion_gate
+
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_full_thread_capture_plan.v1",
+            "ok": False,
+            "state": "blocked",
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "message": "Discord full thread capture plan を作成できませんでした。",
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+
+    target_key = target_key_for_url(url)
+    saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key, canonical=True)
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path else []
+    current_records = raw_matches or saved_matches
+    current_freshness = snapshot_freshness(
+        current_records,
+        generated_at=utc_now(),
+        source="raw_cache" if raw_matches else "ai_log" if saved_matches else "none",
+    )
+    acquisition_gate = build_acquisition_completion_gate(
+        current_records,
+        freshness_status=str(current_freshness.get("status") or "unknown"),
+        source_kind="raw_cache" if raw_matches else "saved_log",
+    )
+    browser_policy = build_capture_route_policy(browser_route)
+    # visible_dom_available=True は「DOM 走査ができる route」であることが前提。
+    # supported でも DOM 非対応 (rest_backfill / saved_artifacts 等) の route では
+    # visible_dom を有効な主経路として扱わない (P4-6)。
+    browser_route_dom_capable = browser_policy["primary_read"] == "visible_message_dom"
+    visible_dom_usable = bool(visible_dom_available and browser_route_dom_capable)
+    full_routes = {
+        "rest_backfill": {
+            "configured": rest_configured,
+            "required_for_full_thread": True,
+            "role": "履歴 backfill で対象スレッド全体を取る主経路",
+        },
+        "gateway_live_event": {
+            "configured": gateway_configured,
+            "required_for_full_thread": False,
+            "role": "今後流れてくる live event の補完。過去全文は保証しません。",
+        },
+        "bot_text_event_inbox": {
+            "configured": bot_inbox_ready,
+            "required_for_full_thread": False,
+            "role": "bot/inbox に届いた範囲の補完。履歴全体は別途 backfill が必要です。",
+        },
+        "private_adapter": {
+            "configured": private_adapter_configured,
+            "required_for_full_thread": True,
+            "role": "ユーザー許可済み private adapter で全範囲を走査する代替主経路",
+        },
+        "raw_export_or_cache": {
+            "configured": bool(raw_matches),
+            "required_for_full_thread": True,
+            "role": "既存 export/cache が対象 URL に exact match する場合の主経路",
+        },
+        "visible_dom": {
+            "configured": visible_dom_usable or bool(saved_matches),
+            "required_for_full_thread": True,
+            "role": "現在範囲を即時保存後、対象message listを先頭・末尾までDOM走査し、再走査安定を確認する主経路。one-shot DOMだけでは全文証明になりません。",
+            "policy": browser_policy,
+        },
+    }
+    primary_available = bool(rest_configured or private_adapter_configured or raw_matches or visible_dom_usable)
+    state = "ready_for_full_capture" if primary_available else "blocked_missing_full_thread_route"
+    blockers = [] if primary_available else [
+        "rest_backfill_not_configured",
+        "private_adapter_not_configured",
+        "raw_export_or_cache_missing",
+    ] + (
+        ["visible_dom_available_with_unsupported_browser_route"]
+        if visible_dom_available and not browser_route_dom_capable
+        else []
+    )
+    next_actions = (
+        [
+            "full capture 主経路で取得し、append-only snapshot store と manifest を更新します。",
+            "browser DOM routeでは現在範囲を即時保存し、背後で先頭・末尾・再走査安定まで取得します。",
+            "full-capture-gateでraw / Markdown / ledger / attachment件数を検証します。",
+        ]
+        if primary_available
+        else [
+            "rest_backfill または private adapter を配線する。",
+            "既存の raw export/cache がある場合は target_key exact match で取り込む。",
+            "内部ブラウザまたはChrome拡張のDOM routeを明示許可し、scoped message listを全走査する。",
+        ]
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_full_thread_capture_plan.v1",
+        "ok": primary_available,
+        "state": state,
+        "message": "Discord full thread capture plan を作成しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": True,
+            "url_output": "omitted",
+            "thread_like_route": bool(base.get("message_or_thread_id")),
+        },
+        "coverage_now": {
+            "saved_snapshot_count": len(saved_matches),
+            "raw_cache_match_count": len(raw_matches),
+            "visible_dom_is_full_thread_proof": False,
+            "full_thread_confirmed": False,
+            "completion_gate": "strict_full_capture_v1",
+            "reason": (
+                "full thread 主経路が利用可能です。"
+                if primary_available
+                else "保存済み visible snapshot は可視範囲の証拠であり、全文スレッド取得の証明ではありません。"
+            ),
+        },
+        "acquisition_completion_gate": acquisition_gate,
+        "route_allocation": full_routes,
+        "execution_lanes": {
+            "immediate_visible": {
+                "mode": "foreground_fast_path",
+                "purpose": "現在見えている範囲を即時保存し、暫定判断と不足範囲を返す。",
+                "completion": "visible_snapshot_saved",
+                "may_claim_full": False,
+            },
+            "background_full": {
+                "mode": "background_until_terminal_state",
+                "purpose": "先頭・末尾・再走査安定、添付保存、raw/Markdown/ledger整合まで継続する。",
+                "completion": "strict_full_capture_v1",
+                "terminal_states": ["full", "blocked"],
+                "partial_is_terminal": False,
+            },
+        },
+        "fde_envelope": {
+            "entry": "discord_url",
+            "packet": "route_specific_capture_plan",
+            "evidence": "boundaries_artifacts_attachments_rescan",
+            "decision": "full_partial_blocked",
+            "closure": "full_capture_gate_then_context_understanding",
+            "route_failure": "none",
+        },
+        "blockers": blockers,
+        "next_actions": next_actions,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def _cache_channel_dir(cache_root: Path, *, guild_id: str, channel_id: str) -> Path:
+    return cache_root / "discord" / "servers" / guild_id / "channels" / channel_id
+
+
+def _resolve_cache_root(cache_root: Path | None) -> Path:
+    """Return ``cache_root`` if given, else the configured shared snapshot root.
+
+    Precedence matches the CLI: explicit argument > env
+    ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default.
+    """
+    if cache_root is not None:
+        return cache_root
+    return resolve_shared_snapshot_root().path
+
+
+def discover_discord_local_cache(url: str, *, cache_root: Path | None = None) -> dict[str, Any]:
+    """Report metadata about the local raw cache for a Discord channel URL.
+
+    When ``cache_root`` is omitted, the shared snapshot root is resolved at call
+    time (env ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default). In that case a malformed or
+    unreadable local config raises ``local_config.LocalConfigError``.
+    """
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_local_cache_discovery.v1",
+            "ok": False,
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+        }
+    cache_root = _resolve_cache_root(cache_root)
+    guild_id = str(base.get("guild_id") or "")
+    channel_id = str(base.get("channel_id") or "")
+    exact_dir = _cache_channel_dir(cache_root, guild_id=guild_id, channel_id=channel_id)
+    server_dir = cache_root / "discord" / "servers" / guild_id / "channels"
+    exact_files = [item for item in exact_dir.rglob("*") if item.is_file()] if exact_dir.exists() else []
+    nearby_dirs = [item for item in server_dir.iterdir() if item.is_dir()] if server_dir.exists() else []
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_local_cache_discovery.v1",
+        "ok": exact_dir.exists(),
+        "cache_root_present": cache_root.exists(),
+        "server_cache_present": server_dir.exists(),
+        "exact_channel_cache_present": exact_dir.exists(),
+        "exact_file_count": len(exact_files),
+        "nearby_channel_cache_count": len(nearby_dirs),
+        "url_output": "omitted",
+        "path_output": "omitted",
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def render_snapshot_book_markdown(
+    *,
+    records: list[dict[str, Any]],
+    target_key: str,
+    status: str,
+    source_label: str,
+) -> str:
+    generated_at = utc_now()
+    lines = [
+        "---",
+        "schema: discord_context_bridge_snapshot_book.v1",
+        f"generated_at: {generated_at}",
+        f"target_key: {target_key}",
+        f"status: {status}",
+        f"source: {source_label}",
+        f"snapshot_count: {len(records)}",
+        "private_local_only: true",
+        "outbound_actions: disabled",
+        "---",
+        "",
+        "# Discord Local Snapshot Book",
+        "",
+        f"- status: {status}",
+        f"- source: {source_label}",
+        f"- snapshot_count: {len(records)}",
+        "- full_thread_confirmed: false",
+        "- note: local private projection from cache/snapshot records; not for public sharing",
+        "",
+    ]
+    for index, record in enumerate(records, start=1):
+        captured_at = str(record.get("captured_at") or record.get("observed_at") or record.get("time") or "")
+        content_hash = str(record.get("content_hash") or "")
+        text = str(record.get("text") or "")
+        lines.extend(
+            [
+                f"## Snapshot {index}",
+                "",
+                f"- captured_at: {captured_at}",
+                f"- content_hash: {content_hash}",
+                "",
+                "```text",
+                text,
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def build_cache_first_intake(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    cache_root: Path | None = None,
+    book_output: Path | None = None,
+) -> dict[str, Any]:
+    """Build a private book from the local raw cache or saved snapshots.
+
+    When ``cache_root`` is omitted, the shared snapshot root is resolved at call
+    time (env ``DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`` > config
+    ``shared_snapshot_root`` > OS default). In that case a malformed or
+    unreadable local config raises ``local_config.LocalConfigError``.
+    """
+    from .acquisition_gate import build_acquisition_completion_gate
+
+    base = plan_discord_url_read(url)
+    if not base.get("ok_to_open"):
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "schema": "discord_cache_first_intake.v1",
+            "ok": False,
+            "state": "blocked",
+            "reason": base.get("reason", "discord_channel_url_required"),
+            "url_output": "omitted",
+            "path_output": "omitted",
+            "raw_text_returned": False,
+            "outbound_actions": "disabled",
+        }
+    target_key = target_key_for_url(url)
+    cache_root = _resolve_cache_root(cache_root)
+    discovery = discover_discord_local_cache(url, cache_root=cache_root)
+    guild_id = str(base.get("guild_id") or "")
+    channel_id = str(base.get("channel_id") or "")
+    exact_dir = _cache_channel_dir(cache_root, guild_id=guild_id, channel_id=channel_id)
+    raw_cache_path = exact_dir / "text-snapshots.ndjson"
+    raw_matches = matching_snapshot_records(raw_cache_path, url=url, target_key=target_key) if raw_cache_path.exists() else []
+    saved_matches = matching_snapshot_records(snapshot_store, url=url, target_key=target_key, canonical=True)
+    records = raw_matches or saved_matches
+    source_label = "raw_cache" if raw_matches else "saved_snapshot" if saved_matches else "none"
+    freshness = snapshot_freshness(records, generated_at=utc_now(), source=source_label)
+    acquisition_gate = build_acquisition_completion_gate(
+        records,
+        freshness_status=str(freshness.get("status") or "unknown"),
+        source_kind=source_label,
+    )
+    book_created = False
+    if records and book_output:
+        book_output.parent.mkdir(parents=True, exist_ok=True)
+        status = "raw_cache_book" if raw_matches else "partial_visible_snapshot_book"
+        book_output.write_text(
+            render_snapshot_book_markdown(
+                records=records,
+                target_key=target_key,
+                status=status,
+                source_label=source_label,
+            ),
+            encoding="utf-8",
+        )
+        book_created = True
+    state = "book_created" if book_created else "snapshot_ready" if records else "cache_missing"
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_cache_first_intake.v1",
+        "ok": bool(records),
+        "state": state,
+        "message": "Discord cache-first intake を実行しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": True,
+            "url_output": "omitted",
+        },
+        "cache": {
+            "cache_root_present": discovery.get("cache_root_present", False),
+            "server_cache_present": discovery.get("server_cache_present", False),
+            "exact_channel_cache_present": discovery.get("exact_channel_cache_present", False),
+            "exact_file_count": discovery.get("exact_file_count", 0),
+            "nearby_channel_cache_count": discovery.get("nearby_channel_cache_count", 0),
+            "raw_cache_match_count": len(raw_matches),
+        },
+        "snapshot": {
+            "saved_snapshot_match_count": len(saved_matches),
+            "source_selected": source_label,
+        },
+        "book": {
+            "created": book_created,
+            "record_count": len(records),
+            "full_thread_confirmed": False,
+            "status": "raw_cache_book" if raw_matches else "partial_visible_snapshot_book" if saved_matches else "not_created",
+            "path_output": "omitted",
+        },
+        "acquisition_completion_gate": acquisition_gate,
+        "next_actions": (
+            ["book を local private projection として使い、必要なら context-passport / review-draft に渡します。"]
+            if records
+            else ["exact local cache がないため、rest_backfill / private adapter / visible capture の順で補完します。"]
+        ),
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def rest_backfill_config_safety(
+    value: str = "",
+    *,
+    fixture_input: Path | None = None,
+    raw_output: Path | None = None,
+    manifest_output: Path | None = None,
+) -> dict[str, Any]:
+    """Classify unsafe REST backfill configuration without returning secrets."""
+    text = value or ""
+    blockers: list[str] = []
+    if DISCORD_TOKEN_RE.search(text):
+        blockers.append("user_token_or_raw_token_in_config")
+    if re.search(r"\b" + "Author" + r"ization\s*:", text, re.IGNORECASE):
+        blockers.append("authorization_header_in_config")
+    if re.search(r"\bcookie\b", text, re.IGNORECASE):
+        blockers.append("cookie_reference_in_config")
+    if CHROME_PROFILE_RE.search(text):
+        blockers.append("chrome_profile_or_storage_reference_in_config")
+    if LOCAL_ABSOLUTE_PATH_RE.search(text) and ("chrome" in text.casefold() or "discord" in text.casefold()):
+        blockers.append("credential_bearing_local_path_in_config")
+    paths = {"fixture_input": fixture_input, "raw_output": raw_output, "manifest_output": manifest_output}
+    if any(path is not None for path in paths.values()):
+        try:
+            roots = (
+                resolve_shared_snapshot_root().path.expanduser().resolve(),
+                Path.cwd().resolve() / ".local/discord-context-bridge",
+            )
+            for role, path in paths.items():
+                if path is None:
+                    continue
+                resolved = path.expanduser().resolve()
+                # Check both the supplied path and its target: an innocent alias must
+                # never turn credential storage into a fixture or output location.
+                for candidate in (path, resolved):
+                    path_text = str(candidate)
+                    credential_storage = re.search(
+                        r"(?:^|[\\/])(?:Local Storage|Session Storage|IndexedDB|leveldb|"
+                        r"Login Data|Web Data|Network|Keychains?|\.env(?:\.[^\\/]+)?|"
+                        r"storage[_-]state\.json)(?:[\\/]|$)",
+                        path_text, re.IGNORECASE,
+                    )
+                    app_storage = re.search(
+                        r"(?:Application Support[\\/](?:discord(?:canary|ptb)?|Google[\\/]Chrome)|"
+                        r"(?:AppData[\\/](?:Roaming|Local)|\.config)[\\/]"
+                        r"(?:discord(?:canary|ptb)?|google-chrome|chromium)|Chrome[\\/]User Data)",
+                        path_text, re.IGNORECASE,
+                    )
+                    if credential_storage or app_storage:
+                        blockers.append("credential_bearing_local_path_in_config")
+                    # Retain token/header/cookie/profile detection per argument,
+                    # excluding only the legacy absolute-path substring heuristic.
+                    scalar = rest_backfill_config_safety(path_text)
+                    blockers.extend(b for b in scalar["blockers"] if b != "credential_bearing_local_path_in_config")
+                if role == "fixture_input":
+                    if not resolved.is_file():
+                        blockers.append("fixture_input_file_required")
+                elif not (
+                    (is_cross_device_working_store(resolved, shared_root=roots[0]) and resolved != roots[0])
+                    or (resolved.is_relative_to(roots[1]) and resolved != roots[1])
+                ):
+                    blockers.append("private_output_root_required")
+        except (LocalConfigError, OSError, RuntimeError, ValueError):
+            blockers.append("private_path_resolution_failed")
+    blockers = list(dict.fromkeys(blockers))
+    return {
+        "schema": "discord_rest_backfill_config_safety.v1",
+        "ok": not blockers,
+        "blockers": blockers,
+        "value_output": "omitted",
+        "token_output": "omitted",
+        "cookie_output": "omitted",
+        "path_output": "omitted",
+    }
+
+
+def attachment_candidate_count(messages: Iterable[dict[str, Any]]) -> int:
+    count = 0
+    for message in messages:
+        attachments = message.get("attachments") or []
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if isinstance(attachments, list):
+            count += len(attachments)
+    return count
+
+
+def normalize_rest_backfill_record(message: dict[str, Any], *, url: str, target_key: str, captured_at: str) -> dict[str, Any]:
+    return {
+        "schema": "discord_rest_backfill_message.v1",
+        "captured_at": captured_at,
+        "url": url,
+        "target_key": target_key,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+        "message": message,
+    }
+
+
+def write_jsonl_records(path: Path, records: Iterable[dict[str, Any]]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            count += 1
+    return count
+
+
+def build_rest_backfill_manifest(
+    *,
+    url: str,
+    messages: list[dict[str, Any]],
+    full_thread_confirmed: bool,
+    rate_limit_status: str = "not_rate_limited",
+    warnings: list[str] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    target_key = target_key_for_url(url)
+    message_count = len(messages)
+    attachment_count = attachment_candidate_count(messages)
+    coverage_ready = bool(full_thread_confirmed and message_count > 0)
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_rest_backfill_capture_manifest.v1",
+        "generated_at": generated_at or utc_now(),
+        "ok": message_count > 0,
+        "state": "full_capture_ready" if coverage_ready else "partial_capture_ready" if message_count else "blocked_empty",
+        "message": "Discord REST backfill capture manifest を作成しました。",
+        "target": {
+            "target_key": target_key,
+            "url_present": bool(url),
+            "url_output": "omitted",
+        },
+        "coverage": {
+            "message_count": message_count,
+            "attachment_candidate_count": attachment_count,
+            "full_thread_confirmed": coverage_ready,
+            "freshness": "captured_now" if message_count else "missing",
+            "source_kind": "rest_backfill",
+        },
+        "rate_limit": {
+            "status": rate_limit_status,
+            "retryable": rate_limit_status == "rate_limited_retryable",
+        },
+        "warnings": warnings or [],
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "snowflake_values_returned": False,
+            "token_output": "omitted",
+            "cookie_output": "omitted",
+            "path_output": "omitted",
+            "outbound_actions": "disabled",
+            "send_capability": "disabled",
+        },
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+
+
+def write_rest_backfill_capture(
+    *,
+    url: str,
+    messages: list[dict[str, Any]],
+    raw_output: Path = DEFAULT_REST_BACKFILL_RAW_OUTPUT,
+    manifest_output: Path = DEFAULT_REST_BACKFILL_MANIFEST,
+    full_thread_confirmed: bool = False,
+    rate_limit_status: str = "not_rate_limited",
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    captured_at = utc_now()
+    target_key = target_key_for_url(url)
+    raw_records = [
+        normalize_rest_backfill_record(message, url=url, target_key=target_key, captured_at=captured_at)
+        for message in messages
+    ]
+    raw_count = write_jsonl_records(raw_output, raw_records)
+    manifest = build_rest_backfill_manifest(
+        url=url,
+        messages=messages,
+        full_thread_confirmed=full_thread_confirmed,
+        rate_limit_status=rate_limit_status,
+        warnings=warnings,
+        generated_at=captured_at,
+    )
+    manifest_output.parent.mkdir(parents=True, exist_ok=True)
+    manifest_output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        **manifest,
+        "artifact": {
+            "raw_record_count": raw_count,
+            "manifest_created": True,
+            "raw_output": "omitted",
+            "manifest_output": "omitted",
+        },
+    }
+
+
+def _snapshot_reply_reference(messages: list[Any], url: str) -> str:
+    target = DISCORD_MESSAGE_URL_RE.fullmatch(url.strip())
+    if target is None:
+        return ""
+    matches = [
+        message for message in messages
+        if isinstance(message, dict)
+        and str(message.get("message_id") or message.get("id") or "") == target["message"]
+    ]
+    if len(matches) != 1:
+        return ""
+    message = matches[0]
+    if message.get("message_id") and message.get("id") and str(message["message_id"]) != str(message["id"]):
+        return ""
+    reference = str(message.get("reply_to_message_id") or "")
+    return reference if re.fullmatch(r"[0-9]{17,20}", reference) else ""
+
+
+def snapshot_visible_text(
+    *,
+    text: str = "",
+    messages: Iterable[Any] | None = None,
+    url: str = "",
+    title: str = "",
+    source: str = "visible_text",
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+) -> dict[str, Any]:
+    message_list = list(messages or [])
+    reply_reference = _snapshot_reply_reference(message_list, url)
+    content = text.strip() or normalize_message_text(message_list)
+    if not content:
+        raise ValueError("snapshot する text または messages が必要です。")
+    # Snapshot はローカル保存でも平文の認証情報を残さない。後段の文脈処理は
+    # この安全化済み本文を正本として扱い、元の本文をファイルへ渡さない。
+    content = redact_sensitive_storage_text(content)
+    target_identity = url.strip() or title.strip() or content[:120]
+    target_key = stable_text_hash(target_identity)
+    content_hash = stable_text_hash(content)
+
+    def build_snapshot(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+        target_snapshots = _snapshot_stream_history(snapshots, target_key)
+        previous = target_snapshots[-1] if target_snapshots else None
+        previous_hash = str(previous.get("content_hash") or "") if previous else None
+        previous_stream_sequence, previous_event_hash = _validate_text_snapshot_chain(snapshots).get(
+            target_key, (0, "")
+        )
+        stream_sequence = previous_stream_sequence + 1
+        captured_at = utc_now()
+        snapshot = {
+            "schema": "discord_context_bridge_text_snapshot_observation.v1",
+            "event_id": snapshot_observation_event_id(
+                captured_at=captured_at,
+                target_key=target_key,
+                content_hash=content_hash,
+                source=source,
+                stream_sequence=stream_sequence,
+            ),
+            "event_type": "discord.visible_text.snapshot_observed",
+            "stream_id": target_key,
+            "stream_sequence": stream_sequence,
+            "expected_previous_stream_sequence": previous_stream_sequence,
+            "specversion": "1.0",
+            "type": "discord.visible_text.snapshot_observed",
+            "subject": target_key,
+            "time": captured_at,
+            "datacontenttype": "text/plain; charset=utf-8",
+            "dataschema": "discord_context_bridge_text_snapshot_observation.v1",
+            "captured_at": captured_at,
+            "observed_at": captured_at,
+            "ingested_at": captured_at,
+            "source": source,
+            "url": url.strip(),
+            "title": title.strip(),
+            "target_key": target_key,
+            "content_hash": content_hash,
+            "previous_content_hash": previous_hash,
+            "previous_event_hash": previous_event_hash,
+            "changed": previous_hash != content_hash,
+            "duplicate_content": previous_hash == content_hash,
+            "observation_index_for_target": stream_sequence,
+            "acquisition_context": acquisition_context_for_source(source),
+            "text": content,
+            "private_local_only": True,
+            "external_share_allowed": False,
+            "outbound_actions": "disabled",
+        }
+        if reply_reference:
+            snapshot["reply_to_message_id"] = reply_reference
+        snapshot["event_hash"] = canonical_event_hash(snapshot)
+        return snapshot
+
+    _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
+    snapshot_count = sum(
+        1
+        for item in load_content_snapshot_records(Path(path))
+        if _snapshot_stream_id(item) == target_key
+    )
+    previous_hash = snapshot["previous_content_hash"]
+    changed = bool(snapshot["changed"])
+    snapshot_receipt = {
+        "schema": "discord_saved_snapshot_receipt.v1",
+        "saved": True,
+        "capture_id": snapshot["event_id"],
+        "target_key": target_key,
+        "observed_at": snapshot["observed_at"],
+        "event_hash": snapshot["event_hash"],
+        "content_hash": content_hash,
+        "freshness": {
+            "status": "recent",
+            "observed_at": snapshot["observed_at"],
+            "age_seconds": 0,
+            "max_age_seconds": POST_SEND_SNAPSHOT_MAX_AGE_SECONDS,
+        },
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+    }
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 可視テキスト snapshot observation を追記しました。",
+        "saved": True,
+        "changed": changed,
+        "duplicate_content": not changed,
+        "snapshot_store": str(path),
+        "target_key": target_key,
+        "content_hash": content_hash,
+        "previous_content_hash": previous_hash,
+        "observation_index_for_target": snapshot["stream_sequence"],
+        "snapshot_count_for_target": snapshot_count,
+        "private_local_only": True,
+        "external_share_allowed": False,
+        "outbound_actions": "disabled",
+        "source": source,
+        "message_count": len(message_list),
+        "context_ready": True,
+        "visible_text_saved": True,
+        "snapshot_receipt": snapshot_receipt,
+    }
+
+
+def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    # splitlines() は U+2028 等の Unicode 行区切りでも分割するため、NDJSON の
+    # "\n" 区切り契約に合わせて "\n" だけで区切る (load_text_snapshots と同じ)。
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        line = line.rstrip("\r")
+        if line.strip():
+            records.append(parse_json_object_line(line))
+    return records
+
+
+def attachment_source_key(record: dict[str, Any], attachment: dict[str, Any], index: int) -> str:
+    identity = {
+        "message_id": record.get("message_id") or record.get("id") or record.get("messageId") or "",
+        "attachment_id": attachment.get("id") or attachment.get("attachment_id") or "",
+        "filename": attachment.get("filename") or attachment.get("name") or "",
+        "index": index,
+    }
+    return stable_event_id(identity)
+
+
+def classify_attachment_type(filename: str, content_type: str = "") -> str:
+    mime = content_type.strip() or (mimetypes.guess_type(filename)[0] or "")
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime == "application/pdf":
+        return "document"
+    if mime.startswith("text/"):
+        return "text"
+    return "unknown"
+
+
+def safe_attachment_filename(filename: str) -> str:
+    safe = redact_artifact_text(Path(filename or "attachment").name)
+    return safe or "attachment"
+
+
+def attachment_local_status(local_path: str | Path | None) -> str:
+    if not local_path:
+        return "not_recorded"
+    return "present" if Path(local_path).exists() else "missing"
+
+
+def normalize_attachment_entries(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for record in records:
+        attachments = record.get("attachments") or []
+        if isinstance(attachments, dict):
+            attachments = [attachments]
+        if not isinstance(attachments, list):
+            continue
+        for index, item in enumerate(attachments):
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or item.get("name") or "attachment")
+            content_type = str(item.get("content_type") or item.get("contentType") or "")
+            local_path = item.get("local_path") or item.get("localPath") or item.get("path")
+            width = item.get("width")
+            height = item.get("height")
+            size = item.get("size") or item.get("size_bytes") or item.get("sizeBytes")
+            entry = {
+                "schema": "discord_attachment_ledger_entry.v1",
+                "source_key": attachment_source_key(record, item, index),
+                "captured_at": str(record.get("captured_at") or record.get("timestamp") or record.get("observed_at") or ""),
+                "filename": safe_attachment_filename(filename),
+                "content_type": content_type or (mimetypes.guess_type(filename)[0] or "unknown"),
+                "attachment_type": classify_attachment_type(filename, content_type),
+                "width": int(width) if isinstance(width, int) else None,
+                "height": int(height) if isinstance(height, int) else None,
+                "size_bytes": int(size) if isinstance(size, int) else None,
+                "local_status": attachment_local_status(local_path),
+                "url_present": bool(item.get("url") or item.get("proxy_url") or item.get("proxyUrl")),
+                "url_output": "omitted",
+                "local_path_output": "omitted",
+                "outbound_actions": "disabled",
+            }
+            entries.append(entry)
+    return entries
+
+
+def render_attachment_ledger_markdown(entries: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Discord attachment ledger",
+        "",
+        "この ledger は添付の safe metadata だけを保持します。raw Discord URL、local path、本文は出力しません。",
+        "",
+        "| source_key | type | filename | size_bytes | dimensions | local_status |",
+        "|---|---|---|---:|---|---|",
+    ]
+    for entry in entries:
+        dimensions = ""
+        if entry.get("width") and entry.get("height"):
+            dimensions = f"{entry['width']}x{entry['height']}"
+        lines.append(
+            "| {source_key} | {attachment_type} | {filename} | {size_bytes} | {dimensions} | {local_status} |".format(
+                source_key=entry["source_key"],
+                attachment_type=entry["attachment_type"],
+                filename=entry["filename"],
+                size_bytes=entry["size_bytes"] if entry["size_bytes"] is not None else "",
+                dimensions=dimensions,
+                local_status=entry["local_status"],
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "raw_url_output: omitted",
+            "local_path_output: omitted",
+            "outbound_actions: disabled",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def build_attachment_ledger(*, records: Iterable[dict[str, Any]], output: Path | None = None) -> dict[str, Any]:
+    entries = normalize_attachment_entries(records)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_attachment_ledger_markdown(entries), encoding="utf-8")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_attachment_ledger.v1",
+        "message": "Discord 添付 ledger を作成しました。",
+        "attachment_count": len(entries),
+        "entries": entries,
+        "ledger_created": output is not None,
+        "path_output": "omitted",
+        "raw_url_returned": False,
+        "raw_text_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def build_attachment_ocr_log_markdown(
+    *,
+    source_key: str,
+    ocr_text: str,
+    note_label: str = "",
+) -> str:
+    safe_source_key = redact_artifact_text(source_key) or stable_text_hash(source_key)
+    safe_note_label = redact_artifact_text(note_label)
+    return "\n".join(
+        [
+            "# Discord attachment OCR log",
+            "",
+            "status: private_local_review",
+            f"source_key: {safe_source_key}",
+            f"note_label: {safe_note_label or 'なし'}",
+            "raw_url_output: omitted",
+            "local_path_output: omitted",
+            "stdout_raw_text_output: omitted",
+            "outbound_actions: disabled",
+            "",
+            "## OCR text",
+            "",
+            ocr_text.strip() or "(empty)",
+            "",
+        ]
+    )
+
+
+def write_attachment_ocr_log(
+    *,
+    source_key: str,
+    ocr_text: str,
+    output: Path,
+    note_label: str = "",
+) -> dict[str, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        build_attachment_ocr_log_markdown(source_key=source_key, ocr_text=ocr_text, note_label=note_label),
+        encoding="utf-8",
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_attachment_ocr_log.v1",
+        "message": "Discord 添付 OCR log を保存しました。",
+        "created": True,
+        "source_key": redact_artifact_text(source_key) or stable_text_hash(source_key),
+        "note_label": redact_artifact_text(note_label),
+        "ocr_char_count": len(ocr_text),
+        "path_output": "omitted",
+        "raw_text_returned": False,
+        "raw_url_returned": False,
+        "local_paths_returned": False,
+        "outbound_actions": "disabled",
+    }
+
+
+def append_event(event: DiscordEvent, path: Path = DEFAULT_STORE) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = {item.event_id for item in load_events(path)}
+    if event.event_id in existing:
+        return False
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True) + "\n")
+    return True
+
+
+def append_events(events: Iterable[DiscordEvent], path: Path = DEFAULT_STORE) -> dict[str, int]:
+    appended = 0
+    duplicate = 0
+    for event in events:
+        if append_event(event, path):
+            appended += 1
+        else:
+            duplicate += 1
+    return {"appended": appended, "duplicate": duplicate}
+
+
+def public_participant_aliases(events: Iterable[DiscordEvent]) -> dict[str, str]:
+    author_aliases: dict[str, str] = {}
+    for event in events:
+        if event.author_label not in author_aliases:
+            author_aliases[event.author_label] = f"participant-{len(author_aliases) + 1:03d}"
+    return author_aliases
+
+
+def public_safe_events(events: Iterable[DiscordEvent]) -> list[DiscordEvent]:
+    events = list(events)
+    author_aliases = public_participant_aliases(events)
+    safe_events: list[DiscordEvent] = []
+    for event in events:
+        safe_events.append(
+            DiscordEvent.from_dict(
+                {
+                    **event.to_dict(),
+                    "author_label": author_aliases[event.author_label],
+                    "text_snippet": "omitted",
+                    "event_id": event.event_id,
+                }
+            )
+        )
+    return safe_events
+
+
+def looks_like_author_line(line: str) -> bool:
+    if len(line) > 40:
+        return False
+    if line.endswith((".", "?", "!", "。", "？", "！")):
+        return False
+    return bool(re.search(r"[A-Za-z一-龥ぁ-んァ-ン0-9]", line))
+
+
+def looks_like_timestamp_metadata(line: str) -> bool:
+    return bool(TIMESTAMP_METADATA_RE.match(line.strip()))
+
+
+def parse_visible_text(
+    text: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    source: str = "visible_text",
+    observed_at: str | None = None,
+) -> list[DiscordEvent]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    events: list[DiscordEvent] = []
+    current_author = "unknown"
+    pending: list[str] = []
+
+    def flush() -> None:
+        nonlocal pending
+        if pending:
+            events.append(
+                DiscordEvent.from_dict(
+                    {
+                        "observed_at": observed_at or utc_now(),
+                        "source": source,
+                        "guild_label": guild_label,
+                        "channel_label": channel_label,
+                        "author_label": current_author,
+                        "text_snippet": " ".join(pending),
+                        "confidence": "visible",
+                        "private_surface": True,
+                    }
+                )
+            )
+            pending = []
+
+    for raw_line in lines:
+        line = TIMESTAMP_RE.sub("", raw_line).strip()
+        if not line or looks_like_timestamp_metadata(line):
+            continue
+        author_with_timestamp = AUTHOR_WITH_TIMESTAMP_RE.match(line)
+        if author_with_timestamp:
+            flush()
+            current_author = author_with_timestamp.group("author").strip()
+            continue
+        match = COLON_MESSAGE_RE.match(line)
+        if match:
+            flush()
+            current_author = match.group("author").strip()
+            pending.append(match.group("text").strip())
+            continue
+        if looks_like_author_line(line):
+            flush()
+            current_author = line
+            continue
+        pending.append(line)
+    flush()
+    return events
+
+
+def import_visible_text(
+    text: str,
+    *,
+    path: Path = DEFAULT_STORE,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    observed_at = utc_now()
+    events = parse_visible_text(
+        text,
+        guild_label=guild_label,
+        channel_label=channel_label,
+        observed_at=observed_at,
+    )
+    safe_events = public_safe_events(events)
+    result = {"appended": 0, "duplicate": 0} if dry_run else append_events(safe_events, path)
+    # 旧 release が作った store には raw event が残り得るため、
+    # 読み出し側でも public_safe_events を通してから briefing を作る。
+    loaded_events = safe_events if dry_run else public_safe_events(load_events(path))
+    return {
+        **result,
+        "dry_run": dry_run,
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord の可視テキストを取り込みました。" if not dry_run else "保存せずに取り込み結果を確認しました。",
+        "parsed": len(events),
+        "store": "omitted",
+        "path_output": "omitted",
+        "preview": [event.to_dict() for event in safe_events],
+        "briefing": fast_briefing(loaded_events),
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+    }
+
+
+def search_events(events: Iterable[DiscordEvent], query: str) -> list[DiscordEvent]:
+    needle = query.casefold()
+    return [
+        event
+        for event in events
+        if needle in event.text_snippet.casefold()
+        or needle in event.author_label.casefold()
+        or needle in event.channel_label.casefold()
+    ]
+
+
+def fast_briefing(events: Iterable[DiscordEvent], limit: int = 3) -> dict[str, Any]:
+    started = time.perf_counter()
+    latest = list(events)[-limit:]
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "直近文脈の短い要約を作成しました。",
+        "event_count": len(latest),
+        "channels": sorted({event.channel_label for event in latest}),
+        "authors": [event.author_label for event in latest],
+        "briefing": " / ".join(event.text_snippet for event in latest),
+        "briefing_label": " / ".join(event.text_snippet for event in latest) or "直近の文脈はまだ取り込まれていません。",
+        "partial": True,
+        "partial_label": "直近の一部だけを使った要約です。",
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
+
+
+def check_knowledge_gap(user_understanding: str, events: Iterable[DiscordEvent]) -> dict[str, Any]:
+    context = fast_briefing(events)
+    text = user_understanding.casefold()
+    context_topics = detect_topics(context["briefing"])
+    draft_topics = detect_topics(user_understanding)
+    topic_mismatch = bool(context_topics and draft_topics and context_topics.isdisjoint(draft_topics))
+    missing: list[str] = []
+    if "premise" not in text and "前提" not in text:
+        missing.append("共有前提")
+    if "reply" not in text and "返信" not in text:
+        missing.append("返信対象")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "context_drift_warning": bool(missing),
+        "knowledge_gap": missing,
+        "context_topics": sorted(context_topics),
+        "draft_topics": sorted(draft_topics),
+        "topic_mismatch": topic_mismatch,
+        "topic_warning_label": (
+            "話題がずれている可能性があります: 文脈は"
+            + "・".join(sorted(context_topics))
+            + "、返信案は"
+            + "・".join(sorted(draft_topics))
+            + "に見えます。"
+            if topic_mismatch
+            else "話題の大きなズレは見つかりません。"
+        ),
+        "recommended_briefing": context["briefing"] or "直近の文脈はまだ取り込まれていません。",
+    }
+
+
+def detect_topics(text: str) -> set[str]:
+    folded = text.casefold()
+    topics: set[str] = set()
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        if any(keyword.casefold() in folded for keyword in keywords):
+            topics.add(topic)
+    return topics
+
+
+def detect_purposes(text: str) -> set[str]:
+    folded = text.casefold()
+    purposes: set[str] = set()
+    for purpose, keywords in PURPOSE_KEYWORDS.items():
+        if any(keyword.casefold() in folded for keyword in keywords):
+            purposes.add(purpose)
+    return purposes
+
+
+def extract_matching_snippets(events: Iterable[DiscordEvent], keywords: Iterable[str], *, limit: int = 3) -> list[str]:
+    lowered_keywords = [keyword.casefold() for keyword in keywords]
+    snippets: list[str] = []
+    for event in events:
+        folded = event.text_snippet.casefold()
+        if any(keyword in folded for keyword in lowered_keywords):
+            snippets.append(event.text_snippet)
+        if len(snippets) >= limit:
+            break
+    return snippets
+
+
+def compact_context_text(text: str, *, limit: int = 180) -> str:
+    compacted = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    return compacted[:limit].rstrip() + ("…" if len(compacted) > limit else "")
+
+
+def build_context_documents(
+    *,
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+) -> list[dict[str, str]]:
+    candidates = [
+        ("server_context", "サーバー文脈", server_context),
+        ("channel_context", "チャンネル文脈", channel_context),
+        ("thread_context", "スレッド文脈", thread_context),
+    ]
+    return [
+        {
+            "source": source,
+            "source_label": label,
+            "text": text.strip(),
+            "summary": compact_context_text(text),
+        }
+        for source, label, text in candidates
+        if text and text.strip()
+    ]
+
+
+def context_documents_text(context_documents: Iterable[dict[str, str]]) -> str:
+    return " ".join(document["text"] for document in context_documents)
+
+
+def extract_context_rule_notes(context_documents: Iterable[dict[str, str]], *, limit: int = 4) -> list[str]:
+    notes: list[str] = []
+    lowered_keywords = [keyword.casefold() for keyword in RULE_KEYWORDS]
+    for document in context_documents:
+        folded = document["text"].casefold()
+        if any(keyword in folded for keyword in lowered_keywords):
+            notes.append(f"{document['source_label']}: {document['summary']}")
+        if len(notes) >= limit:
+            break
+    return notes
+
+
+def summarize_thread_purpose(events: list[DiscordEvent], context_documents: list[dict[str, str]] | None = None) -> tuple[str, str]:
+    context_documents = context_documents or []
+    joined = " ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)
+    purposes = sorted(detect_purposes(joined))
+    topics = sorted(detect_topics(joined))
+    if purposes and topics:
+        value = " / ".join(purposes + topics)
+        return value, f"このスレッドは {value} に関係していそうです。"
+    if purposes:
+        value = " / ".join(purposes)
+        return value, f"このスレッドは {value} の場に見えます。"
+    if topics:
+        value = " / ".join(topics)
+        return value, f"このスレッドは {value} の話題に見えます。"
+    return "未特定", "目的はまだ断定できません。直近文脈だけで仮読みしています。"
+
+
+def classify_thread_temperature(events: list[DiscordEvent], context_documents: list[dict[str, str]] | None = None) -> tuple[str, str]:
+    context_documents = context_documents or []
+    joined = (" ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)).casefold()
+    if any(keyword.casefold() in joined for keyword in ("炎上", "荒れ", "怒", "攻撃", "揉め", "hot")):
+        return "hot", "温度が高い可能性があります。入る前に一度止めた方が安全です。"
+    if any(keyword.casefold() in joined for keyword in SERIOUS_KEYWORDS):
+        return "serious", "相談・注意・困りごと寄りです。勢いより前提確認が安全です。"
+    if any(keyword.casefold() in joined for keyword in PLAY_KEYWORDS):
+        return "play", "軽いノリの会話に見えます。短く入るなら自然です。"
+    return "chat", "通常の会話に見えます。文脈に一言つなげると入りやすいです。"
+
+
+def build_context_passport(
+    events: list[DiscordEvent],
+    *,
+    context_documents: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    context_documents = context_documents or []
+    briefing = fast_briefing(events, limit=5)
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    # 可視本文由来の snippet は件数だけを公開出力へ出す (raw 本文は含めない)。
+    # 明示文脈ドキュメント (ユーザー自身の入力) 由来の note はそのまま出す。
+    visible_rule_note_count = len(extract_matching_snippets(events, RULE_KEYWORDS))
+    context_rule_notes = extract_context_rule_notes(context_documents)
+    rule_notes = context_rule_notes
+    premise_notes = [
+        f"{document['source_label']}: {document['summary']}"
+        for document in context_documents
+        if any(keyword in document["text"] for keyword in ("前提", "目的", "ルール", "方針", "禁止", "注意"))
+    ][:5]
+    visible_premise_note_count = len(
+        extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=4)
+    )
+    topics = sorted(detect_topics(briefing["briefing"] + " " + context_documents_text(context_documents)))
+    author_aliases = public_participant_aliases(events)
+    authors = [author_aliases[event.author_label] for event in events[-5:]]
+    context_sources = [document["source"] for document in context_documents]
+    natural_entry_angles: list[str] = []
+    if rule_notes or visible_rule_note_count:
+        natural_entry_angles.append("先にルールや注意点を踏まえていることを示す。")
+    if context_documents:
+        natural_entry_angles.append("サーバー・チャンネル・スレッドの明示文脈を優先して確認する。")
+    if topics:
+        natural_entry_angles.append("今の話題（" + "、".join(topics) + "）に一言つなげて入る。")
+    if temperature == "play":
+        natural_entry_angles.append("短いノリで入る。説明しすぎない。")
+    elif temperature in {"serious", "hot"}:
+        natural_entry_angles.append("断定せず、前提確認から入る。")
+    else:
+        natural_entry_angles.append("直近発言への短い反応から入る。")
+
+    context_ready = bool(events) and bool(briefing["briefing"])
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "スレッド文脈カードを作成しました。",
+        "parsed": len(events),
+        "external_context_used": bool(context_documents),
+        "external_context_used_label": "明示文脈を併用しています。" if context_documents else "明示文脈は未入力です。可視本文だけで仮読みしています。",
+        "context_sources": context_sources,
+        "context_sources_label": "文脈ソース: " + ("、".join(document["source_label"] for document in context_documents) if context_documents else "可視本文のみ"),
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "conversation_flow": "omitted",
+        "conversation_flow_label": f"直近の流れ: 可視発言 {briefing['event_count']} 件を確認済み (本文はローカル保存のみ)",
+        "implicit_premises": premise_notes,
+        "implicit_premises_label": "暗黙の前提候補: " + (
+            " / ".join(premise_notes)
+            if premise_notes
+            else (
+                f"可視本文から前提らしき発言 {visible_premise_note_count} 件 (本文は omitted)"
+                if visible_premise_note_count
+                else "まだ強い前提は見つかりません。"
+            )
+        ),
+        "visible_premise_note_count": visible_premise_note_count,
+        "rule_notes": rule_notes,
+        "rule_notes_label": "ルール注意: " + (
+            " / ".join(rule_notes)
+            if rule_notes
+            else (
+                f"可視本文からルール言及 {visible_rule_note_count} 件 (本文は omitted)"
+                if visible_rule_note_count
+                else "直近可視範囲では明示ルールは見つかりません。"
+            )
+        ),
+        "visible_rule_note_count": visible_rule_note_count,
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "recent_authors": authors,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "natural_entry_angles": natural_entry_angles,
+        "context_ready": context_ready,
+        "context_ready_label": "発話前チェックに使える文脈があります。" if context_ready else "文脈が不足しています。先にスレッド本文を取り込んでください。",
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def context_passport_from_text(
+    text: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_passport(
+        events,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+    )
+
+
+def build_context_digestion(
+    events: list[DiscordEvent],
+    *,
+    context_documents: list[dict[str, str]] | None = None,
+    focus: str = "",
+) -> dict[str, Any]:
+    context_documents = context_documents or []
+    joined = " ".join(event.text_snippet for event in events) + " " + context_documents_text(context_documents)
+    purposes = sorted(detect_purposes(joined))
+    topics = sorted(detect_topics(joined))
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    rule_notes = extract_context_rule_notes(context_documents) + extract_matching_snippets(events, RULE_KEYWORDS, limit=2)
+    premise_count = len(
+        extract_matching_snippets(events, ("前提", "つまり", "ここまで", "目的", "ルール", "まず"), limit=5)
+    )
+    focus_text = redact_artifact_text(focus)
+    focus_matched = bool(focus_text and focus_text.casefold() in joined.casefold())
+    understanding_layers = [
+        "目的: " + purpose_label,
+        "温度: " + temperature_label,
+        "前提: "
+        + (
+            "直近可視範囲に前提候補があります。"
+            if premise_count
+            else "前提はまだ薄いです。必要なら追加で読みます。"
+        ),
+    ]
+    if rule_notes:
+        understanding_layers.append("制約: ルールや注意点らしき情報があります。")
+    else:
+        understanding_layers.append("制約: 直近可視範囲では強いルール注意は未検出です。")
+    if focus_text:
+        understanding_layers.append(
+            "焦点: 指定 focus は文脈内に見えます。" if focus_matched else "焦点: 指定 focus は直近文脈だけでは未確認です。"
+        )
+    open_questions: list[str] = []
+    if not events:
+        open_questions.append("Discord 可視本文がまだありません。")
+    if not topics and not purposes:
+        open_questions.append("話題・目的がまだ薄いので、前後の発言を追加すると咀嚼精度が上がります。")
+    if temperature in {"serious", "hot"}:
+        open_questions.append("温度が高い可能性があるため、返信前に相手の意図を人間が確認してください。")
+    if focus_text and not focus_matched:
+        open_questions.append("focus と直近文脈の接続が未確認です。")
+    next_actions = [
+        "3〜8点の理解サマリを人間が確認する。",
+        "返信へ進む場合は review-draft または stage-discord-send の理解 gate を通す。",
+    ]
+    if not events:
+        next_actions.insert(0, "先に import-visible-text または snapshot-discord-url-text で可視本文を取り込む。")
+    elif open_questions:
+        next_actions.insert(0, "不足している前提だけを追加で読む。")
+    else:
+        next_actions.insert(0, "この咀嚼結果を返信前の理解メモとして使える。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_digestion.v1",
+        "message": "咀嚼モードの文脈整理を作成しました。",
+        "parsed": len(events),
+        "mode": "chew",
+        "focus": focus_text,
+        "focus_matched": focus_matched if focus_text else None,
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "detected_purposes": purposes,
+        "detected_topics": topics,
+        "understanding_layers": understanding_layers,
+        "open_questions": open_questions,
+        "next_actions": next_actions,
+        "confidence": "visible_context_only" if events else "missing_context",
+        "confidence_label": "可視範囲だけの仮整理です。" if events else "咀嚼する文脈が不足しています。",
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def digest_context_from_text(
+    text: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+    focus: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_digestion(
+        events,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+        focus=focus,
+    )
+
+
+CONTEXT_OPERATING_MODES = ("triage", "catchup", "join-thread", "boundary")
+
+
+def build_context_operating_mode(
+    events: list[DiscordEvent],
+    *,
+    mode: str,
+    context_documents: list[dict[str, str]] | None = None,
+    focus: str = "",
+) -> dict[str, Any]:
+    if mode not in CONTEXT_OPERATING_MODES:
+        raise ValueError("unknown context operating mode")
+    context_documents = context_documents or []
+    purpose, purpose_label = summarize_thread_purpose(events, context_documents)
+    temperature, temperature_label = classify_thread_temperature(events, context_documents)
+    rule_notes = extract_context_rule_notes(context_documents) + extract_matching_snippets(events, RULE_KEYWORDS, limit=2)
+    focus_text = redact_artifact_text(focus)
+    no_context = not events
+    needs_care = temperature in {"serious", "hot"} or bool(rule_notes)
+
+    if mode == "triage":
+        route = "read_context" if no_context else "boundary_check" if rule_notes else "chew_context"
+        checklist = ["可視本文の有無", "ルール注意の有無", "返信へ進む前の理解 gate"]
+        next_actions = ["先に可視本文を取り込む。"] if no_context else ["chew-context で理解メモを作る。"]
+    elif mode == "catchup":
+        route = "read_more" if no_context or needs_care else "caught_up_for_light_entry"
+        checklist = ["最初または固定投稿", "直近の流れ", "ルール・管理者メモ", "未読や stale snapshot"]
+        next_actions = ["固定文・最新発言・ルール注意を確認する。"]
+    elif mode == "join-thread":
+        route = "observe_only" if no_context else "ask_before_join" if temperature == "hot" else "read_then_join"
+        checklist = ["初参加として入る余地", "話題からの脱線", "自己紹介の長さ", "相手が訂正できる余白"]
+        next_actions = ["短く、直近話題に接続して入る。"] if route == "read_then_join" else ["追加で読み、入室前に人間が判断する。"]
+    else:
+        route = "hold_for_human_go" if needs_care else "safe_to_continue"
+        checklist = ["raw 本文を出さない", "URL・snowflake・local path を出さない", "外部送信しない", "ルール注意を見落とさない"]
+        next_actions = ["必要なら人間確認を挟む。"] if needs_care else ["次のローカル処理へ進める。"]
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_context_operating_mode.v1",
+        "message": "Discord 文脈運用モードを作成しました。",
+        "mode": mode,
+        "parsed": len(events),
+        "focus": focus_text,
+        "route": route,
+        "thread_purpose": purpose,
+        "thread_purpose_label": purpose_label,
+        "people_temperature": temperature,
+        "people_temperature_label": temperature_label,
+        "rule_attention": bool(rule_notes),
+        "checklist": checklist,
+        "next_actions": next_actions,
+        "do_not_do": [
+            "Discord へ自動送信しない。",
+            "raw 本文・参加者名・URL・snowflake・local path を出力しない。",
+            "初参加時に長い自己紹介や断定で流れを切らない。",
+        ],
+        "safety_boundary": {
+            "raw_text_returned": False,
+            "participant_names_returned": False,
+            "local_paths_returned": False,
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def context_operating_mode_from_text(
+    text: str,
+    *,
+    mode: str,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    server_context: str = "",
+    channel_context: str = "",
+    thread_context: str = "",
+    focus: str = "",
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    return build_context_operating_mode(
+        events,
+        mode=mode,
+        context_documents=build_context_documents(
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        ),
+        focus=focus,
+    )
+
+
+UNDERSTANDING_GATE_OPTIONS = ["understanding-ok", "read-more", "wrong-thread", "missing-rules", "stop"]
+
+
+def build_reply_context_gate(
+    *,
+    thread_root_present: bool,
+    reply_target_present: bool,
+    prior_message_count: int,
+    history_exhausted: bool = False,
+    unresolved_reference_count: int = 0,
+    fetched_message_count: int | None = None,
+    minimum_prior_messages: int = 10,
+    max_context_messages: int = 100,
+) -> dict[str, Any]:
+    """返信生成前に必要な会話範囲を metadata-only で判定する。
+
+    直前10件は最低量であり、未解決参照が残る場合は10件ずつ追加取得する。
+    スレッド全履歴が10件未満の場合だけ、履歴終端の確認を条件に短い履歴を許可する。
+    """
+    prior_count = max(0, int(prior_message_count))
+    minimum = max(1, int(minimum_prior_messages))
+    fetched = max(0, int(fetched_message_count if fetched_message_count is not None else prior_count + int(reply_target_present)))
+    maximum = max(minimum + 1, int(max_context_messages))
+    unresolved = max(0, int(unresolved_reference_count))
+    blockers: list[str] = []
+    if not thread_root_present:
+        blockers.append("thread_root_missing")
+    if not reply_target_present:
+        blockers.append("reply_target_missing")
+    if prior_count < minimum and not history_exhausted:
+        blockers.append("minimum_prior_messages_missing")
+    if unresolved:
+        blockers.append("unresolved_references")
+
+    anchors_ready = bool(thread_root_present and reply_target_present)
+    count_ready = bool(prior_count >= minimum or history_exhausted)
+    ready = bool(anchors_ready and count_ready and not unresolved)
+    short_thread = bool(ready and prior_count < minimum and history_exhausted)
+    limit_reached = bool(not ready and fetched >= maximum)
+    unresolved_after_history_end = bool(history_exhausted and unresolved > 0)
+    can_expand = bool(not ready and not limit_reached and not history_exhausted)
+    if ready:
+        state = "ready_short_thread" if short_thread else "ready"
+        reason_code = "reply_context_ready"
+        message = "返信前の必要文脈を確認しました。"
+        next_fetch_limit = fetched
+    elif unresolved_after_history_end:
+        state = "blocked"
+        reason_code = "reply_context_unresolved_after_history_end"
+        message = "履歴終端まで取得済みですが、未解決の参照が残っています。人間または添付確認が必要です。"
+        next_fetch_limit = fetched
+    elif limit_reached:
+        state = "blocked"
+        reason_code = "reply_context_limit_reached"
+        message = "追加取得の上限に達しました。未解決の前提を人間が確認してください。"
+        next_fetch_limit = maximum
+    elif can_expand:
+        state = "expand_required"
+        reason_code = "reply_context_expand_required"
+        message = "返信前の文脈が不足しています。直前履歴を10件追加取得してください。"
+        next_fetch_limit = min(maximum, fetched + 10)
+    else:
+        state = "blocked"
+        reason_code = "reply_context_blocked"
+        message = "返信対象を判断できる文脈が揃っていません。"
+        next_fetch_limit = fetched
+
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "schema": "discord_reply_context_gate.v1",
+        "state": state,
+        "reason_code": reason_code,
+        "message": message,
+        "reply_generation_allowed": ready,
+        "thread_root_present": bool(thread_root_present),
+        "reply_target_present": bool(reply_target_present),
+        "prior_message_count": prior_count,
+        "minimum_prior_messages": minimum,
+        "history_exhausted": bool(history_exhausted),
+        "unresolved_reference_count": unresolved,
+        "fetched_message_count": fetched,
+        "max_context_messages": maximum,
+        "next_fetch_limit": next_fetch_limit,
+        "blockers": blockers,
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+    }
+
+
+def build_reply_context_gate_from_messages(
+    messages: Iterable[dict[str, Any]],
+    *,
+    history_exhausted: bool = False,
+    max_context_messages: int = 100,
+) -> dict[str, Any]:
+    """structured message envelope を壊さず返信前文脈gateへ変換する。"""
+    loaded = [message for message in messages if isinstance(message, dict)]
+    order_source = "unknown"
+    order_verified = False
+    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
+        loaded = sorted(loaded, key=lambda message: int(message["sequence"]))
+        order_source = "sequence"
+        order_verified = True
+    elif loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
+        loaded = sorted(
+            loaded,
+            key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        order_source = "timestamp"
+        order_verified = True
+    root_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_thread_root"))]
+    target_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_reply_target"))]
+    target_present = bool(target_indexes)
+    target_index = target_indexes[-1] if target_indexes else -1
+    root_present = bool(root_indexes and target_present and min(root_indexes) <= target_index)
+    prior_count = target_index if target_present else 0
+    unresolved = sum(
+        1
+        for message in loaded[: target_index + 1 if target_present else len(loaded)]
+        if bool(message.get("unresolved_reference"))
+    )
+    gate = build_reply_context_gate(
+        thread_root_present=root_present,
+        reply_target_present=target_present,
+        prior_message_count=prior_count,
+        history_exhausted=history_exhausted,
+        unresolved_reference_count=unresolved,
+        fetched_message_count=len(loaded),
+        max_context_messages=max_context_messages,
+    )
+    result = {
+        **gate,
+        "structured_message_count": len(loaded),
+        "relationship_metadata_preserved": True,
+        "message_order_verified": order_verified,
+        "message_order_source": order_source,
+    }
+    if len(loaded) > 1 and not order_verified:
+        result["state"] = "blocked"
+        result["reason_code"] = "reply_context_message_order_unverified"
+        result["message"] = "メッセージの時系列を確認できないため、返信候補を生成しません。"
+        result["reply_generation_allowed"] = False
+        result["blockers"] = [*result["blockers"], "message_order_unverified"]
+    if root_indexes and target_present and min(root_indexes) > target_index:
+        result["state"] = "blocked"
+        result["reason_code"] = "reply_context_root_after_target"
+        result["message"] = "スレッド起点が返信対象より後に並んでいるため、取得順を確認してください。"
+        result["reply_generation_allowed"] = False
+        result["blockers"] = [*result["blockers"], "thread_root_not_before_target"]
+    return result
+
+
+def build_understanding_gate(
+    *,
+    understanding_confirmed: bool,
+    context_ready: bool,
+) -> dict[str, Any]:
+    confirmed = bool(understanding_confirmed and context_ready)
+    return {
+        "schema": "discord_understanding_gate.v1",
+        "understanding_confirmed": confirmed,
+        "status": "confirmed" if confirmed else "blocked",
+        "decision": "confirmed" if confirmed else "pending",
+        "recommended_option": "understanding-ok" if confirmed else "read-more",
+        "options": UNDERSTANDING_GATE_OPTIONS,
+        "reason": ""
+        if confirmed
+        else "文脈理解が人間に確認されるまで、下書き・final candidate・copy block は生成しません。",
+        "outbound_actions": "disabled",
+    }
+
+
+def build_blocked_copy_block(reason: str, *, max_chars: int = 2000) -> dict[str, Any]:
+    return {
+        "schema": "discord_copy_block.v1",
+        "status": "blocked",
+        "text": "",
+        "parts": [],
+        "part_count": 0,
+        "max_chars": max_chars,
+        "split_required": False,
+        "stop_reason": reason,
+        "outbound_actions": "disabled",
+    }
+
+
+def review_reply_intent(
+    draft: str,
+    events: Iterable[DiscordEvent],
+    *,
+    understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    loaded = list(events)
+    gap = check_knowledge_gap(draft, loaded)
+    draft_folded = draft.casefold()
+    risky_tone = any(keyword in draft_folded for keyword in ("バカ", "黙れ", "最悪", "ふざけ", "攻撃", "怒"))
+    no_context = not loaded
+    needs_check = bool(gap["knowledge_gap"] or gap["topic_mismatch"])
+    understanding_gate = build_understanding_gate(
+        understanding_confirmed=understanding_confirmed,
+        context_ready=not no_context,
+    )
+    if reply_context_gate is not None and not reply_context_gate.get("reply_generation_allowed"):
+        reason = str(reply_context_gate.get("message") or "返信前の必要文脈が揃っていません。")
+        copy_block = build_blocked_copy_block(reason)
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": reason,
+            "ok_to_reply": "ask_first",
+            "ok_to_reply_label": "先に必要な会話履歴を取得してください。",
+            "quick_verdict": "reply-context-blocked",
+            "quick_verdict_label": f"read-more: {reason}",
+            "one_check_before_reply": "スレッド起点、返信対象、直前10件、未解決参照を確認してください。",
+            "alignment": "not_checked",
+            "alignment_label": "返信前文脈gateで停止中です。",
+            "missing_knowledge": gap["knowledge_gap"],
+            "missing_knowledge_label": "返信前文脈gateで停止中です。",
+            "topic_warning_label": gap["topic_warning_label"],
+            "likely_counterparty_meaning": [],
+            "suggested_correction": "",
+            "reply_context_gate": reply_context_gate,
+            "understanding_gate": understanding_gate,
+            "final_candidate": "",
+            "human_gate": {
+                "schema": "discord_human_gate.v1",
+                "human_decision_required": True,
+                "decision": "pending",
+                "recommended_option": "read-more",
+                "options": UNDERSTANDING_GATE_OPTIONS,
+                "outbound_actions": "disabled",
+            },
+            "copy_block": copy_block,
+            "send_capability": "disabled",
+            "send_capability_label": "このツールから Discord へ送信しません。",
+        }
+    if understanding_gate["status"] != "confirmed":
+        copy_block = build_blocked_copy_block(str(understanding_gate["reason"]))
+        human_gate = {
+            "schema": "discord_human_gate.v1",
+            "human_decision_required": True,
+            "decision": "pending",
+            "recommended_option": "read-more",
+            "options": UNDERSTANDING_GATE_OPTIONS,
+            "outbound_actions": "disabled",
+        }
+        return {
+            "language": DEFAULT_LANGUAGE,
+            "message": "文脈理解の確認待ちです。下書きと copy block は生成しません。",
+            "ok_to_reply": "ask_first",
+            "ok_to_reply_label": "先に文脈理解を確認してください。",
+            "quick_verdict": "understanding-blocked",
+            "quick_verdict_label": "read-more: 文脈理解の確認前なので下書きへ進めません。",
+            "one_check_before_reply": "3〜8点の理解サマリを人間が確認してから下書きへ進んでください。",
+            "alignment": "not_checked",
+            "alignment_label": "文脈理解の確認前です。",
+            "missing_knowledge": gap["knowledge_gap"],
+            "missing_knowledge_label": "理解確認gateで停止中です。",
+            "topic_warning_label": gap["topic_warning_label"],
+            "likely_counterparty_meaning": "omitted" if loaded else "",
+            "suggested_correction": "omitted" if loaded else gap["recommended_briefing"],
+            "understanding_gate": understanding_gate,
+            "final_candidate": "",
+            "human_gate": human_gate,
+            "copy_block": copy_block,
+            "send_capability": "disabled",
+            "send_capability_label": "このツールから Discord へ送信しません。",
+        }
+    if risky_tone:
+        quick_verdict = "risky"
+        quick_verdict_label = "risky: そのまま出す前にトーンを落としてください。"
+        one_check = "相手を傷つける言い方になっていないかだけ確認してください。"
+    elif no_context:
+        quick_verdict = "wait"
+        quick_verdict_label = "wait: 文脈が足りないので今は待ちです。"
+        one_check = "先にスレッド本文を取り込んでください。"
+    elif needs_check:
+        quick_verdict = "ask-context"
+        quick_verdict_label = "ask-context: 前提を一つ確認してから入るのが安全です。"
+        one_check = "自分の返信が直近の話題に乗っているか確認してください。"
+    else:
+        quick_verdict = "go"
+        quick_verdict_label = "go: 短く入って問題なさそうです。"
+        one_check = "送る前に固有名詞と前提だけ確認してください。"
+    ok_to_reply = "ask_first" if needs_check else "likely_ok"
+    alignment = "minor_gap" if needs_check else "aligned"
+    missing_knowledge = gap["knowledge_gap"]
+    missing_knowledge_label = (
+        "不足している前提はありません。"
+        if not missing_knowledge
+        else "不足している前提: " + "、".join(missing_knowledge)
+    )
+    final_candidate = build_final_candidate(draft, quick_verdict=quick_verdict)
+    copy_block = build_copy_block(final_candidate)
+    human_gate = build_human_gate(
+        quick_verdict=quick_verdict,
+        ok_to_reply=ok_to_reply,
+        copy_block_status=str(copy_block["status"]),
+    )
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "返信前レビューが完了しました。",
+        "ok_to_reply": ok_to_reply,
+        "ok_to_reply_label": "先に確認した方がよさそうです。" if ok_to_reply == "ask_first" else "返信してよさそうです。",
+        "quick_verdict": quick_verdict,
+        "quick_verdict_label": quick_verdict_label,
+        "one_check_before_reply": one_check,
+        "alignment": alignment,
+        "alignment_label": "文脈に不足があります。" if alignment == "minor_gap" else "文脈に合っています。",
+        "missing_knowledge": missing_knowledge,
+        "missing_knowledge_label": missing_knowledge_label,
+        "topic_warning_label": gap["topic_warning_label"],
+        "likely_counterparty_meaning": "omitted" if loaded else "",
+        "suggested_correction": ("omitted" if loaded else gap["recommended_briefing"]) if needs_check else "",
+        "understanding_gate": understanding_gate,
+        "final_candidate": final_candidate,
+        "human_gate": human_gate,
+        "copy_block": copy_block,
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def build_final_candidate(draft: str, *, quick_verdict: str) -> str:
+    safe_draft = redact_artifact_text(draft) or "未入力"
+    if quick_verdict in {"risky", "wait"}:
+        return "送信前に人間が修正してください: " + safe_draft
+    return safe_draft
+
+
+def build_human_gate(*, quick_verdict: str, ok_to_reply: str, copy_block_status: str) -> dict[str, Any]:
+    decision_required = True
+    if quick_verdict in {"risky", "wait"}:
+        recommended = "wait"
+    elif ok_to_reply == "ask_first":
+        recommended = "read-more"
+    elif copy_block_status == "blocked":
+        recommended = "edit"
+    else:
+        recommended = "copy"
+    return {
+        "schema": "discord_human_gate.v1",
+        "human_decision_required": decision_required,
+        "decision": "pending",
+        "recommended_option": recommended,
+        "options": ["copy", "edit", "read-more", "wait", "no-reply"],
+        "outbound_actions": "disabled",
+    }
+
+
+def build_copy_block(candidate: str, *, max_chars: int = 2000, max_parts: int = 2) -> dict[str, Any]:
+    safe_candidate = redact_artifact_text(candidate) or "未入力"
+    if len(safe_candidate) <= max_chars:
+        return {
+            "schema": "discord_copy_block.v1",
+            "status": "ready",
+            "text": safe_candidate,
+            "parts": [safe_candidate],
+            "part_count": 1,
+            "max_chars": max_chars,
+            "split_required": False,
+            "stop_reason": "",
+            "outbound_actions": "disabled",
+        }
+    parts = [safe_candidate[index : index + max_chars] for index in range(0, len(safe_candidate), max_chars)]
+    if len(parts) > max_parts:
+        return {
+            "schema": "discord_copy_block.v1",
+            "status": "blocked",
+            "text": "",
+            "parts": [],
+            "part_count": len(parts),
+            "max_chars": max_chars,
+            "split_required": True,
+            "stop_reason": "copy block が3分割以上になるため、短く編集してから再レビューしてください。",
+            "outbound_actions": "disabled",
+        }
+    return {
+        "schema": "discord_copy_block.v1",
+        "status": "split",
+        "text": "",
+        "parts": parts,
+        "part_count": len(parts),
+        "max_chars": max_chars,
+        "split_required": True,
+        "stop_reason": "",
+        "outbound_actions": "disabled",
+    }
+
+
+def redact_artifact_text(text: str) -> str:
+    redacted = DISCORD_WEBHOOK_RE.sub("[discord webhook omitted]", text)
+    redacted = DISCORD_TOKEN_RE.sub("[discord token omitted]", redacted)
+    redacted = LOCAL_ABSOLUTE_PATH_RE.sub("[local path omitted]", redacted)
+    redacted = DISCORD_SNOWFLAKE_RE.sub("[discord id omitted]", redacted)
+    redacted = re.sub(r"https?://\S+", "[url omitted]", redacted)
+    redacted = re.sub(r"\bmember-[A-Za-z0-9_-]+\b", "safe-member", redacted)
+    return redacted.strip()
+
+
+def redact_sensitive_storage_text(text: str) -> str:
+    """ローカル snapshot に保存してよい範囲だけをマスクする。"""
+    redacted = DISCORD_WEBHOOK_RE.sub("[discord webhook omitted]", text)
+    redacted = DISCORD_TOKEN_RE.sub("[discord token omitted]", redacted)
+    redacted = AUTH_HEADER_RE.sub("[authorization omitted]", redacted)
+    return redacted.strip()
+
+
+def build_review_artifact_markdown(
+    draft: str,
+    review: dict[str, Any],
+    *,
+    title: str = "Discord review artifact",
+) -> str:
+    safe_draft = redact_artifact_text(draft) or "未入力"
+    understanding_gate = dict(review.get("understanding_gate") or {})
+    understanding_confirmed = understanding_gate.get("status") == "confirmed"
+    final_candidate = redact_artifact_text(str(review.get("final_candidate") or safe_draft))
+    human_gate = dict(review.get("human_gate") or {})
+    copy_block = dict(review.get("copy_block") or build_copy_block(final_candidate))
+    missing = review.get("missing_knowledge") or []
+    missing_label = "、".join(str(item) for item in missing) if missing else "なし"
+    suggested_check = redact_artifact_text(str(review.get("one_check_before_reply") or "送信前に人間が確認してください。"))
+    quick_verdict_label = redact_artifact_text(str(review.get("quick_verdict_label") or "未判定"))
+    ok_to_reply_label = redact_artifact_text(str(review.get("ok_to_reply_label") or "未判定"))
+    alignment_label = redact_artifact_text(str(review.get("alignment_label") or "未判定"))
+    topic_warning_label = redact_artifact_text(str(review.get("topic_warning_label") or "未判定"))
+    draft_section = safe_draft if understanding_confirmed else "blocked: understanding_confirmed=false"
+    final_candidate_section = final_candidate if understanding_confirmed else "blocked: understanding_confirmed=false"
+
+    return "\n".join(
+        [
+            f"# {redact_artifact_text(title)}",
+            "",
+            "> do_not_post: この artifact は送信前レビュー用です。Discord へ自動送信しません。",
+            "",
+            "## 1. 文脈理解",
+            "",
+            f"- verdict: {quick_verdict_label}",
+            f"- context_fit: {alignment_label}",
+            f"- topic_check: {topic_warning_label}",
+            f"- missing_premise: {missing_label}",
+            f"- understanding_gate: {redact_artifact_text(str(understanding_gate.get('status') or 'not_recorded'))}",
+            "",
+            "## 2. provisional draft",
+            "",
+            draft_section,
+            "",
+            "## 3. risk review",
+            "",
+            f"- reply_state: {ok_to_reply_label}",
+            f"- one_check_before_reply: {suggested_check}",
+            "- outbound_actions: disabled",
+            "",
+            "## 4. unknown / next checks",
+            "",
+            f"- {suggested_check}",
+            "- 追加読みが必要なら human gate で止める。",
+            "",
+            "## 5. human gate",
+            "",
+            f"- human_decision_required: {str(human_gate.get('human_decision_required', True)).lower()}",
+            f"- decision: {redact_artifact_text(str(human_gate.get('decision') or 'pending'))}",
+            f"- recommended_option: {redact_artifact_text(str(human_gate.get('recommended_option') or 'copy'))}",
+            "- options: copy / edit / read-more / wait / no-reply",
+            "",
+            "## 6. final candidate",
+            "",
+            final_candidate_section,
+            "",
+            "## 7. copy block",
+            "",
+            *format_copy_block_markdown(copy_block),
+            "",
+            "## safety boundary",
+            "",
+            "- raw_discord_text_output: omitted",
+            "- participant_names_output: omitted",
+            "- text_returned: false",
+            "- outbound_actions: disabled",
+            "",
+        ]
+    )
+
+
+def format_copy_block_markdown(copy_block: dict[str, Any]) -> list[str]:
+    status = str(copy_block.get("status") or "blocked")
+    if status == "ready":
+        return [
+            "status: ready",
+            "",
+            "```text",
+            redact_artifact_text(str(copy_block.get("text") or "")),
+            "```",
+        ]
+    if status == "split":
+        lines = ["status: split", f"part_count: {copy_block.get('part_count', 0)}", ""]
+        for index, part in enumerate(copy_block.get("parts") or [], start=1):
+            lines.extend([f"### part {index}", "", "```text", redact_artifact_text(str(part)), "```", ""])
+        return lines
+    return [
+        "status: blocked",
+        f"part_count: {copy_block.get('part_count', 0)}",
+        redact_artifact_text(str(copy_block.get("stop_reason") or "copy block を短く編集してください。")),
+    ]
+
+
+def guide_reply_from_text(
+    text: str,
+    draft: str,
+    *,
+    guild_label: str = "example-community",
+    channel_label: str = "general",
+    understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    events = parse_visible_text(text, guild_label=guild_label, channel_label=channel_label)
+    briefing = fast_briefing(events)
+    review = review_reply_intent(
+        draft,
+        events,
+        understanding_confirmed=understanding_confirmed,
+        reply_context_gate=reply_context_gate,
+    )
+    next_actions = ["そのまま送らず、Discord 側で人間が確認してから返信してください。"]
+    if review["missing_knowledge"]:
+        next_actions.insert(0, "不足している前提を相手に確認してください。")
+    if review["topic_warning_label"] != "話題の大きなズレは見つかりません。":
+        next_actions.insert(0, review["topic_warning_label"])
+    elif not review["missing_knowledge"]:
+        next_actions.insert(0, "文脈と返信意図は大きくずれていません。")
+    return {
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 返信ガイドを作成しました。",
+        "parsed": len(events),
+        "counterparty_context": (
+            f"可視発言 {briefing['event_count']} 件を確認済み (本文は omitted)"
+            if events
+            else "直近の文脈はまだ取り込まれていません。"
+        ),
+        "raw_text_returned": False,
+        "reply_review": review,
+        "next_actions": next_actions,
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+DISCORD_MESSAGE_URL_RE = re.compile(
+    r"^https://discord(?:app)?\.com/channels/(?P<guild>\d{17,20})/(?P<channel>\d{17,20})/(?P<message>\d{17,20})(?:\?.*)?$"
+)
+DISCORD_CHANNEL_URL_RE = re.compile(
+    r"^https://discord(?:app)?\.com/channels/(?P<guild>\d{17,20})/(?P<channel>\d{17,20})(?:\?.*)?$"
+)
+DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS = (
+    "press_enter_to_send",
+    "click_send_button",
+    "send_message",
+    "react",
+    "edit",
+    "delete",
+)
+
+
+def _canonical_discord_message_url(url: str) -> str:
+    match = DISCORD_MESSAGE_URL_RE.fullmatch(url.strip())
+    if match is None:
+        return ""
+    return f"https://discord.com/channels/{match['guild']}/{match['channel']}/{match['message']}"
+
+
+def discord_route_fingerprint(url: str) -> str:
+    match = DISCORD_MESSAGE_URL_RE.fullmatch(url.strip()) or DISCORD_CHANNEL_URL_RE.fullmatch(url.strip())
+    if not match:
+        return ""
+    return stable_text_hash(f"{match.group('guild')}/{match.group('channel')}")
+
+
+def _enforce_discord_fill_only_guard(packet: dict[str, Any]) -> dict[str, Any]:
+    browser_action = packet.get("browser_action") or {}
+    allowed_actions = set(browser_action.get("allowed_actions") or [])
+    forbidden_actions = set(browser_action.get("forbidden_actions") or [])
+    overlap = sorted(allowed_actions & forbidden_actions)
+    if overlap:
+        raise RuntimeError(f"stage-discord-send fill-only guard conflict: {', '.join(overlap)}")
+    if not set(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS).issubset(forbidden_actions):
+        raise RuntimeError("stage-discord-send fill-only guard is missing forbidden send actions")
+    if browser_action.get("capability") != "chrome_extension_fill_only":
+        raise RuntimeError("stage-discord-send must remain chrome_extension_fill_only")
+    if "stop_before_send_button" not in allowed_actions:
+        raise RuntimeError("stage-discord-send must stop before the send button")
+    guard = packet.get("stage_guard") or {}
+    if guard.get("external_action") != "none_until_human_send" or guard.get("human_send_required") is not True:
+        raise RuntimeError("stage-discord-send external action boundary is not fill-only")
+    if packet.get("send_capability") != "disabled" or packet.get("outbound_actions") != "disabled":
+        raise RuntimeError("stage-discord-send cannot enable outbound actions")
+    return packet
+
+
+def _copy_block_payload_hash(copy_block: dict[str, Any]) -> str:
+    text = copy_block.get("text")
+    parts = copy_block.get("parts")
+    if (
+        copy_block.get("schema") != "discord_copy_block.v1"
+        or not isinstance(text, str)
+        or not isinstance(parts, list)
+        or not parts
+        or any(not isinstance(part, str) or not part for part in parts)
+        or type(copy_block.get("part_count")) is not int
+        or copy_block["part_count"] != len(parts)
+    ):
+        return ""
+    if copy_block.get("status") == "ready" and parts == [text]:
+        return stable_text_hash(text)
+    if copy_block.get("status") == "split" and text == "" and len(parts) > 1:
+        return canonical_event_hash({"schema": "discord_copy_block.v1", "parts": parts})
+    return ""
+
+
+def build_discord_send_staging_packet(
+    draft: str,
+    events: Iterable[DiscordEvent],
+    *,
+    mode: str = "reply",
+    target_url: str = "",
+    mention_label: str = "",
+    understanding_confirmed: bool = False,
+    reply_context_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a fill-only browser action packet for a Discord reply/mention.
+
+    This deliberately does not send. It only tells a Chrome-extension runner how
+    far it may go before the human performs the final Discord action.
+    """
+    normalized_mode = mode.strip().casefold() or "reply"
+    if normalized_mode not in {"reply", "mention"}:
+        normalized_mode = "unsupported"
+    loaded = list(events)
+    effective_reply_context_gate = reply_context_gate if normalized_mode == "reply" else None
+    review = review_reply_intent(
+        draft,
+        loaded,
+        understanding_confirmed=understanding_confirmed,
+        reply_context_gate=effective_reply_context_gate,
+    )
+    copy_block = dict(review.get("copy_block") or {})
+    blockers: list[str] = []
+    target_kind = "unknown"
+    if normalized_mode == "unsupported":
+        blockers.append("unsupported_mode")
+    if not understanding_confirmed:
+        blockers.append("understanding_not_confirmed")
+    if copy_block.get("status") not in {"ready", "split"}:
+        blockers.append("copy_block_not_ready")
+    if normalized_mode == "reply":
+        if DISCORD_MESSAGE_URL_RE.match(target_url):
+            target_kind = "message"
+        else:
+            blockers.append("reply_target_message_url_required")
+    elif normalized_mode == "mention":
+        if DISCORD_CHANNEL_URL_RE.match(target_url) or DISCORD_MESSAGE_URL_RE.match(target_url):
+            target_kind = "channel_or_message"
+        else:
+            blockers.append("mention_target_discord_url_required")
+        if not mention_label.strip().startswith("@"):
+            blockers.append("mention_label_required")
+    staging_status = "ready_to_fill" if not blockers else "blocked"
+    exact_target_url = _canonical_discord_message_url(target_url) if normalized_mode == "reply" else target_url
+    target_fingerprint = target_key_for_url(exact_target_url) if target_kind != "unknown" else ""
+    route_fingerprint = discord_route_fingerprint(target_url)
+    operation_correlation_id = (
+        stable_text_hash(
+            "|".join(
+                [
+                    "discord_send_operation.v1",
+                    normalized_mode,
+                    route_fingerprint,
+                    _copy_block_payload_hash(copy_block),
+                ]
+            )
+        )
+        if staging_status == "ready_to_fill" and route_fingerprint
+        else ""
+    )
+    browser_steps = [
+        "socket_preflight",
+        "claim_existing_discord_tab_or_open_target",
+        "verify_visible_url_matches_target",
+    ]
+    if normalized_mode == "reply":
+        browser_steps.extend(["open_message_reply_ui", "fill_reply_box"])
+    elif normalized_mode == "mention":
+        browser_steps.extend(["focus_message_box", "insert_human_verified_mention_then_draft"])
+    browser_steps.extend(["socket_pre_send_ping", "stop_before_send_button"])
+    packet = {
+        "schema": "discord_send_staging_packet.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 送信準備パケットを作成しました。" if staging_status == "ready_to_fill" else "Discord 送信準備は gate で停止しました。",
+        "mode": normalized_mode,
+        "staging_status": staging_status,
+        "blockers": blockers,
+        "target_kind": target_kind,
+        "target_url_output": "omitted",
+        "operation_binding": {
+            "schema": "discord_send_operation_binding.v1",
+            "correlation_id": operation_correlation_id,
+            "target_fingerprint": target_fingerprint,
+            "route_fingerprint": route_fingerprint,
+            "target_url_output": "omitted",
+        },
+        "mention_label_output": redact_artifact_text(mention_label) if mention_label else "",
+        "review": {
+            "quick_verdict": review.get("quick_verdict"),
+            "ok_to_reply": review.get("ok_to_reply"),
+            "human_gate": review.get("human_gate"),
+        },
+        "copy_block": copy_block,
+        "browser_action": {
+            "capability": "chrome_extension_fill_only",
+            "allowed_actions": browser_steps,
+            "forbidden_actions": list(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS),
+            "socket_checks": ["preflight", "after_navigation", "pre_send"],
+            "double_submit_guard": "stop_before_send_button",
+        },
+        "stage_guard": {
+            "schema": "discord_fill_only_guard.v1",
+            "max_runner_action": "fill_draft_only",
+            "external_action": "none_until_human_send",
+            "latest_target_snapshot_required": True,
+            "latest_target_snapshot_check": "required_before_user_action",
+            "stop_condition": "stop_before_send_button",
+            "human_send_required": True,
+        },
+        "human_gate": {
+            "schema": "discord_send_human_gate.v1",
+            "human_decision_required": True,
+            "decision": "pending",
+            "recommended_option": "fill-draft" if staging_status == "ready_to_fill" else "fix-blockers",
+            "options": ["fill-draft", "edit", "read-more", "stop"],
+            "outbound_actions": "disabled",
+        },
+        "send_capability": "disabled",
+        "send_capability_label": "この packet は下書き入力までです。Discord 送信は人間が最後に実行してください。",
+        "outbound_actions": "disabled",
+        "raw_discord_text_output": "omitted",
+    }
+    return _enforce_discord_fill_only_guard(packet)
+
+
+def verify_chrome_extension_fill_only_dry_run(
+    staging_packet: dict[str, Any],
+    *,
+    socket_preflight: bool = False,
+    target_url_verified: bool = False,
+    socket_after_navigation: bool = False,
+    latest_target_snapshot_confirmed: bool = False,
+    reply_ui_candidates: int = 0,
+    message_box_candidates: int = 0,
+    draft_matches_copy_block: bool = False,
+    socket_pre_send: bool = False,
+) -> dict[str, Any]:
+    """Validate browser observations before a Chrome runner may fill a draft.
+
+    A ready staging packet only proves that the draft and safe metadata passed
+    the send-prep gate. This dry-run gate proves the visible browser surface is
+    also narrow enough to fill without sending.
+    """
+    mode = str(staging_packet.get("mode") or "").strip().casefold()
+    operation_binding_payload = staging_packet.get("operation_binding")
+    operation_binding = dict(operation_binding_payload) if isinstance(operation_binding_payload, dict) else {}
+    blockers: list[str] = []
+    if staging_packet.get("schema") != "discord_send_staging_packet.v1":
+        blockers.append("invalid_staging_packet")
+    if staging_packet.get("staging_status") != "ready_to_fill":
+        blockers.append("staging_packet_not_ready")
+    if (
+        operation_binding.get("schema") != "discord_send_operation_binding.v1"
+        or not str(operation_binding.get("correlation_id") or "")
+        or not str(operation_binding.get("target_fingerprint") or "")
+        or not str(operation_binding.get("route_fingerprint") or "")
+    ):
+        blockers.append("staging_operation_binding_missing")
+    if not socket_preflight:
+        blockers.append("socket_preflight_missing")
+    if not target_url_verified:
+        blockers.append("target_url_not_verified")
+    if not socket_after_navigation:
+        blockers.append("socket_after_navigation_missing")
+    if not latest_target_snapshot_confirmed:
+        blockers.append("latest_target_snapshot_not_confirmed")
+    if mode == "reply":
+        if reply_ui_candidates < 1:
+            blockers.append("reply_ui_not_found")
+        elif reply_ui_candidates > 1:
+            blockers.append("reply_ui_not_unique")
+    elif mode == "mention":
+        if message_box_candidates < 1:
+            blockers.append("message_box_not_found")
+        elif message_box_candidates > 1:
+            blockers.append("message_box_not_unique")
+    else:
+        blockers.append("unsupported_mode")
+    if not draft_matches_copy_block:
+        blockers.append("draft_mismatch")
+    if not socket_pre_send:
+        blockers.append("socket_pre_send_missing")
+
+    dry_run_status = "ready_to_fill" if not blockers else "blocked"
+    return {
+        "schema": "chrome_extension_fill_only_dry_run.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Chrome 拡張 fill-only dry-run は入力可能です。"
+        if dry_run_status == "ready_to_fill"
+        else "Chrome 拡張 fill-only dry-run は gate で停止しました。",
+        "dry_run_status": dry_run_status,
+        "fill_permitted": dry_run_status == "ready_to_fill",
+        "blockers": blockers,
+        "observed": {
+            "socket_preflight": socket_preflight,
+            "target_url_verified": target_url_verified,
+            "socket_after_navigation": socket_after_navigation,
+            "latest_target_snapshot_confirmed": latest_target_snapshot_confirmed,
+            "reply_ui_candidates": reply_ui_candidates,
+            "message_box_candidates": message_box_candidates,
+            "draft_matches_copy_block": draft_matches_copy_block,
+            "socket_pre_send": socket_pre_send,
+        },
+        "operation_binding": {
+            "schema": "discord_send_operation_binding.v1",
+            "correlation_id": str(operation_binding.get("correlation_id") or ""),
+            "target_fingerprint": str(operation_binding.get("target_fingerprint") or ""),
+            "route_fingerprint": str(operation_binding.get("route_fingerprint") or ""),
+            "target_url_output": "omitted",
+        },
+        "required_stop": "stop_before_send_button",
+        "allowed_next_action": "fill_draft_then_stop" if dry_run_status == "ready_to_fill" else "fix_blockers",
+        "forbidden_actions": list(DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS),
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+        "send_capability_label": "このツールから Discord へ送信しません。",
+    }
+
+
+def build_discord_send_pdca_preflight(
+    *,
+    target_verified: bool = False,
+    draft_verified: bool = False,
+    attachment_required: bool = False,
+    attachment_file_verified: bool = False,
+    attachment_preview_verified: bool = False,
+    browser_route_status: str = "unknown",
+    webhook_route_status: str = "not_used",
+    failure_notes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Classify the final Discord send readiness as a PDCA gate.
+
+    This gate exists for the gap between fill-only preparation and the final
+    human send. It records why the loop must stop when the target, draft, or
+    attachment preview cannot be proven, so operators do not keep retrying the
+    same unstable route.
+    """
+    normalized_browser = browser_route_status.strip().casefold().replace("-", "_") or "unknown"
+    normalized_webhook = webhook_route_status.strip().casefold().replace("-", "_") or "not_used"
+    allowed_browser = {
+        "ready",
+        "dom_timeout",
+        "filechooser_timeout",
+        "clipboard_unavailable",
+        "manual_only",
+        "unknown",
+    }
+    allowed_webhook = {
+        "not_used",
+        "ready",
+        "missing",
+        "wrong_target",
+        "unknown",
+    }
+    if normalized_browser not in allowed_browser:
+        normalized_browser = "unknown"
+    if normalized_webhook not in allowed_webhook:
+        normalized_webhook = "unknown"
+
+    blockers: list[str] = []
+    route_failures: list[str] = []
+    if not target_verified:
+        blockers.append("target_not_verified")
+    if not draft_verified:
+        blockers.append("draft_not_verified")
+    if attachment_required:
+        if not attachment_file_verified:
+            blockers.append("attachment_file_not_verified")
+        if not attachment_preview_verified:
+            blockers.append("attachment_preview_not_verified")
+    if normalized_browser in {"dom_timeout", "filechooser_timeout", "clipboard_unavailable", "unknown"}:
+        route_failures.append("browser_route_unstable")
+    if normalized_webhook in {"wrong_target", "missing", "unknown"}:
+        route_failures.append(
+            "webhook_target_mismatch" if normalized_webhook == "wrong_target" else "webhook_route_unavailable"
+        )
+
+    state = "ready_for_human_send" if not blockers and not route_failures else "blocked"
+    if "attachment_preview_not_verified" in blockers:
+        next_action = "attach_image_manually_or_recover_browser_route"
+    elif "target_not_verified" in blockers:
+        next_action = "verify_target_channel"
+    elif "draft_not_verified" in blockers:
+        next_action = "verify_draft_text"
+    elif "browser_route_unstable" in route_failures:
+        next_action = "switch_to_manual_send_or_fix_browser_route"
+    elif route_failures:
+        next_action = "fix_route_mismatch_before_retry"
+    else:
+        next_action = "human_send_or_closeout"
+
+    notes = [redact_artifact_text(note) for note in (failure_notes or []) if note.strip()]
+    return {
+        "schema": "discord_send_pdca_preflight.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "Discord 送信前 PDCA gate は送信可能です。"
+        if state == "ready_for_human_send"
+        else "Discord 送信前 PDCA gate は停止しました。同じ失敗を再試行せず、原因を直してください。",
+        "state": state,
+        "ok_to_send": state == "ready_for_human_send",
+        "blockers": blockers,
+        "route_failures": route_failures,
+        "observed": {
+            "target_verified": target_verified,
+            "draft_verified": draft_verified,
+            "attachment_required": attachment_required,
+            "attachment_file_verified": attachment_file_verified,
+            "attachment_preview_verified": attachment_preview_verified,
+            "browser_route_status": normalized_browser,
+            "webhook_route_status": normalized_webhook,
+        },
+        "pdca": {
+            "plan": "target + draft + attachment + route を送信前に確定する",
+            "do": "fill-only または人間操作で下書き/添付準備まで進める",
+            "check": "ready" if state == "ready_for_human_send" else "blocked",
+            "act": next_action,
+            "retry_policy": "同じ route_failure が残る間は再試行しない",
+        },
+        "next_action": next_action,
+        "failure_notes": notes,
+        "safety_boundary": {
+            "discord_send_executed_by_this_tool": False,
+            "raw_discord_text_output": "omitted",
+            "target_url_output": "omitted",
+            "snowflake_values_output": "omitted",
+            "outbound_actions": "disabled",
+            "send_capability": "disabled",
+        },
+    }
+
+
+def build_discord_auto_send_preflight(
+    staging_packet: dict[str, Any],
+    dry_run_report: dict[str, Any],
+    *,
+    explicit_auto_send_approval: bool = False,
+    target_route_verified: bool = False,
+    transport_label: str = "",
+    transport_configured: bool = False,
+    operator_label: str = "",
+    idempotency_key: str = "",
+    rollback_plan_reviewed: bool = False,
+    audit_log_path: str = "",
+    production_runbook_fixed: bool = False,
+    target_environment: str = "test",
+) -> dict[str, Any]:
+    """Gate a private adapter before it performs an automatic Discord send.
+
+    The public core still performs no outbound action. This packet is a
+    fail-closed contract for a separate private transport that can execute only
+    after the draft, browser target, approval, idempotency, and audit evidence
+    are all present.
+    """
+    normalized_environment = target_environment.strip().casefold() or "test"
+    if normalized_environment not in {"test", "production"}:
+        normalized_environment = "unknown"
+    safe_transport_label = redact_artifact_text(transport_label)
+    safe_operator_label = redact_artifact_text(operator_label)
+    safe_audit_log_path = redact_artifact_text(audit_log_path)
+    safe_idempotency_key = redact_artifact_text(idempotency_key)
+    blockers: list[str] = []
+
+    if staging_packet.get("schema") != "discord_send_staging_packet.v1":
+        blockers.append("invalid_staging_packet")
+    if staging_packet.get("staging_status") != "ready_to_fill":
+        blockers.append("staging_packet_not_ready")
+    if dry_run_report.get("schema") != "chrome_extension_fill_only_dry_run.v1":
+        blockers.append("invalid_dry_run_report")
+    if dry_run_report.get("dry_run_status") != "ready_to_fill" or dry_run_report.get("fill_permitted") is not True:
+        blockers.append("dry_run_not_ready")
+    if not explicit_auto_send_approval:
+        blockers.append("explicit_auto_send_approval_missing")
+    if not target_route_verified:
+        blockers.append("target_route_not_verified")
+    if not transport_configured:
+        blockers.append("auto_send_transport_not_configured")
+    if not safe_transport_label:
+        blockers.append("transport_label_required")
+    if not safe_operator_label:
+        blockers.append("operator_label_required")
+    if not safe_idempotency_key:
+        blockers.append("idempotency_key_required")
+    if not rollback_plan_reviewed:
+        blockers.append("rollback_plan_not_reviewed")
+    if not safe_audit_log_path:
+        blockers.append("audit_log_path_required")
+    if normalized_environment == "production" and not production_runbook_fixed:
+        blockers.append("production_runbook_not_fixed")
+    if normalized_environment == "unknown":
+        blockers.append("invalid_target_environment")
+
+    preflight_status = "ready_for_auto_send_adapter" if not blockers else "blocked"
+    adapter_contract = {
+        "schema": "discord_auto_send_adapter_contract.v1",
+        "public_core_executes_send": False,
+        "private_adapter_may_execute": preflight_status == "ready_for_auto_send_adapter",
+        "required_next_action": "private_adapter_send_once" if preflight_status == "ready_for_auto_send_adapter" else "fix_blockers",
+        "idempotency_required": True,
+        "post_send_closeout_required": True,
+        "must_record": [
+            "transport_label",
+            "operator_label",
+            "idempotency_key",
+            "target_route_verified",
+            "post_send_message_observed",
+        ],
+    }
+    return {
+        "schema": "discord_auto_send_preflight.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": "自動送信用 preflight は private adapter 実行可能です。"
+        if preflight_status == "ready_for_auto_send_adapter"
+        else "自動送信用 preflight は gate で停止しました。",
+        "preflight_status": preflight_status,
+        "blockers": blockers,
+        "target_environment": normalized_environment,
+        "target_route_verified": target_route_verified,
+        "transport": {
+            "label": safe_transport_label,
+            "configured": transport_configured,
+            "capability": "private_auto_send_adapter" if transport_configured else "missing",
+        },
+        "operator_label": safe_operator_label,
+        "idempotency_key_output": "omitted" if safe_idempotency_key else "not_provided",
+        "audit_log_path_output": "omitted" if safe_audit_log_path else "not_provided",
+        "approval": {
+            "explicit_auto_send_approval": explicit_auto_send_approval,
+            "rollback_plan_reviewed": rollback_plan_reviewed,
+            "production_runbook_fixed": production_runbook_fixed,
+        },
+        "adapter_contract": adapter_contract,
+        "outbound_actions": "adapter_required",
+        "send_capability": "preflight_only",
+        "send_capability_label": "この public core は送信しません。条件が揃った時だけ private adapter に一回送信を許可する preflight です。",
+        "raw_discord_text_output": "omitted",
+        "target_url_output": "omitted",
+        "snowflake_values_output": "omitted",
+    }
+
+
+def _resolve_saved_post_send_snapshot(
+    path: Path,
+    capture_id: str,
+) -> tuple[dict[str, Any], list[str]]:
+    if not capture_id:
+        return {}, ["post_send_snapshot_capture_id_missing"]
+    try:
+        records = load_content_snapshot_records(path)
+    except CheckpointCorruptError:
+        return {}, ["post_send_snapshot_store_invalid"]
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {}, ["post_send_snapshot_store_unreadable"]
+    matches = [record for record in records if str(record.get("event_id") or "") == capture_id]
+    if not matches:
+        return {}, ["post_send_snapshot_capture_not_found"]
+    if len(matches) != 1:
+        return {}, ["post_send_snapshot_capture_not_unique"]
+    record = dict(matches[0])
+    blockers: list[str] = []
+    observed_at = str(record.get("observed_at") or "").strip()
+    record_target_key = str(record.get("target_key") or "").strip()
+    record_url = str(record.get("url") or "").strip()
+    content_hash = str(record.get("content_hash") or "")
+    if (
+        record.get("schema") != "discord_context_bridge_text_snapshot_observation.v1"
+        or record.get("event_type") != "discord.visible_text.snapshot_observed"
+    ):
+        blockers.append("post_send_snapshot_record_schema_invalid")
+    if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(str(record.get("event_id") or "")):
+        blockers.append("post_send_snapshot_record_capture_id_invalid")
+    if (
+        not DISCORD_MESSAGE_URL_RE.fullmatch(record_url)
+        or not record_target_key
+        or record_target_key != target_key_for_url(record_url)
+        or record.get("stream_id") != record_target_key
+        or record.get("subject") != record_target_key
+    ):
+        blockers.append("post_send_snapshot_record_target_invalid")
+    if (
+        not observed_at
+        or parse_snapshot_timestamp(observed_at) is None
+        or record.get("captured_at") != observed_at
+        or record.get("time") != observed_at
+    ):
+        blockers.append("post_send_snapshot_record_observed_at_invalid")
+    text = record.get("text")
+    if not isinstance(text, str) or not content_hash or stable_text_hash(text) != content_hash:
+        blockers.append("post_send_snapshot_record_content_hash_invalid")
+    stream_sequence = record.get("stream_sequence")
+    if (
+        not isinstance(stream_sequence, int)
+        or isinstance(stream_sequence, bool)
+        or stream_sequence < 1
+        or not observed_at
+        or not record_target_key
+        or not content_hash
+        or str(record.get("event_id") or "")
+        != snapshot_observation_event_id(
+            captured_at=observed_at,
+            target_key=record_target_key,
+            content_hash=content_hash,
+            source=str(record.get("source") or ""),
+            stream_sequence=stream_sequence if isinstance(stream_sequence, int) else 0,
+        )
+    ):
+        blockers.append("post_send_snapshot_record_capture_identity_invalid")
+    if not str(record.get("event_hash") or "") or canonical_event_hash(record) != record.get("event_hash"):
+        blockers.append("post_send_snapshot_record_event_hash_invalid")
+    if (
+        record.get("private_local_only") is not True
+        or record.get("external_share_allowed") is not False
+        or record.get("outbound_actions") != "disabled"
+    ):
+        blockers.append("post_send_snapshot_record_unsafe")
+    return record, blockers
+
+
+def _post_send_closeout_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def build_discord_post_send_closeout_packet(
+    *,
+    staging_packet: dict[str, Any] | None = None,
+    dry_run_report: dict[str, Any] | None = None,
+    snapshot_receipt: dict[str, Any] | None = None,
+    _trusted_snapshot_store_override: Path | None = None,
+    external_action_state: str = "human_sent",
+    human_sent_observed: bool = False,
+    human_send_observed_at: str = "",
+    human_reviewed: bool = False,
+    observed_text_status: str = "not_checked",
+    unread_check_status: str = "not_checked",
+    unread_signal_count: int = 0,
+    observed_message_id: str = "",
+    observed_url: str = "",
+    note_label: str = "",
+    learning_handoff_status: str = "",
+    closeout_observed_at: str = "",
+) -> dict[str, Any]:
+    """Build a metadata-only closeout for sent or intentionally not-sent flows.
+
+    This records only state transitions. It never returns Discord body text,
+    message URLs, or snowflake values.
+
+    learning_handoff_status:
+      closed 送信後の学習 handoff 状態。pending / completed / held。
+      未指定かつ closed の場合は pending とし、recommended_next_state を done にしない。
+    """
+    normalized_external_action_state = external_action_state.strip().lower().replace("-", "_") or "human_sent"
+    normalized_text_status = observed_text_status.strip().lower().replace("-", "_") or "not_checked"
+    normalized_unread_status = unread_check_status.strip().lower().replace("-", "_") or "not_checked"
+    allowed_external_action_states = {
+        "human_sent",
+        "not_sent",
+    }
+    allowed_text_statuses = {
+        "matches_copy_block",
+        "human_edited_and_reviewed",
+        "not_checked",
+    }
+    allowed_unread_statuses = {
+        "none_unread",
+        "has_unread",
+        "not_checked",
+    }
+    safe_unread_signal_count = max(0, int(unread_signal_count))
+    blockers: list[str] = []
+    snapshot_receipt_container = snapshot_receipt or {}
+    snapshot_section = snapshot_receipt_container.get("snapshot")
+    nested_snapshot_receipt = (
+        snapshot_section.get("snapshot_receipt") if isinstance(snapshot_section, dict) else None
+    )
+    receipt_candidate = (
+        snapshot_receipt_container.get("snapshot_receipt")
+        or nested_snapshot_receipt
+        or snapshot_receipt_container
+    )
+    normalized_snapshot_receipt = dict(receipt_candidate) if isinstance(receipt_candidate, dict) else {}
+    snapshot_capture_id = str(normalized_snapshot_receipt.get("capture_id") or "").strip()
+    trusted_snapshot_store = _trusted_snapshot_store_override or default_cross_device_snapshot_store()
+    snapshot_record, snapshot_record_blockers = _resolve_saved_post_send_snapshot(
+        trusted_snapshot_store,
+        snapshot_capture_id,
+    ) if normalized_external_action_state == "human_sent" else ({}, [])
+    snapshot_target_key = str(snapshot_record.get("target_key") or "").strip()
+    snapshot_observed_at = str(snapshot_record.get("observed_at") or "").strip()
+    snapshot_observed_time = parse_snapshot_timestamp(snapshot_observed_at)
+    human_send_observed_time = _parse_timezone_aware_timestamp(human_send_observed_at)
+    closeout_time = _post_send_closeout_now()
+    snapshot_age_seconds: float | None = None
+    if snapshot_observed_time is not None:
+        snapshot_age_seconds = (closeout_time - snapshot_observed_time).total_seconds()
+    observed_target_valid = bool(DISCORD_MESSAGE_URL_RE.fullmatch(observed_url.strip()))
+    snapshot_target_match = bool(
+        observed_target_valid
+        and snapshot_target_key
+        and snapshot_record.get("url") == observed_url.strip()
+        and snapshot_target_key == target_key_for_url(observed_url)
+    )
+    claimed_freshness_payload = normalized_snapshot_receipt.get("freshness")
+    claimed_freshness = dict(claimed_freshness_payload) if isinstance(claimed_freshness_payload, dict) else {}
+    snapshot_receipt_blockers: list[str] = []
+    operation_binding_blockers: list[str] = []
+    staging_binding_payload = (staging_packet or {}).get("operation_binding")
+    dry_run_binding_payload = (dry_run_report or {}).get("operation_binding")
+    staging_operation_binding = (
+        dict(staging_binding_payload) if isinstance(staging_binding_payload, dict) else {}
+    )
+    dry_run_operation_binding = (
+        dict(dry_run_binding_payload) if isinstance(dry_run_binding_payload, dict) else {}
+    )
+    formal_operation_binding = normalized_external_action_state == "human_sent" and (
+        staging_packet is not None or dry_run_report is not None
+    )
+    if normalized_external_action_state not in allowed_external_action_states:
+        blockers.append("invalid_external_action_state")
+    if staging_packet is not None:
+        if (
+            staging_packet.get("schema") != "discord_send_staging_packet.v1"
+            or staging_packet.get("staging_status") != "ready_to_fill"
+        ):
+            blockers.append("staging_packet_not_ready")
+    if dry_run_report is not None:
+        if (
+            dry_run_report.get("schema") != "chrome_extension_fill_only_dry_run.v1"
+            or dry_run_report.get("dry_run_status") != "ready_to_fill"
+            or dry_run_report.get("fill_permitted") is not True
+        ):
+            blockers.append("dry_run_not_ready")
+    if formal_operation_binding:
+        staging_copy_block = (staging_packet or {}).get("copy_block")
+        staging_copy_block = dict(staging_copy_block) if isinstance(staging_copy_block, dict) else {}
+        copy_block_payload_hash = _copy_block_payload_hash(staging_copy_block)
+        expected_operation_correlation_id = stable_text_hash(
+            "|".join(
+                [
+                    "discord_send_operation.v1",
+                    str((staging_packet or {}).get("mode") or "").strip().casefold(),
+                    str(staging_operation_binding.get("route_fingerprint") or ""),
+                    copy_block_payload_hash,
+                ]
+            )
+        )
+        if staging_packet is None or dry_run_report is None:
+            operation_binding_blockers.append("post_send_operation_binding_incomplete")
+        elif (
+            staging_operation_binding.get("schema") != "discord_send_operation_binding.v1"
+            or dry_run_operation_binding.get("schema") != "discord_send_operation_binding.v1"
+            or not str(staging_operation_binding.get("correlation_id") or "")
+            or staging_operation_binding != dry_run_operation_binding
+            or not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(
+                str(staging_operation_binding.get("target_fingerprint") or "")
+            )
+            or not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(
+                str(staging_operation_binding.get("route_fingerprint") or "")
+            )
+            or not copy_block_payload_hash
+            or staging_operation_binding.get("correlation_id") != expected_operation_correlation_id
+        ):
+            operation_binding_blockers.append("post_send_operation_correlation_mismatch")
+        elif str(staging_operation_binding.get("route_fingerprint") or "") != discord_route_fingerprint(observed_url):
+            operation_binding_blockers.append("post_send_operation_target_mismatch")
+        elif str(staging_packet.get("mode") or "").strip().casefold() == "reply":
+            reply_reference = str(snapshot_record.get("reply_to_message_id") or "")
+            captured_target = DISCORD_MESSAGE_URL_RE.fullmatch(str(snapshot_record.get("url") or ""))
+            if captured_target is None or not re.fullmatch(r"[0-9]{17,20}", reply_reference):
+                operation_binding_blockers.append("post_send_reply_reference_missing")
+            else:
+                reply_target_url = (
+                    f"https://discord.com/channels/{captured_target['guild']}/"
+                    f"{captured_target['channel']}/{reply_reference}"
+                )
+                if staging_operation_binding.get("target_fingerprint") != target_key_for_url(reply_target_url):
+                    operation_binding_blockers.append("post_send_reply_reference_mismatch")
+        blockers.extend(operation_binding_blockers)
+    if normalized_external_action_state == "human_sent":
+        if human_send_observed_time is None:
+            snapshot_receipt_blockers.append("human_send_observed_at_missing_or_invalid")
+        if not normalized_snapshot_receipt:
+            snapshot_receipt_blockers.append("post_send_snapshot_receipt_missing")
+        else:
+            if normalized_snapshot_receipt.get("schema") != "discord_saved_snapshot_receipt.v1":
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_invalid")
+            if normalized_snapshot_receipt.get("saved") is not True:
+                snapshot_receipt_blockers.append("post_send_snapshot_not_saved")
+            if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(snapshot_capture_id):
+                snapshot_receipt_blockers.append("post_send_snapshot_capture_id_invalid")
+            snapshot_receipt_blockers.extend(snapshot_record_blockers)
+            receipt_record_values = {
+                "capture_id": snapshot_record.get("event_id"),
+                "target_key": snapshot_record.get("target_key"),
+                "observed_at": snapshot_record.get("observed_at"),
+                "event_hash": snapshot_record.get("event_hash"),
+                "content_hash": snapshot_record.get("content_hash"),
+            }
+            if snapshot_record and any(
+                normalized_snapshot_receipt.get(key) != value
+                for key, value in receipt_record_values.items()
+            ):
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_record_mismatch")
+            if not observed_url.strip() or not snapshot_target_key:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_missing")
+            elif not observed_target_valid:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_invalid")
+            elif not snapshot_target_match:
+                snapshot_receipt_blockers.append("post_send_snapshot_target_mismatch")
+            if snapshot_observed_time is None:
+                snapshot_receipt_blockers.append("post_send_snapshot_observed_at_invalid")
+            elif human_send_observed_time is not None and snapshot_observed_time < human_send_observed_time:
+                snapshot_receipt_blockers.append("post_send_snapshot_precedes_human_send_observation")
+            elif snapshot_age_seconds is not None and snapshot_age_seconds < 0:
+                snapshot_receipt_blockers.append("post_send_snapshot_observed_in_future")
+            elif snapshot_age_seconds is not None and snapshot_age_seconds > POST_SEND_SNAPSHOT_MAX_AGE_SECONDS:
+                snapshot_receipt_blockers.append("post_send_snapshot_stale")
+            if (
+                claimed_freshness.get("status") != "recent"
+                or claimed_freshness.get("observed_at") != snapshot_observed_at
+                or claimed_freshness.get("max_age_seconds") != POST_SEND_SNAPSHOT_MAX_AGE_SECONDS
+            ):
+                snapshot_receipt_blockers.append("post_send_snapshot_freshness_receipt_invalid")
+            if (
+                normalized_snapshot_receipt.get("private_local_only") is not True
+                or normalized_snapshot_receipt.get("external_share_allowed") is not False
+                or normalized_snapshot_receipt.get("outbound_actions") != "disabled"
+            ):
+                snapshot_receipt_blockers.append("post_send_snapshot_receipt_unsafe")
+        blockers.extend(snapshot_receipt_blockers)
+        if not human_sent_observed:
+            blockers.append("human_send_not_observed")
+        if not human_reviewed:
+            blockers.append("human_review_not_confirmed")
+        if normalized_text_status not in allowed_text_statuses:
+            blockers.append("invalid_observed_text_status")
+        elif normalized_text_status == "not_checked":
+            blockers.append("observed_text_not_checked")
+        if normalized_unread_status not in allowed_unread_statuses:
+            blockers.append("invalid_unread_check_status")
+        elif normalized_unread_status == "not_checked":
+            blockers.append("unread_not_checked")
+        elif normalized_unread_status == "has_unread" or safe_unread_signal_count > 0:
+            blockers.append("unread_items_remaining")
+    else:
+        if human_sent_observed:
+            blockers.append("not_sent_conflicts_with_human_send_observed")
+        if observed_message_id or observed_url:
+            blockers.append("not_sent_observation_values_provided")
+        normalized_text_status = "not_applicable"
+        normalized_unread_status = "not_applicable"
+        safe_unread_signal_count = 0
+
+    if blockers:
+        closeout_status = "blocked"
+    elif normalized_external_action_state == "not_sent":
+        closeout_status = "not_sent"
+    else:
+        closeout_status = "closed"
+    if closeout_status in {"closed", "not_sent"}:
+        recommended_next_state = "done"
+    elif "human_send_not_observed" in blockers:
+        recommended_next_state = "verify_visible_message"
+    elif "human_review_not_confirmed" in blockers:
+        recommended_next_state = "human_review_required"
+    elif "unread_not_checked" in blockers:
+        recommended_next_state = "check_unread_items"
+    elif "unread_items_remaining" in blockers:
+        recommended_next_state = "review_unread_items"
+    elif snapshot_receipt_blockers:
+        recommended_next_state = "capture_fresh_post_send_snapshot"
+    elif operation_binding_blockers:
+        recommended_next_state = "fix_post_send_operation_binding"
+    else:
+        recommended_next_state = "fix_blockers"
+    operation_correlation_id = str(staging_operation_binding.get("correlation_id") or "")
+    closeout_correlation_id = (
+        stable_text_hash(
+            "|".join(
+                [
+                    "discord_post_send_closeout.v1",
+                    operation_correlation_id or "retrospective_snapshot_only",
+                    str(snapshot_record.get("event_hash") or ""),
+                    human_send_observed_at,
+                ]
+            )
+        )
+        if normalized_external_action_state == "human_sent" and snapshot_record
+        else ""
+    )
+    learning_handoff_required = closeout_status == "closed"
+    allowed_learning_statuses = {"pending", "completed", "held"}
+    if learning_handoff_required:
+        normalized_learning_status = learning_handoff_status.strip().casefold() or "pending"
+        if normalized_learning_status not in allowed_learning_statuses:
+            normalized_learning_status = "pending"
+    else:
+        normalized_learning_status = "not_applicable"
+    # 送信 closeout 自体が closed でも、学習 handoff が pending なら done にしない。
+    if learning_handoff_required and normalized_learning_status == "pending":
+        recommended_next_state = "complete_learning_handoff"
+    learning_handoff = {
+        "schema": "discord_post_send_learning_handoff.v1",
+        "required": learning_handoff_required,
+        "status": normalized_learning_status,
+        "route": "absorbed-dialogue-router" if learning_handoff_required else "none",
+        "required_inputs": ["posted_record", "abstracted_reply_lesson"] if learning_handoff_required else [],
+        "forbidden_inputs": ["raw_discord_text", "participant_identifiers", "discord_url"],
+        "completion_evidence": (
+            "absorbed_dialogue_pointer_or_explicit_hold"
+            if learning_handoff_required
+            else "not_sent"
+        ),
+        "next_action": (
+            "posted-recordから再利用可能な返信上の学びだけを抽象化し、"
+            "absorbed-dialogue-routerへ渡してください。"
+            if learning_handoff_required and normalized_learning_status == "pending"
+            else "学習 handoff は完了または明示 hold 済みです。"
+            if learning_handoff_required
+            else "送信がないため対話スタイル吸収は行いません。"
+        ),
+        "outbound_actions": "disabled",
+    }
+    return {
+        "schema": "discord_post_send_closeout_packet.v1",
+        "language": DEFAULT_LANGUAGE,
+        "message": (
+            "Discord 送信後 closeout は完了しました。"
+            if closeout_status == "closed"
+            else "Discord not_sent closeout は完了しました。"
+            if closeout_status == "not_sent"
+            else "Discord 送信後 closeout は gate で停止しました。"
+        ),
+        "closeout_status": closeout_status,
+        "blockers": blockers,
+        "external_action_state": normalized_external_action_state,
+        "human_sent_observed": human_sent_observed,
+        "human_send_observed_at": human_send_observed_at
+        if normalized_external_action_state == "human_sent" and human_send_observed_time is not None
+        else "",
+        "human_reviewed": human_reviewed,
+        "observed_text_status": normalized_text_status,
+        "unread_check_status": normalized_unread_status,
+        "unread_signal_count": safe_unread_signal_count,
+        "observed_message_id_output": "omitted" if observed_message_id else "not_provided",
+        "observed_url_output": "omitted" if observed_url else "not_provided",
+        "snapshot_receipt": {
+            "schema": "discord_post_send_snapshot_binding.v1",
+            "required": normalized_external_action_state == "human_sent",
+            "verified": normalized_external_action_state == "human_sent" and not snapshot_receipt_blockers,
+            "saved": normalized_snapshot_receipt.get("saved") is True
+            if normalized_external_action_state == "human_sent"
+            else False,
+            "capture_id_output": "omitted" if snapshot_capture_id else "not_provided",
+            "target_binding": (
+                "exact_match"
+                if snapshot_target_match
+                else "mismatch"
+                if observed_url.strip() and snapshot_target_key
+                else "not_applicable"
+                if normalized_external_action_state == "not_sent"
+                else "missing"
+            ),
+            "observed_at": snapshot_observed_at if snapshot_observed_time is not None else "",
+            "freshness": {
+                "status": (
+                    "not_applicable"
+                    if normalized_external_action_state == "not_sent"
+                    else "invalid"
+                    if snapshot_observed_time is None or snapshot_age_seconds is None or snapshot_age_seconds < 0
+                    else "recent"
+                    if snapshot_age_seconds <= POST_SEND_SNAPSHOT_MAX_AGE_SECONDS
+                    else "stale"
+                ),
+                "age_seconds": int(snapshot_age_seconds)
+                if snapshot_age_seconds is not None and snapshot_age_seconds >= 0
+                else None,
+                "max_age_seconds": POST_SEND_SNAPSHOT_MAX_AGE_SECONDS,
+            },
+            "raw_text_output": "omitted",
+            "target_url_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+        "operation_binding": {
+            "schema": "discord_post_send_operation_binding.v1",
+            "status": (
+                "not_applicable"
+                if normalized_external_action_state == "not_sent"
+                else "verified"
+                if formal_operation_binding and not operation_binding_blockers and not snapshot_receipt_blockers
+                else "retrospective_snapshot_only"
+                if not formal_operation_binding and not snapshot_receipt_blockers
+                else "blocked"
+            ),
+            "pre_send_correlation_id_output": "omitted" if operation_correlation_id else "not_provided",
+            "snapshot_capture_id_output": "omitted" if snapshot_capture_id else "not_provided",
+            "closeout_correlation_id": closeout_correlation_id,
+            "exact_target_fingerprint_output": "omitted" if snapshot_target_key else "not_provided",
+            "route_fingerprint_output": "omitted" if discord_route_fingerprint(observed_url) else "not_provided",
+            "pre_send_claimed": formal_operation_binding and not operation_binding_blockers,
+            "outbound_actions": "disabled",
+        },
+        "note_label_output": redact_artifact_text(note_label) if note_label else "",
+        "staging_packet_status": str(staging_packet.get("staging_status") or "provided")
+        if staging_packet is not None
+        else "not_provided",
+        "dry_run_status": str(dry_run_report.get("dry_run_status") or "provided")
+        if dry_run_report is not None
+        else "not_provided",
+        "recommended_next_state": recommended_next_state,
+        "learning_handoff": learning_handoff,
+        "text_returned": False,
+        "raw_discord_text_output": "omitted",
+        "outbound_actions": "disabled",
+        "send_capability": "disabled",
+        "send_capability_label": "この closeout は送信後 metadata の確認だけです。Discord への操作は実行しません。",
+    }
+
+
+def _operation_check(
+    name: str,
+    ok: bool,
+    *,
+    evidence: str,
+    blocker: str | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": name,
+        "status": "ok" if ok else "pending",
+        "evidence": evidence,
+    }
+    if blocker:
+        payload["blocker"] = blocker
+    if next_action:
+        payload["next_action"] = next_action
+    return payload
+
+
+def build_discord_send_operation_status(
+    *,
+    staging_packet: dict[str, Any] | None = None,
+    dry_run_report: dict[str, Any] | None = None,
+    closeout_report: dict[str, Any] | None = None,
+    target_label: str = "",
+    target_environment: str = "test",
+    rollback_plan_reviewed: bool = False,
+    production_runbook_fixed: bool = False,
+    post_send_retrospective: bool = False,
+) -> dict[str, Any]:
+    """Summarize a human-assisted Discord send workflow from existing logs.
+
+    This function deliberately consumes metadata-only gate reports. It does not
+    send to Discord, and it does not echo raw URLs, snowflakes, or message text.
+    """
+    safe_target_label = redact_artifact_text(target_label.strip()) if target_label.strip() else ""
+    environment = target_environment.strip().casefold() or "test"
+    if environment not in {"test", "production"}:
+        environment = "test"
+
+    staging_ready = bool(
+        staging_packet
+        and staging_packet.get("schema") == "discord_send_staging_packet.v1"
+        and staging_packet.get("staging_status") == "ready_to_fill"
+    )
+    staging_target_known = bool(
+        staging_packet
+        and staging_packet.get("target_kind") in {"message", "channel_or_message"}
+        and staging_packet.get("target_url_output") == "omitted"
+    )
+    copy_block_ready = bool(
+        staging_packet
+        and (staging_packet.get("copy_block") or {}).get("status") in {"ready", "split"}
+    )
+    dry_run_ready = bool(
+        dry_run_report
+        and dry_run_report.get("schema") == "chrome_extension_fill_only_dry_run.v1"
+        and dry_run_report.get("dry_run_status") == "ready_to_fill"
+        and dry_run_report.get("fill_permitted") is True
+    )
+    closeout_closed = bool(
+        closeout_report
+        and closeout_report.get("schema") == "discord_post_send_closeout_packet.v1"
+        and closeout_report.get("closeout_status") == "closed"
+        and closeout_report.get("recommended_next_state") == "done"
+    )
+    closeout_not_sent = bool(
+        closeout_report
+        and closeout_report.get("schema") == "discord_post_send_closeout_packet.v1"
+        and closeout_report.get("closeout_status") == "not_sent"
+        and closeout_report.get("external_action_state") == "not_sent"
+        and closeout_report.get("recommended_next_state") == "done"
+    )
+    closeout_unread_clear = bool(closeout_report and closeout_report.get("unread_check_status") == "none_unread")
+
+    if post_send_retrospective:
+        checks = [
+            _operation_check(
+                "target_destination_declared",
+                bool(safe_target_label),
+                evidence="target_label",
+                blocker=None if safe_target_label else "target_label_missing",
+                next_action="対象チャンネル/投稿先を safe label で指定する" if not safe_target_label else None,
+            ),
+            _operation_check(
+                "post_send_closeout_closed",
+                closeout_closed or closeout_not_sent,
+                evidence="closeout-discord-send",
+                blocker=None if closeout_closed or closeout_not_sent else "closeout_not_closed",
+                next_action="送信後 closeout を closed / not_sent にする" if not (closeout_closed or closeout_not_sent) else None,
+            ),
+            _operation_check(
+                "post_send_unread_clear",
+                closeout_unread_clear or closeout_not_sent,
+                evidence="closeout-discord-send.unread_check_status",
+                blocker=None if closeout_unread_clear or closeout_not_sent else "unread_check_not_clear",
+                next_action="送信後の未読状態を metadata-only で確認する" if not (closeout_unread_clear or closeout_not_sent) else None,
+            ),
+            _operation_check(
+                "failure_recovery_reviewed",
+                rollback_plan_reviewed,
+                evidence="rollback_plan_reviewed",
+                blocker=None if rollback_plan_reviewed else "rollback_plan_not_reviewed",
+                next_action="失敗時の修正投稿/停止/人間確認手順を確認する" if not rollback_plan_reviewed else None,
+            ),
+            _operation_check(
+                "future_formal_runbook_fixed",
+                production_runbook_fixed,
+                evidence="docs/discord-send-operation-runbook.md",
+                blocker=None if production_runbook_fixed else "production_runbook_not_confirmed",
+                next_action="次回正式フロー用の本番送信手順をレビュー済みにする" if not production_runbook_fixed else None,
+            ),
+        ]
+        ok = all(check["status"] == "ok" for check in checks)
+        return {
+            "schema": "discord_send_operation_status.v1",
+            "mode": "post_send_retrospective",
+            "language": DEFAULT_LANGUAGE,
+            "ok": ok,
+            "state": "post_send_retrospective_closed" if ok else "attention_required",
+            "target": {
+                "label": safe_target_label or "not_provided",
+                "environment": environment,
+                "url_output": "omitted",
+            },
+            "checks": checks,
+            "retrospective_gaps": {
+                "staging_packet_status": "provided" if staging_packet else "not_provided",
+                "dry_run_report_status": "provided" if dry_run_report else "not_provided",
+                "pre_send_gate_claimed": False,
+                "pre_send_gate_note": "事後closeoutです。過去送信について stage/dry-run/test gate を通過済みとは扱いません。",
+                "future_formal_flow_required": True,
+            },
+            "summary": {
+                "ready_count": sum(1 for check in checks if check["status"] == "ok"),
+                "total_count": len(checks),
+                "next": [check["next_action"] for check in checks if check.get("next_action")],
+            },
+            "safety_boundary": {
+                "discord_send_executed_by_this_tool": False,
+                "raw_discord_text_output": "omitted",
+                "target_url_output": "omitted",
+                "snowflake_values_output": "omitted",
+                "outbound_actions": "disabled",
+            },
+        }
+
+    checks = [
+        _operation_check(
+            "target_destination_declared",
+            bool(safe_target_label and staging_target_known),
+            evidence="target_label + staging_packet.target_kind",
+            blocker=None if safe_target_label else "target_label_missing",
+            next_action="対象チャンネル/投稿先を safe label で指定する" if not safe_target_label else None,
+        ),
+        _operation_check(
+            "draft_reviewed",
+            bool(staging_ready and copy_block_ready),
+            evidence="stage-discord-send review/copy_block",
+            blocker=None if staging_ready and copy_block_ready else "staging_packet_not_ready",
+            next_action="review-draft と stage-discord-send を通す" if not (staging_ready and copy_block_ready) else None,
+        ),
+        _operation_check(
+            "dry_run_or_preview_ready",
+            dry_run_ready,
+            evidence="verify-chrome-fill-dry-run",
+            blocker=None if dry_run_ready else "dry_run_not_ready",
+            next_action="Chrome fill-only dry-run を ready_to_fill にする" if not dry_run_ready else None,
+        ),
+        _operation_check(
+            "test_channel_send_observed",
+            bool(environment == "test" and closeout_closed),
+            evidence="closeout-discord-send on test target",
+            blocker=None if environment == "test" and closeout_closed else "test_send_closeout_missing",
+            next_action="テスト用チャンネルで人間送信し closeout-discord-send を closed にする"
+            if not (environment == "test" and closeout_closed)
+            else None,
+        ),
+        _operation_check(
+            "send_log_and_failure_recovery_checked",
+            bool(closeout_closed and closeout_unread_clear and rollback_plan_reviewed),
+            evidence="closeout-discord-send + rollback_plan_reviewed",
+            blocker=None
+            if closeout_closed and closeout_unread_clear and rollback_plan_reviewed
+            else "send_log_or_recovery_plan_missing",
+            next_action="送信後 closeout と、失敗時の修正投稿/停止/人間確認手順を確認する"
+            if not (closeout_closed and closeout_unread_clear and rollback_plan_reviewed)
+            else None,
+        ),
+        _operation_check(
+            "production_send_procedure_fixed",
+            bool(production_runbook_fixed),
+            evidence="docs/discord-send-operation-runbook.md",
+            blocker=None if production_runbook_fixed else "production_runbook_not_confirmed",
+            next_action="本番送信前の固定手順をレビュー済みにする" if not production_runbook_fixed else None,
+        ),
+    ]
+    ok = all(check["status"] == "ok" for check in checks)
+    return {
+        "schema": "discord_send_operation_status.v1",
+        "language": DEFAULT_LANGUAGE,
+        "ok": ok,
+        "state": "ready_for_production_human_send" if ok else "attention_required",
+        "target": {
+            "label": safe_target_label or "not_provided",
+            "environment": environment,
+            "url_output": "omitted",
+        },
+        "checks": checks,
+        "summary": {
+            "ready_count": sum(1 for check in checks if check["status"] == "ok"),
+            "total_count": len(checks),
+            "next": [check["next_action"] for check in checks if check.get("next_action")],
+        },
+        "safety_boundary": {
+            "discord_send_executed_by_this_tool": False,
+            "raw_discord_text_output": "omitted",
+            "target_url_output": "omitted",
+            "snowflake_values_output": "omitted",
+            "outbound_actions": "disabled",
+        },
+    }
+
+
+def send_message(*_: Any, **__: Any) -> None:
+    raise DisabledCapability("Discord への送信機能は、この public nucleus では意図的に無効です。")
