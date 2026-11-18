@@ -10,8 +10,10 @@
 #
 # 除外の効き方を狭くしてある:
 # - 規則を上書きせず、全体の許可（allowlist）で除外する。generic-api-key 自体は生きたまま。
-# - `condition = "AND"` で、パスと行の形の両方に当たった時だけ除外する。
-#   このファイルに将来べつの秘密が混ざっても、この形以外は検知される。
+# - 許可は「行の形」だけで指定する。パスは指定しない。
+#   gitleaks 8.30.1 で確かめた所、パスと行の形を `condition = "AND"` で並べても、
+#   パスが当たっただけでファイル全体が走査から外れた。鍵を扱うファイルを丸ごと外さないため、
+#   パスの指定をやめている。
 # - 行の形は、小文字と下線だけの名前に限る。数字や大文字を含む値は除外されない。
 
 [extend]
@@ -19,7 +21,5 @@ useDefault = true
 
 [[allowlists]]
 description = "鍵の取り出しコマンドの失敗の種類の名前（資格情報ではない）"
-condition = "AND"
-paths = ['''src/discord_context_bridge/credentials\.py''']
 regexTarget = "line"
 regexes = ['''provider="secret_command", failure_stage="[a-z_]+"''']
