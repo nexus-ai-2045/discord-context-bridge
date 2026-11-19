@@ -2,7 +2,7 @@
 
 > **測定メモ (2026-08-14):** 今すぐ処理する active TODO は 0。運用ゲートは full tests / ops check / secret・path scan / open PR で別途判定する。下表の `parked` は次回注文候補、`blocked` は人間・live環境待ちであり、未実装をdone扱いしない。`v0.11.0` tag/Release は別承認。
 >
-Updated: 2026-08-14
+Updated: 2026-11-19
 
 このファイルを、リポジトリ内の active TODO 正本にする。
 過去の `docs/chat-context-*.md` と `docs/2026-07-01-*` は履歴証跡であり、現在の残務判断ではこのファイルと `ROADMAP.md` を優先する。
@@ -77,6 +77,13 @@ PR #29 の自動レビュー指摘のうち、PR scope 外 (先行実装由来) 
 | P4-4 | done | capture orchestrator: blocker event 重複時に resume state を上書きしない | `test_duplicate_blocker_event_is_rejected_instead_of_overwriting` |
 | P4-5 | done | capture orchestrator: 完了 gate が blocked の時に orchestrator を close する | `test_gate_blocked_closes_orchestrator_to_terminal_state` / `test_gate_blocked_requires_bound_blocked_result` |
 | P4-6 | done | capture planning: `visible_dom_available=True` かつ非対応 browser route の組合せを reject する | `test_visible_dom_available_with_unsupported_browser_route_is_rejected` |
+
+## P5: DM の送信後照合 (2026-11-19)
+
+| ID | 状態 | TODO | 完了条件 | 検証 |
+|---|---|---|---|---|
+| P5-1 | done | `closeout-discord-send --external-action-state human-sent` がDMのメッセージリンクで閉じるようにする。送信後照合の対象判定を、`bridge-intake` と同じ共有URL解析（`url_identity`）へ寄せる | DMのメッセージリンクで `closed`。DMのチャンネルリンク、別メッセージ、`human_reviewed` なしは止まる。サーバーのリンクの受付範囲は変わらない（ASCII以外の数字のIDだけは新たに拒否する） | `test_human_sent_closeout_closes_for_dm_message_url` / `test_dm_human_sent_closeout_still_requires_human_review` / `test_dm_channel_url_does_not_bind_a_sent_message` / `test_dm_closeout_rejects_observed_url_for_another_dm_message` / `test_post_send_message_target_keeps_guild_url_acceptance_unchanged` / `test_post_send_message_target_accepts_only_exact_dm_message_urls` / `test_post_send_message_target_rejects_non_ascii_digit_ids` / `test_cli_closeout_human_sent_closes_for_dm_message_url` |
+| P5-3 | parked | DM向けの送信準備（`stage-discord-send` の reply / mention）を設計する | DMのメッセージリンクを送信準備・fill-only dry-run・送信後の操作束縛まで一貫して扱える | 次回注文で、`discord_route_fingerprint` と返信対象の束縛をDMへ広げる別PRにする |
 
 ## 次回注文候補
 

@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 2959247adb862fba23a9ce81ef4f8cab5be0ee17
+ssot_commit: 21dbc3db032f4f49fd2f6651dbf9ee4a8668b56e
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 36a9bcc1fe73532c72a311694a351533ffe525c1df8f44dab735413ac519c39d
-contract_checksum: 8aa45df496cbbb57aea493992e65d5b1a1df3c34571b9ed650d344e3a7fbf9b3
-generated_at: 2026-11-19T10:34:28+00:00
+contract_checksum: 031b6ee6f323817b0a0f2759ff1432d28affeb0e0a74a33a3ddcaeafc2d862e2
+generated_at: 2026-11-19T12:53:29+00:00
 runtime_target: codex
 ---
 
@@ -144,6 +144,8 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
 - `human_sent` では、`snapshot-discord-url-text` または `bridge-intake` が保存後に返した `discord_saved_snapshot_receipt.v1` を必須とする。受領記録の自己申告だけを信頼せず、保存先の実際の記録と照合する。本文保存と送信後の照合は別操作のまま受領記録で結ぶ。
+- `human_sent` の照合対象は、送ったメッセージ1件を指すリンクとする。サーバーは `/channels/<guild>/<channel>/<message>`、DM は `/channels/@me/<channel>/<message>` を受け付ける。経路の解析は `bridge-intake` と同じ共有URL解析（`url_identity`）を使い、ホスト・ID桁数・クエリと断片の制限はサーバーとDMで共通にする。チャンネルだけを指すリンク（DMの `/channels/@me/<channel>` を含む）は送った1件に結び付かないため、保存記録・観測URLのどちらでも受け付けない。DM向けの送信準備（`stage-discord-send`）は対象外のままとする。
+- `human_reviewed`（CLIの `--human-reviewed`）はDMでも省略できない。本人が送信後の見え方を自分の画面で確認したと、同じ会話で明言した時だけ付ける。AIが保存したsnapshot、`observed_text_status` の一致、送信観測時刻だけでは付けない。付けない場合は `human_review_not_confirmed` で止まり、`recommended_next_state` は `human_review_required` になる。
 - `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
 - 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
 - ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
