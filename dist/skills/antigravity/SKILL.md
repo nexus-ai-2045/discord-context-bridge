@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for antigravity; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: c7ca535a2cdf320e340def6aaed1dc87402dd572
+ssot_commit: 08f0a2b6d279ea455431680e2f533bb8b3515da5
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 36a9bcc1fe73532c72a311694a351533ffe525c1df8f44dab735413ac519c39d
-contract_checksum: a96dee7a5b5cb457d8bc7128e441ce09975ca708b830a459b941a849d28c6238
-generated_at: 2026-11-19T14:01:20+00:00
+manifest_checksum: 9885c655f3050d954c6777406f4097174eadf6cc54a91e314fde97faf15610a1
+contract_checksum: d98cb19740bd3129bbdb1c238df132e9f8bb0c9ca9dd54ab9aec96ce2f0391ed
+generated_at: 2026-11-19T14:43:07+00:00
 runtime_target: antigravity
 ---
 
@@ -82,6 +82,10 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
 - user configは既定で、`platformdirs` が返すこの OS の標準の設定フォルダの `discord-context-bridge/config.json` とする（Mac は `~/Library/Application Support/`、Windows は `%APPDATA%`、Linux は `$XDG_CONFIG_HOME` または `~/.config`）。新しい場所に無く旧い `~/.config/discord-context-bridge/config.json` だけがある時は旧い場所を読み、標準エラーに移し替えの案内を出す。自動では移さず、消さない。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- 通常の対象照会は `target-cache-lookup` でcanonical保存先だけを毎回厳密検証する。外部cache発見・Markdown探索・全体容量棚卸しは行わず、その未探索範囲を返す。全体の棚卸しは `cache-inventory` のまま維持する。mtime/sizeで検証を省略する永続索引は追加しない。
+- `bridge-intake` は同一依頼のwriter lock内で検証・再読した観測をcoverage・latest・passportへ渡す。後続の別依頼は台帳を再検証し、失効済みの本文をlatestへ戻さない。保存成功はその観測時点に束縛し、後から追記された内容へ黙って切替えない。
+- `prepare-reply-consultation` は承認済みの構造化可視取得を保存し、同じ入力の関係情報を正規台帳へ結び付けて返信文脈gateを計算する。十分な場合だけ、LCS正本と対人skillの参照先・hash・安定IDを持つprivate相談packetを作る。LCS判断軸やDiscord原文を別のDBへ複写しない。`ready_for_ai_consultation` はhostが相談を始められる状態で、AI助言の生成・本人採用・配布・実機利用の証拠ではない。private consumerは台帳・receipt・gate・参照先を再検証する。
+- `watch-guide` は文脈の関係情報を受け取らないため、返信文脈gate不足として停止する。局所単語判定を対人判断や感情評価としない。自動発動・常時監視・scheduleの新設は行わない。
 - `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
 - `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
 - Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
@@ -144,6 +148,8 @@ Discord 文脈を読んだり、返信確認、資料DL、下書き、送信後�
 - 返信チェックをした場合、`reply-check-*.md` または同等の artifact と active TODO 更新が済むまで「チェック完了」と言わない。
 - ユーザー手動送信を追跡する場合、posted-record または TODO への明示記録が済むまで「送信後追跡完了」と言わない。
 - `human_sent` では、`snapshot-discord-url-text` または `bridge-intake` が保存後に返した `discord_saved_snapshot_receipt.v1` を必須とする。受領記録の自己申告だけを信頼せず、保存先の実際の記録と照合する。本文保存と送信後の照合は別操作のまま受領記録で結ぶ。
+- `human_sent` の照合対象は、送ったメッセージ1件を指すリンクとする。サーバーは `/channels/<guild>/<channel>/<message>`、DM は `/channels/@me/<channel>/<message>` を受け付ける。経路の解析は `bridge-intake` と同じ共有URL解析（`url_identity`）を使い、ホスト・ID桁数・クエリと断片の制限はサーバーとDMで共通にする。チャンネルだけを指すリンク（DMの `/channels/@me/<channel>` を含む）は送った1件に結び付かないため、保存記録・観測URLのどちらでも受け付けない。DM向けの送信準備（`stage-discord-send`）は対象外のままとする。
+- `human_reviewed`（CLIの `--human-reviewed`）はDMでも省略できない。本人が送信後の見え方を自分の画面で確認したと、同じ会話で明言した時だけ付ける。AIが保存したsnapshot、`observed_text_status` の一致、送信観測時刻だけでは付けない。付けない場合は `human_review_not_confirmed` で止まり、`recommended_next_state` は `human_review_required` になる。
 - `human_sent` の posted-record を閉じる時は、同じ closeout packet に `learning_handoff` を必ず付ける。`learning_handoff` は `absorbed-dialogue-router` を正規経路とし、raw Discord本文・参加者識別子・Discord URLを渡さず、再利用可能な返信上の学びだけを抽象化する。吸収先pointerまたは `hold` 判定が記録されるまで、学習化は `pending` とする。`not_sent` は `not_applicable` とし、送信していない下書きを本人の返信スタイルとして吸収しない。
 - 自動送信を使う場合、`auto-send-preflight` の ready packet、private adapter の idempotency receipt、post-send closeout の3点が metadata-only artifact として揃うまで「自動送信完了」「運用保証」と言わない。
 - ユーザーが途中で停止した場合は、送信しなかったことを `not_sent` として closeout する。入力欄準備、添付試行、送信先確認は送信完了とは別の状態として扱う。
@@ -280,6 +286,8 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/context_claim_gate.py --run-dir <canonical-run> --completeness-db <canonical-db> --parent-target-key <target> --claim <complete|current|understood> --json`: 完全・最新・理解済みという表明を既存の正本検証へ束縛する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
+- `target-cache-lookup`: canonical保存先だけを厳密検証する通常対象照会。外部cache発見と全体棚卸しを分離する
+- `prepare-reply-consultation`: 保存receiptと返信文脈gateからLCS正本・対人skillを参照するprivate明示相談を準備する。助言生成はhostで行う
 - `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
 - `configure-local-cache`: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する
 - `desktop-cache-probe`: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
