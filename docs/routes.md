@@ -5,25 +5,25 @@
 
 ## 経路の分類
 
-| route class | route | 役割 | 使う場面 | 禁止境界 |
-|---|---|---|---|---|
-| `main` | `bot_private_ingest` | 受け取った Discord 本文を文脈カード / 返信前 gate へ流す本線 | `@discord` bot channel server や private adapter から本文を受け取れる時 | 本文、参加者名、token、snowflake 値を出力しない |
-| `control` | `discord_configure` | bot token / secret-command provider 設定の入口 | token provider が未設定で、ユーザーが明示的に設定する時 | token 値や secret-command stdout を表示しない。自動変更しない |
-| `control` | `discord_access` | DM / group allowlist の入口 | pairing、allowlist、group access を明示管理する時 | snowflake 値を表示しない。自動変更しない |
-| `visual_fallback` | `computer_use_discord` | 画面状態の人間確認 fallback | bot route が詰まり、今どの画面かだけ確認したい時 | 送信、reaction、delete、raw本文抽出をしない |
+取得・承認の正本は [operating-contract.md](operating-contract.md)。以下はその案内であり、可視取得の承認を追加しない。
+
+| 経路 | 役割 | 停止条件 |
+|---|---|---|
+| ローカル `target-cache-lookup` | canonical保存先の対象確認。通常照会で外部cacheを全走査しない | 保存前の外部cacheは未探索。発見・容量棚卸しが必要なら `cache-inventory` |
+| 既存ボット・private adapter | 対象へのread-onlyアクセスが確認済みの場合の取得 | 設定済みだけでアクセス成功としない |
+| 内部ブラウザの可視DOM | Botなしの明示取得の既定。取得後は直ちに保存・対象確認 | ingress前、未承認、対象切替、login redirect、保存失敗なら停止 |
+| Chromeの可視DOM | 内部ブラウザが使えない時の承認済み二次経路 | 勝手な起動・移行・認証変更をしない |
+| Computer Use | 本人が別途明示承認した範囲の操作 | 自動fallbackにしない。OCRを本文取得にしない |
 
 ## 運用順序
 
-1. `discord_plugin_route_status.py --json` で、今使うべき route を確認する。
-2. `recommended_route=bot_private_ingest` なら、bot channel server / private adapter から本文を渡す。
-3. `discord_configure_or_access` なら、`discord:configure`、secret-command provider、または `discord:access` の明示操作で control plane を直す。
-4. bot route が使えない時だけ、Computer Use で画面状態を確認する。
-5. Discord本文取得で OCR / screenshot / vision へ拡張しない。必要なら DCB ではなく別 task として Type1 明示承認を取る。
+1. 既存のingress・対象・鮮度・route判定を通す。通常のcanonical対象確認は `target-cache-lookup`、全体棚卸しは `cache-inventory` と分ける。
+2. 保存済み文脈が不足すれば、既存ボット/adapterの可否を確認し、内部ブラウザの承認済み可視DOM経路へ進む。
+3. 取得した本文は `bridge-intake` または [明示相談](explicit-reply-consultation.md)へ渡し、保存receiptと観測URLの対象一致を確認する。
+4. 返信前には起点・返信対象・直前10件、短いthreadでは履歴終端、未解決参照を確認する。毎回の全文captureを要求せず、不足なら候補生成を停止する。
+5. LCS正本と対人skillを参照して本人への短い案を作る。ローカル単語判定の `guide-reply` とAIによる相談支援は別工程。
 
-Discord URL / 返信下書きの通常 ingress では、別 repository の Discord bot、ai-party、
-ChatGPT connector、外部 MCP へ自動で切り替えない。上記 route が未設定なら
-`not_configured` / `control_plane_not_ready` / `dependency_missing` の reason を返し、
-スコープを広げる場合はユーザーの明示承認を取る。
+本文・資格情報を別サービスへ渡す経路を追加せず、投稿は本人の判断とする。常駐UI・自動発動はこの経路に含めない。
 
 ## 状態確認command
 

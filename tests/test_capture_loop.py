@@ -89,6 +89,15 @@ def test_fde_and_lcs_status_are_projected_independently() -> None:
     assert projection["fde"]["decision"] == "continue_capture"
     assert projection["lcs"]["status"] == "capture_pending"
     assert projection["lcs"]["event_emitted"] is False
+    # A newly created checkpoint has no proof of a running process, even when
+    # the legacy run envelope labels its background lane as running.
+    assert run["lanes"]["background_full"]["status"] == "running"
+    assert projection["execution"] == {
+        "status_basis": "checkpoint_only",
+        "worker_active": None,
+        "worker_status": "unknown",
+        "automatic_resume_verified": False,
+    }
 
     run["state"] = "full_closed"
     run["lanes"]["background_full"]["status"] = "full"

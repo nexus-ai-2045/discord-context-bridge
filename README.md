@@ -85,7 +85,9 @@ MCPサーバーを使う場合は、MCP用の追加依存関係を含めて `pyt
 | 返信に必要な文脈を判定する | `reply-context-plan` |
 | 返信案をレビューする | `review-draft` / `guide-reply` |
 | 保存範囲と鮮度を確認する | `coverage-report` / `report-latest` |
-| 手元に保存済みの記録を確認する | `cache-inventory` |
+| 保存済み対象を軽く照会する | `target-cache-lookup`（canonicalのみ） |
+| 全保存先の発見・容量を棚卸しする | `cache-inventory` |
+| Botなしで返信を明示相談する | `prepare-reply-consultation` → [hostで短い提案](docs/explicit-reply-consultation.md) |
 | スレッド全文の取得計画と判定 | `thread-capture-plan` / `full-capture-gate` |
 | 「完全」「最新」と言ってよいか判定する | `scripts/context_claim_gate.py` |
 | ボットが対象を読めるか確認する | `scripts/discord_bot_live_verify.py`（[手順](docs/bot-live-verification.md)） |

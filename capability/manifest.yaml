@@ -46,6 +46,10 @@ required_commands:
     purpose: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
   - command: cache-first-intake
     purpose: ローカル cache / snapshot を先に見て private book を作る
+  - command: target-cache-lookup
+    purpose: canonical保存先だけを厳密検証する通常対象照会。外部cache発見と全体棚卸しを分離する
+  - command: prepare-reply-consultation
+    purpose: 保存receiptと返信文脈gateからLCS正本・対人skillを参照するprivate明示相談を準備する。助言生成はhostで行う
   - command: cache-inventory
     purpose: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
   - command: configure-local-cache

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime
 from hashlib import sha256
 
 import pytest
@@ -61,6 +62,135 @@ def test_start_and_advance_are_metadata_only_and_durable(tmp_path) -> None:
     )
     assert duplicate == advanced
     assert len(store.load_events(capture_id)) == 1
+
+
+def test_retry_failure_metadata_is_durable_after_restart_and_resume(tmp_path) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    event = {"type": "retryable_failure", "reason_code": "debugger_unattached",
+             "failure_stage": "capture"}
+    advance_persisted_capture(store, capture_id, "failure-1", event, expected_sequence=0)
+    store = CaptureCheckpointStore(tmp_path)
+    saved = store.load_checkpoint(capture_id)
+    assert saved["checkpoints"][0]["reason_code"] == "debugger_unattached"
+    assert saved["checkpoints"][0]["failure_stage"] == "capture"
+    recorded_at = saved["checkpoints"][0]["received_at"]
+    assert datetime.fromisoformat(recorded_at).utcoffset() is not None
+    assert store.load_events(capture_id)[0]["received_at"] == recorded_at
+    advance_persisted_capture(store, capture_id, "retry-1", "retry_due", expected_sequence=1)
+    saved = store.load_checkpoint(capture_id)
+    assert saved["state"] == "received"
+    assert saved["checkpoints"][0]["reason_code"] == "debugger_unattached"
+
+
+def test_retry_rejects_extra_fields_before_ledger_digest(tmp_path) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    with pytest.raises(ValueError, match="unexpected retry failure fields"):
+        advance_persisted_capture(store, capture_id, "failure-1", {
+            "type": "retryable_failure", "raw_error": "private message",
+        }, expected_sequence=0)
+    assert store.load_events(capture_id) == []
+    assert store.load_checkpoint(capture_id)["checkpoints"] == []
+
+
+def test_cli_retry_metadata_survives_resume_and_rejects_private_reason(tmp_path, capsys) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    base = ["capture-loop", "advance", "--store-root", str(tmp_path), "--capture-id", capture_id]
+    assert main(base + ["--event", "retryable_failure", "--event-id", "f1",
+                        "--failure-reason", "debugger_unattached", "--failure-stage", "capture", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["latest_failure"]["reason_code"] == "debugger_unattached"
+    assert result["latest_failure"]["failure_stage"] == "capture"
+    assert result["latest_failure"]["observed_at"] is None
+    recorded_at = result["latest_failure"]["received_at"]
+    assert datetime.fromisoformat(recorded_at).utcoffset() is not None
+    assert result["latest_failure"]["receipt_verified"] is True
+    assert main(base + ["--event", "retry_due", "--event-id", "r1", "--expected-sequence", "1", "--json"]) == 0
+    capsys.readouterr()
+    assert main(["capture-loop", "status", "--store-root", str(tmp_path), "--capture-id", capture_id, "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["latest_failure"]["reason_code"] == "debugger_unattached"
+    assert result["latest_failure"]["received_at"] == recorded_at
+    assert main(base + ["--event", "retryable_failure", "--event-id", "f2", "--expected-sequence", "2",
+                        "--failure-reason", "private-secret", "--json"]) == 2
+    assert "private-secret" not in capsys.readouterr().out
+    assert len(store.load_events(capture_id)) == 2
+
+
+def test_retry_failure_receipt_time_survives_checkpoint_write_failure(tmp_path, monkeypatch) -> None:
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    event = {"type": "retryable_failure", "reason_code": "timeout", "failure_stage": "capture"}
+    original = store.save_checkpoint
+    def fail_save(*args, **kwargs):
+        raise OSError("simulated crash")
+    monkeypatch.setattr(store, "save_checkpoint", fail_save)
+    with pytest.raises(OSError):
+        advance_persisted_capture(store, capture_id, "failure-1", event, expected_sequence=0)
+    received = store.load_events(capture_id)[0]["received_at"]
+    monkeypatch.setattr(store, "save_checkpoint", original)
+    status = advance_persisted_capture(store, capture_id, "failure-1", event, expected_sequence=0)
+    assert status["latest_failure"]["received_at"] == received
+    assert status["latest_failure"]["observed_at"] is None
+
+
+def test_legacy_failure_without_receipt_time_remains_unknown(tmp_path) -> None:
+    from discord_context_bridge.capture.service import read_capture_loop_status
+
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    advance_persisted_capture(store, capture_id, "f1", "retryable_failure", expected_sequence=0)
+    checkpoint = json.loads(store.checkpoint_path(capture_id).read_text())
+    del checkpoint["checkpoints"][0]["received_at"]
+    store.checkpoint_path(capture_id).write_text(json.dumps(checkpoint))
+    event = json.loads(store.ledger_path(capture_id).read_text())
+    del event["received_at"]
+    store.ledger_path(capture_id).write_text(json.dumps(event) + "\n")
+    failure = read_capture_loop_status(store, capture_id)["latest_failure"]
+    assert failure["received_at"] is None
+    assert failure["observed_at"] is None
+    assert failure["receipt_verified"] is False
+
+
+@pytest.mark.parametrize("damage", ["missing", "time_mismatch", "time_deleted", "event_time_deleted", "event_null_checkpoint_deleted", "reason_mismatch", "invalid_json"])
+def test_failure_status_rejects_missing_or_mismatched_durable_receipt(tmp_path, damage) -> None:
+    from discord_context_bridge.capture.service import read_capture_loop_status
+
+    store = CaptureCheckpointStore(tmp_path)
+    capture_id = start_capture_loop(store, "target", "chrome_extension", "m9")["capture_id"]
+    advance_persisted_capture(store, capture_id, "f1", {
+        "type": "retryable_failure", "reason_code": "timeout", "failure_stage": "capture",
+    }, expected_sequence=0)
+    if damage == "missing":
+        store.ledger_path(capture_id).unlink()
+    elif damage == "invalid_json":
+        store.ledger_path(capture_id).write_text("not json\n")
+    elif damage in {"time_mismatch", "time_deleted"}:
+        checkpoint = json.loads(store.checkpoint_path(capture_id).read_text())
+        if damage == "time_deleted":
+            del checkpoint["checkpoints"][0]["received_at"]
+        else:
+            checkpoint["checkpoints"][0]["received_at"] = "2000-01-01T00:00:00+00:00"
+        store.checkpoint_path(capture_id).write_text(json.dumps(checkpoint))
+    elif damage == "event_time_deleted":
+        event = json.loads(store.ledger_path(capture_id).read_text())
+        del event["received_at"]
+        store.ledger_path(capture_id).write_text(json.dumps(event) + "\n")
+    elif damage == "event_null_checkpoint_deleted":
+        checkpoint = json.loads(store.checkpoint_path(capture_id).read_text())
+        del checkpoint["checkpoints"][0]["received_at"]
+        store.checkpoint_path(capture_id).write_text(json.dumps(checkpoint))
+        event = json.loads(store.ledger_path(capture_id).read_text())
+        event["received_at"] = None
+        store.ledger_path(capture_id).write_text(json.dumps(event) + "\n")
+    else:
+        checkpoint = json.loads(store.checkpoint_path(capture_id).read_text())
+        checkpoint["checkpoints"][0]["reason_code"] = "navigation_failed"
+        store.checkpoint_path(capture_id).write_text(json.dumps(checkpoint))
+    with pytest.raises(CheckpointCorruptError):
+        read_capture_loop_status(store, capture_id)
 
 
 def test_stale_transition_fails_closed(tmp_path) -> None:

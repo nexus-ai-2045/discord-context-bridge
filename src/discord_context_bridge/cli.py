@@ -18,7 +18,8 @@ from .archive_inventory import MAX_SCOPE_RECEIPT_BYTES
 from .process_runner import minimal_child_env, run_process
 from .site_adapter_runtime import MAX_INPUT_BYTES, build_capture
 from .site_adapter_store import store_capture
-from .cache_inventory import build_cache_inventory
+from .cache_inventory import build_cache_inventory, build_target_cache_lookup
+from .reply_consultation import prepare_reply_consultation
 from .desktop_cache import probe_discord_desktop_cache, resolve_discord_user_data_dir
 from .desktop_cache_records import export_desktop_cache_records
 from .local_config import (
@@ -553,6 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
     capture_loop.add_argument("--scan-pass-budget", type=int, default=2)
     capture_loop.add_argument("--retry-budget", type=int, default=3)
     capture_loop.add_argument("--event", default="")
+    capture_loop.add_argument("--failure-reason", default=None)
+    capture_loop.add_argument("--failure-stage", default=None)
     capture_loop.add_argument("--event-id", default="")
     capture_loop.add_argument("--expected-sequence", type=int, default=0)
     capture_loop.add_argument(
@@ -584,6 +587,25 @@ def build_parser() -> argparse.ArgumentParser:
     cache_first.add_argument("--book-output", type=Path, default=None, help="生成する private Markdown book。出力には表示しません")
     cache_first.add_argument("--json", action="store_true", help="機械処理用に JSON で出力する")
     cache_first.set_defaults(handler=_cmd_cache_first_intake)
+
+    target_lookup = sub.add_parser("target-cache-lookup", help="canonical保存先だけを検証する対象照会。全体棚卸しは行わない")
+    target_lookup.add_argument("--url", required=True)
+    target_lookup.add_argument("--snapshot-store", type=Path, default=None)
+    target_lookup.add_argument("--include-private-title", action="store_true")
+    target_lookup.add_argument("--json", action="store_true")
+    target_lookup.set_defaults(handler=_cmd_target_cache_lookup)
+
+    consultation = sub.add_parser("prepare-reply-consultation", help="保存と文脈gateを通してprivateな明示相談を準備する")
+    consultation.add_argument("--url", required=True)
+    consultation.add_argument("--capture-file", type=Path, required=True, help="承認済みDOM取得のstructured JSON")
+    consultation.add_argument("--snapshot-store", type=Path, default=None)
+    consultation.add_argument("--draft-file", type=Path, help="任意の未送信下書き")
+    consultation.add_argument("--goal", required=True, help="今回の相談目的")
+    consultation.add_argument("--skill-file", type=Path, required=True, help="採用済み対人skillのSKILL.md")
+    consultation.add_argument("--lcs-root", type=Path)
+    consultation.add_argument("--output", type=Path, required=True, help="private保存先と同じdirectory内の新規相談JSON")
+    consultation.add_argument("--json", action="store_true")
+    consultation.set_defaults(handler=_cmd_prepare_reply_consultation)
 
     cache_inventory = sub.add_parser(
         "cache-inventory",
@@ -1692,6 +1714,10 @@ def _cmd_full_capture_gate(args: argparse.Namespace) -> int:
 def _cmd_capture_loop(args: argparse.Namespace) -> int:
     store = CaptureCheckpointStore(args.store_root)
     try:
+        if args.action != "advance" and (
+            args.failure_reason is not None or args.failure_stage is not None
+        ):
+            raise CaptureStoreError("failure metadata requires advance")
         if args.action == "start":
             if not args.target_key or not args.upper_watermark:
                 raise CaptureStoreError("startには--target-keyと--upper-watermarkが必要です")
@@ -1716,11 +1742,20 @@ def _cmd_capture_loop(args: argparse.Namespace) -> int:
                 raise CaptureStoreError(
                     "advanceには--capture-id、--event、--event-idが必要です"
                 )
+            event = args.event
+            if args.failure_reason is not None or args.failure_stage is not None:
+                if args.event != "retryable_failure":
+                    raise CaptureStoreError("failure metadata requires retryable_failure")
+                event = {"type": args.event}
+                if args.failure_reason is not None:
+                    event["reason_code"] = args.failure_reason
+                if args.failure_stage is not None:
+                    event["failure_stage"] = args.failure_stage
             result = advance_persisted_capture(
                 store,
                 args.capture_id,
                 args.event_id,
-                args.event,
+                event,
                 expected_sequence=args.expected_sequence,
             )
         elif args.action == "observe":
@@ -1983,6 +2018,33 @@ def _cmd_cache_first_intake(args: argparse.Namespace) -> int:
     print("path_output: omitted")
     print("outbound: disabled")
     return 0 if payload["ok"] else 2
+
+
+def _cmd_target_cache_lookup(args: argparse.Namespace) -> int:
+    payload = build_target_cache_lookup(
+        url=args.url, snapshot_store=args.snapshot_store,
+        include_private_title=args.include_private_title,
+    )
+    print(_json(payload) if args.json else f"対象照会: {payload['state']}（canonical保存先のみ）")
+    return 0 if payload.get("ok") else 2
+
+
+def _cmd_prepare_reply_consultation(args: argparse.Namespace) -> int:
+    try:
+        if args.capture_file.stat().st_size > MAX_INPUT_BYTES:
+            raise ValueError("capture_budget_exceeded")
+        capture = json.loads(args.capture_file.read_text(encoding="utf-8"))
+        draft = args.draft_file.read_text(encoding="utf-8") if args.draft_file else ""
+        payload = prepare_reply_consultation(
+            url=args.url, capture=capture, snapshot_store=args.snapshot_store,
+            draft=draft, goal=args.goal, skill_file=args.skill_file,
+            output=args.output, lcs_root=args.lcs_root,
+        )
+    except (OSError, ValueError, RuntimeError):
+        payload = {"state": "blocked", "reason": "consultation_input_or_store_unreadable",
+                   "raw_text_returned": False, "path_output": "omitted", "outbound_actions": "disabled"}
+    print(_json(payload) if args.json else f"明示相談: {payload['state']} / {payload['reason']}")
+    return 0 if payload["state"] == "ready_for_ai_consultation" else 2
 
 
 def _cmd_cache_inventory(args: argparse.Namespace) -> int:
@@ -2642,6 +2704,9 @@ def _cmd_watch_guide(args: argparse.Namespace) -> int:
                 guild_label=args.guild,
                 channel_label=args.channel,
                 understanding_confirmed=args.understanding_confirmed,
+                reply_context_gate=build_reply_context_gate(
+                    thread_root_present=False, reply_target_present=False, prior_message_count=0
+                ),
             )
             payload = {
                 **guide,
