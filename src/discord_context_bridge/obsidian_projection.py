@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 from .core import load_content_snapshot_records, parse_visible_text
 from .knowledge_projection import message_observation_identity
@@ -96,6 +96,13 @@ def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return [item[1] for item in latest.values()]
 
 
+class ObservedMessage(NamedTuple):
+    identity: str
+    first_sequence: int
+    sequence: int
+    record: dict[str, Any]
+
+
 def _record_sequence(record: dict[str, Any], index: int) -> int:
     return int(
         record.get("stream_sequence")
@@ -106,7 +113,7 @@ def _record_sequence(record: dict[str, Any], index: int) -> int:
 
 def _message_observation_groups(
     records: Iterable[dict[str, Any]],
-) -> list[list[dict[str, Any]]]:
+) -> list[list[ObservedMessage]]:
     latest: dict[tuple[str, str], tuple[int, int, dict[str, Any]]] = {}
     for index, record in enumerate(records):
         if record.get("event_type") != "message_observation":
@@ -119,14 +126,16 @@ def _message_observation_groups(
             latest[key] = (sequence, sequence, record)
         elif sequence >= previous[1]:
             latest[key] = (previous[0], sequence, record)
-    grouped: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
-    for (target, _identity), (first_sequence, _sequence, record) in latest.items():
+    grouped: dict[tuple[str, str], list[ObservedMessage]] = defaultdict(list)
+    for (target, identity), (first_sequence, sequence, record) in latest.items():
         captured = _parse_time(
             record.get("captured_at") or record.get("observed_at") or record.get("time")
         )
-        grouped[(target, captured.strftime("%Y-%m"))].append((first_sequence, record))
+        grouped[(target, captured.strftime("%Y-%m"))].append(
+            ObservedMessage(identity, first_sequence, sequence, record)
+        )
     return [
-        [record for _first, record in sorted(items, key=lambda item: item[0])]
+        sorted(items, key=lambda item: item.first_sequence)
         for _key, items in sorted(grouped.items())
     ]
 
@@ -221,9 +230,10 @@ def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -
 
 
 def _render_message_month_note(
-    records: list[dict[str, Any]], *, label: str, notes_name: str
+    messages: list[ObservedMessage], *, label: str, notes_name: str
 ) -> str:
-    latest = max(records, key=lambda item: int(item.get("stream_sequence") or 0))
+    latest = max(messages, key=lambda message: message.sequence).record
+    records = [message.record for message in messages]
     captured_at = str(
         latest.get("captured_at") or latest.get("observed_at") or latest.get("time") or ""
     )
@@ -240,8 +250,9 @@ def _render_message_month_note(
         content_hash=content_hash,
         message_count=len(records),
     )
-    for index, item in enumerate(records):
-        block_id = _block_id(target, message_observation_identity(item, index))
+    for message in messages:
+        item = message.record
+        block_id = _block_id(target, message.identity)
         lines.extend(
             [
                 f"### {item.get('author_label') or 'unknown'}",
@@ -357,16 +368,16 @@ def export_obsidian_projection(
     started = time.perf_counter()
     records = load_content_snapshot_records(snapshot_store)
     observation_groups = _message_observation_groups(records)
-    observed_targets = {_target_label(group[0]) for group in observation_groups}
+    observed_targets = {_target_label(group[0].record) for group in observation_groups}
     latest_records = [
         record
         for record in _latest_by_target(records)
         if _target_label(record) not in observed_targets
     ]
-    month_sources: list[tuple[dict[str, Any], list[dict[str, Any]] | None]] = [
+    month_sources: list[tuple[dict[str, Any], list[ObservedMessage] | None]] = [
         (record, None) for record in latest_records
     ] + [
-        (max(group, key=lambda item: int(item.get("stream_sequence") or 0)), group)
+        (max(group, key=lambda message: message.sequence).record, group)
         for group in observation_groups
     ]
     statuses: list[str] = []
