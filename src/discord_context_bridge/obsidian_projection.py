@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .core import load_content_snapshot_records, parse_visible_text
+from .knowledge_projection import message_observation_identity
 
 
 PROJECTION_SCHEMA = "discord_context_bridge_obsidian_projection.v1"
@@ -79,6 +80,8 @@ def _block_id(*parts: str) -> str:
 def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     latest: dict[str, tuple[int, dict[str, Any]]] = {}
     for index, record in enumerate(records):
+        if record.get("event_type") == "message_observation":
+            continue
         target = str(
             record.get("target_key") or record.get("stream_id") or f"unknown-{index}"
         )
@@ -93,18 +96,51 @@ def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return [item[1] for item in latest.values()]
 
 
-def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -> str:
-    captured_at = str(
-        record.get("captured_at")
-        or record.get("observed_at")
-        or record.get("time")
-        or ""
+def _record_sequence(record: dict[str, Any], index: int) -> int:
+    return int(
+        record.get("stream_sequence")
+        or record.get("observation_index_for_target")
+        or index + 1
     )
-    source = str(record.get("source") or "unknown")
-    content_hash = str(record.get("content_hash") or "")
-    target = _target_label(record)
-    text = str(record.get("text") or "").strip()
-    events = parse_visible_text(text, source=source, observed_at=captured_at or None)
+
+
+def _message_observation_groups(
+    records: Iterable[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    latest: dict[tuple[str, str], tuple[int, int, dict[str, Any]]] = {}
+    for index, record in enumerate(records):
+        if record.get("event_type") != "message_observation":
+            continue
+        target = _target_label(record)
+        key = (target, message_observation_identity(record, index))
+        sequence = _record_sequence(record, index)
+        previous = latest.get(key)
+        if previous is None:
+            latest[key] = (sequence, sequence, record)
+        elif sequence >= previous[1]:
+            latest[key] = (previous[0], sequence, record)
+    grouped: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    for (target, _identity), (first_sequence, _sequence, record) in latest.items():
+        captured = _parse_time(
+            record.get("captured_at") or record.get("observed_at") or record.get("time")
+        )
+        grouped[(target, captured.strftime("%Y-%m"))].append((first_sequence, record))
+    return [
+        [record for _first, record in sorted(items, key=lambda item: item[0])]
+        for _key, items in sorted(grouped.items())
+    ]
+
+
+def _month_note_header(
+    record: dict[str, Any],
+    *,
+    label: str,
+    notes_name: str,
+    captured_at: str,
+    source: str,
+    content_hash: str,
+    message_count: int,
+) -> list[str]:
     status = str(record.get("capture_status") or "unknown")
     lines = [
         "---",
@@ -119,7 +155,7 @@ def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -
         f"capture_status: {_yaml_string(status)}",
         f"source: {_yaml_string(source)}",
         f"content_hash: {_yaml_string(content_hash)}",
-        f"message_count: {len(events)}",
+        f"message_count: {message_count}",
         "private_local_only: true",
         "---",
         "",
@@ -137,6 +173,30 @@ def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -
         "## メッセージ",
         "",
     ]
+    return lines
+
+
+def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -> str:
+    captured_at = str(
+        record.get("captured_at")
+        or record.get("observed_at")
+        or record.get("time")
+        or ""
+    )
+    source = str(record.get("source") or "unknown")
+    content_hash = str(record.get("content_hash") or "")
+    target = _target_label(record)
+    text = str(record.get("text") or "").strip()
+    events = parse_visible_text(text, source=source, observed_at=captured_at or None)
+    lines = _month_note_header(
+        record,
+        label=label,
+        notes_name=notes_name,
+        captured_at=captured_at,
+        source=source,
+        content_hash=content_hash,
+        message_count=len(events),
+    )
     if events:
         for index, event in enumerate(events, start=1):
             block_id = _block_id(
@@ -157,6 +217,41 @@ def _render_month_note(record: dict[str, Any], *, label: str, notes_name: str) -
         lines.extend([text, "", f"^{block_id}", ""])
     else:
         lines.extend(["_保存済み本文がありません。_", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_message_month_note(
+    records: list[dict[str, Any]], *, label: str, notes_name: str
+) -> str:
+    latest = max(records, key=lambda item: int(item.get("stream_sequence") or 0))
+    captured_at = str(
+        latest.get("captured_at") or latest.get("observed_at") or latest.get("time") or ""
+    )
+    target = _target_label(latest)
+    content_hash = hashlib.sha256(
+        "|".join(str(item.get("content_hash") or "") for item in records).encode("utf-8")
+    ).hexdigest()
+    lines = _month_note_header(
+        latest,
+        label=label,
+        notes_name=notes_name,
+        captured_at=captured_at,
+        source=str(latest.get("source") or "unknown"),
+        content_hash=content_hash,
+        message_count=len(records),
+    )
+    for index, item in enumerate(records):
+        block_id = _block_id(target, message_observation_identity(item, index))
+        lines.extend(
+            [
+                f"### {item.get('author_label') or 'unknown'}",
+                "",
+                str(item.get("text") or "").strip() or "_保存済み本文がありません。_",
+                "",
+                f"^{block_id}",
+                "",
+            ]
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -261,13 +356,25 @@ def export_obsidian_projection(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     records = load_content_snapshot_records(snapshot_store)
-    latest_records = _latest_by_target(records)
+    observation_groups = _message_observation_groups(records)
+    observed_targets = {_target_label(group[0]) for group in observation_groups}
+    latest_records = [
+        record
+        for record in _latest_by_target(records)
+        if _target_label(record) not in observed_targets
+    ]
+    month_sources: list[tuple[dict[str, Any], list[dict[str, Any]] | None]] = [
+        (record, None) for record in latest_records
+    ] + [
+        (max(group, key=lambda item: int(item.get("stream_sequence") or 0)), group)
+        for group in observation_groups
+    ]
     statuses: list[str] = []
     month_files_by_target: dict[str, list[str]] = defaultdict(list)
     labels_by_target: dict[str, str] = {}
     index_entries: list[tuple[str, str]] = []
 
-    for record in latest_records:
+    for record, group in month_sources:
         target = _target_label(record)
         label = _display_label(record)
         labels_by_target[target] = label
@@ -277,7 +384,8 @@ def export_obsidian_projection(
         month = captured.strftime("%Y-%m")
         month_name = f"{label} {month}"
         notes_name = f"{label} メモ"
-        month_files_by_target[target].append(month_name)
+        if month_name not in month_files_by_target[target]:
+            month_files_by_target[target].append(month_name)
         channel_root = output_root / "Channels" / target
         existing_notes = list(channel_root.glob("* メモ.md"))
         desired_notes = channel_root / f"{notes_name}.md"
@@ -286,7 +394,11 @@ def export_obsidian_projection(
         statuses.append(
             _write_if_changed(
                 channel_root / f"{month_name}.md",
-                _render_month_note(record, label=label, notes_name=notes_name),
+                _render_month_note(record, label=label, notes_name=notes_name)
+                if group is None
+                else _render_message_month_note(
+                    group, label=label, notes_name=notes_name
+                ),
             )
         )
         notes = desired_notes
@@ -374,7 +486,7 @@ def export_obsidian_projection(
         "ok": True,
         "message": "Obsidian用Markdown projectionを更新しました。",
         "source_record_count": len(records),
-        "projected_target_count": len(latest_records),
+        "projected_target_count": len(labels_by_target),
         "written_file_count": statuses.count("written"),
         "unchanged_file_count": statuses.count("unchanged"),
         "human_notes_preserved": True,

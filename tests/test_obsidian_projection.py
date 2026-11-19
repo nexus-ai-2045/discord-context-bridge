@@ -247,3 +247,56 @@ def test_export_cli_returns_metadata_only_json(tmp_path, capsys):
     assert str(snapshot_store) not in output
     assert str(output_root) not in output
     assert '"paths_returned": false' in output
+
+
+def _write_message_observation(
+    path: Path, *, sequence: int, message_id: str, author: str, text: str
+) -> None:
+    record = {
+        "schema": "discord_context_bridge_text_snapshot_observation.v1",
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": sequence,
+        "message_id": message_id,
+        "ordinal": 0,
+        "author_label": author,
+        "visible_timestamp": "",
+        "captured_at": f"2026-07-16T1{sequence}:00:00+09:00",
+        "source": "structured",
+        "content_hash": f"hash-{sequence}",
+        "text": text,
+        "private_local_only": True,
+        "outbound_actions": "disabled",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def test_export_keeps_every_message_observation_in_the_month_note(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_message_observation(
+        snapshot_store, sequence=1, message_id="m1", author="member-a", text="一件目の本文"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=2, message_id="m2", author="member-b", text="二件目の本文"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=3, message_id="m1", author="member-a", text="一件目の編集後"
+    )
+
+    result = export_obsidian_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    assert result["projected_target_count"] == 1
+    month_notes = list((output_root / "Channels").rglob("* 2026-07.md"))
+    assert len(month_notes) == 1
+    note = month_notes[0].read_text(encoding="utf-8")
+    assert "二件目の本文" in note
+    assert "一件目の編集後" in note
+    assert "一件目の本文" not in note
+    assert "message_count: 2" in note
+    assert note.index("一件目の編集後") < note.index("二件目の本文")
