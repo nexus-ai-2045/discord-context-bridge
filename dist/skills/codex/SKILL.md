@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for codex; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: ef641ef58ab528213973520b8fa24b8aeadae41c
+ssot_commit: 08f0a2b6d279ea455431680e2f533bb8b3515da5
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 9885c655f3050d954c6777406f4097174eadf6cc54a91e314fde97faf15610a1
-contract_checksum: fa85367e878aa0fd3f8f3811ffef74aacc847554d709e17b6cb899a3cb3b35f6
-generated_at: 2026-11-19T14:28:23+00:00
+contract_checksum: d98cb19740bd3129bbdb1c238df132e9f8bb0c9ca9dd54ab9aec96ce2f0391ed
+generated_at: 2026-11-19T14:43:07+00:00
 runtime_target: codex
 ---
 
@@ -81,7 +81,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 ## ローカルcache解決と鮮度判断
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
-- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- user configは既定で、`platformdirs` が返すこの OS の標準の設定フォルダの `discord-context-bridge/config.json` とする（Mac は `~/Library/Application Support/`、Windows は `%APPDATA%`、Linux は `$XDG_CONFIG_HOME` または `~/.config`）。新しい場所に無く旧い `~/.config/discord-context-bridge/config.json` だけがある時は旧い場所を読み、標準エラーに移し替えの案内を出す。自動では移さず、消さない。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
 - 通常の対象照会は `target-cache-lookup` でcanonical保存先だけを毎回厳密検証する。外部cache発見・Markdown探索・全体容量棚卸しは行わず、その未探索範囲を返す。全体の棚卸しは `cache-inventory` のまま維持する。mtime/sizeで検証を省略する永続索引は追加しない。
 - `bridge-intake` は同一依頼のwriter lock内で検証・再読した観測をcoverage・latest・passportへ渡す。後続の別依頼は台帳を再検証し、失効済みの本文をlatestへ戻さない。保存成功はその観測時点に束縛し、後から追記された内容へ黙って切替えない。
 - `prepare-reply-consultation` は承認済みの構造化可視取得を保存し、同じ入力の関係情報を正規台帳へ結び付けて返信文脈gateを計算する。十分な場合だけ、LCS正本と対人skillの参照先・hash・安定IDを持つprivate相談packetを作る。LCS判断軸やDiscord原文を別のDBへ複写しない。`ready_for_ai_consultation` はhostが相談を始められる状態で、AI助言の生成・本人採用・配布・実機利用の証拠ではない。private consumerは台帳・receipt・gate・参照先を再検証する。

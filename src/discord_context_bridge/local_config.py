@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import platformdirs
 
+
+APP_NAME = "discord-context-bridge"
 CONFIG_ENV = "DISCORD_CONTEXT_BRIDGE_CONFIG"
+CONFIG_FILE_NAME = "config.json"
+LEGACY_CONFIG_RELATIVE = Path(".config") / APP_NAME / CONFIG_FILE_NAME
 SHARED_SNAPSHOT_ROOT_ENV = "DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT"
 CWD_LOCAL_SNAPSHOT_STORE = Path(".local") / "discord-context-bridge" / "text-snapshots.ndjson"
 CROSS_DEVICE_LEDGER_RELATIVE = Path(".dcb") / "text-snapshots.ndjson"
@@ -42,12 +47,49 @@ def _absolute_path(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
-def default_config_path(*, home: Path | None = None, env: Mapping[str, str] | None = None) -> Path:
+def platform_config_path() -> Path:
+    return platformdirs.user_config_path(APP_NAME, appauthor=False, roaming=True) / CONFIG_FILE_NAME
+
+
+def legacy_config_path(*, home: Path | None = None) -> Path:
+    return (home or Path.home()) / LEGACY_CONFIG_RELATIVE
+
+
+def default_config_path(
+    *,
+    home: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    platform_path: Path | None = None,
+) -> Path:
     env_value = env if env is not None else os.environ
     configured = str(env_value.get(CONFIG_ENV, "")).strip()
     if configured:
         return Path(configured).expanduser()
-    return (home or Path.home()) / ".config" / "discord-context-bridge" / "config.json"
+    current = platform_path if platform_path is not None else platform_config_path()
+    if current.exists():
+        return current
+    legacy = legacy_config_path(home=home)
+    if legacy.exists():
+        return legacy
+    return current
+
+
+def legacy_config_notice(
+    config_path: Path | None,
+    *,
+    home: Path | None = None,
+    platform_path: Path | None = None,
+) -> str | None:
+    if config_path is None:
+        return None
+    current = platform_path if platform_path is not None else platform_config_path()
+    legacy = legacy_config_path(home=home)
+    if legacy == current or config_path.expanduser() != legacy or not legacy.exists():
+        return None
+    return (
+        "旧い場所（ホームの .config/discord-context-bridge）の設定ファイルを読みました。"
+        "この OS の標準の設定フォルダへ移してください。移すまでは旧い場所を読み続けます。"
+    )
 
 
 def load_local_config(path: Path) -> dict[str, Any]:

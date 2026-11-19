@@ -6,8 +6,8 @@ import struct
 from pathlib import Path
 
 import pytest
-import discord_context_bridge.desktop_cache as desktop_cache
 
+from discord_context_bridge import desktop_cache
 from discord_context_bridge.desktop_cache import (
     FLAG_HAS_KEY_SHA256,
     SIMPLE_FINAL_MAGIC,
@@ -70,17 +70,29 @@ def test_resolve_user_data_dir_uses_running_process_then_platform_default(tmp_pa
     running.mkdir()
     resolved = resolve_discord_user_data_dir(
         platform_name="darwin",
-        home=tmp_path,
+        default_user_data_dir=tmp_path / "missing-default",
         process_commands=[f"Discord --user-data-dir={running} --lang=ja"],
     )
     assert (resolved.path, resolved.source) == (running, "running_process")
 
-    default = tmp_path / "Library" / "Application Support" / "discord"
+    default = tmp_path / "default-discord"
     default.mkdir(parents=True)
     resolved_default = resolve_discord_user_data_dir(
-        platform_name="darwin", home=tmp_path, process_commands=[]
+        platform_name="darwin", default_user_data_dir=default, process_commands=[]
     )
     assert (resolved_default.path, resolved_default.source) == (default, "platform_default")
+
+
+def test_platform_default_user_data_dir_uses_roaming_discord_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_user_config_path(appname: str, **kwargs: object) -> Path:
+        calls.append((appname, kwargs))
+        return tmp_path / appname
+
+    monkeypatch.setattr(desktop_cache.platformdirs, "user_config_path", fake_user_config_path)
+    assert desktop_cache.platform_default_user_data_dir() == tmp_path / "discord"
+    assert calls == [("discord", {"appauthor": False, "roaming": True})]
 
 
 def test_probe_extracts_labels_only_when_explicitly_requested(tmp_path: Path) -> None:

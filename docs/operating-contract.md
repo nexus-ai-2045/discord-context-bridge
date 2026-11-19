@@ -63,7 +63,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 ## ローカルcache解決と鮮度判断
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
-- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- user configは既定で、`platformdirs` が返すこの OS の標準の設定フォルダの `discord-context-bridge/config.json` とする（Mac は `~/Library/Application Support/`、Windows は `%APPDATA%`、Linux は `$XDG_CONFIG_HOME` または `~/.config`）。新しい場所に無く旧い `~/.config/discord-context-bridge/config.json` だけがある時は旧い場所を読み、標準エラーに移し替えの案内を出す。自動では移さず、消さない。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
 - 通常の対象照会は `target-cache-lookup` でcanonical保存先だけを毎回厳密検証する。外部cache発見・Markdown探索・全体容量棚卸しは行わず、その未探索範囲を返す。全体の棚卸しは `cache-inventory` のまま維持する。mtime/sizeで検証を省略する永続索引は追加しない。
 - `bridge-intake` は同一依頼のwriter lock内で検証・再読した観測をcoverage・latest・passportへ渡す。後続の別依頼は台帳を再検証し、失効済みの本文をlatestへ戻さない。保存成功はその観測時点に束縛し、後から追記された内容へ黙って切替えない。
 - `prepare-reply-consultation` は承認済みの構造化可視取得を保存し、同じ入力の関係情報を正規台帳へ結び付けて返信文脈gateを計算する。十分な場合だけ、LCS正本と対人skillの参照先・hash・安定IDを持つprivate相談packetを作る。LCS判断軸やDiscord原文を別のDBへ複写しない。`ready_for_ai_consultation` はhostが相談を始められる状態で、AI助言の生成・本人採用・配布・実機利用の証拠ではない。private consumerは台帳・receipt・gate・参照先を再検証する。

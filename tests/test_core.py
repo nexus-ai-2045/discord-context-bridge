@@ -4859,23 +4859,6 @@ def test_visible_text_adapter_blocks_expanded_sensitive_output(tmp_path, capsys)
         assert line not in captured.err
 
 
-def test_visible_text_adapter_can_read_source_command(capsys, monkeypatch):
-    adapter = load_script_module("visible_text_adapter_command_for_test", ROOT / "scripts" / "read_visible_discord_text.py")
-
-    class Completed:
-        returncode = 0
-        stdout = "member-a: 画面に見えている本文です\n"
-        stderr = ""
-
-    monkeypatch.setattr(adapter.subprocess, "run", lambda command, **kwargs: Completed())
-
-    result = adapter.main(["--source-command", "discord-visible-text"])
-    output = capsys.readouterr().out
-
-    assert result == 0
-    assert output == "member-a: 画面に見えている本文です\n"
-
-
 def test_screenshot_ocr_runner_reads_existing_image_with_private_ocr_command(tmp_path, capsys, monkeypatch):
     runner = load_script_module("screenshot_ocr_runner_for_test", ROOT / "scripts" / "read_screenshot_ocr_text.py")
     image = tmp_path / "capture.png"
@@ -5555,7 +5538,7 @@ def test_visible_text_adapter_passes_timeout_to_source_command(capsys, monkeypat
 
     assert result == 0
     assert calls[0][1]["timeout"] == 4
-    assert "画面に見えている本文です" in capsys.readouterr().out
+    assert capsys.readouterr().out == "member-a: 画面に見えている本文です\n"
 
 
 def test_visible_text_adapter_builds_macos_window_list_script():
