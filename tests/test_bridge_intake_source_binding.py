@@ -190,3 +190,23 @@ def test_reserved_dm_marker_and_malformed_urls_remain_rejected(tmp_path, observe
     payload = build_bridge_intake(url=URL, observed_url=observed, capture_route='in_app_browser', text=TEXT, snapshot_store=tmp_path / 'snapshots.ndjson')
     assert payload['blocked_reason'] == 'observed_url_invalid'
     assert payload['snapshot']['saved'] is False
+
+
+def test_structured_messages_are_saved_in_the_reply_gate_order(tmp_path):
+    from discord_context_bridge.core import load_content_snapshot_records
+
+    store = tmp_path / 'snapshots.ndjson'
+    build_bridge_intake(
+        url=URL,
+        messages=[
+            {'author_label': 'member-b', 'text': '返信先の発言', 'sequence': 1,
+             'timestamp': 'not-a-time-b', 'is_reply_target': True, 'id': '2'},
+            {'author_label': 'member-a', 'text': 'スレッドの始まり', 'sequence': 0,
+             'timestamp': 'not-a-time-a', 'is_thread_root': True, 'id': '1'},
+        ],
+        history_exhausted=True,
+        snapshot_store=store,
+    )
+
+    saved = load_content_snapshot_records(store)[-1]['text']
+    assert saved.index('スレッドの始まり') < saved.index('返信先の発言')

@@ -90,6 +90,16 @@ def _record_title(records: list[dict[str, Any]]) -> tuple[str, str]:
     return title, source
 
 
+def _record_with_original_capture_time(record: dict[str, Any]) -> dict[str, Any]:
+    evidence = record.get("reply_context_evidence")
+    original = evidence.get("capture_observed_at") if isinstance(evidence, dict) else None
+    original_time = parse_snapshot_timestamp(original) if original else None
+    saved_time = parse_snapshot_timestamp(record.get("captured_at"))
+    if original_time is None or (saved_time is not None and saved_time <= original_time):
+        return record
+    return {**record, "captured_at": original}
+
+
 def build_cache_inventory(
     *,
     url: str,
@@ -147,7 +157,11 @@ def build_cache_inventory(
                 break
 
     generated = generated_at or datetime.now(timezone.utc).isoformat()
-    freshness = snapshot_freshness(records, generated_at=generated, source="local_snapshot")
+    freshness = snapshot_freshness(
+        [_record_with_original_capture_time(record) for record in records],
+        generated_at=generated,
+        source="local_snapshot",
+    )
     policy = stale_policy_for_freshness(freshness)
     if freshness["status"] == "recent":
         decision = "use_local_snapshot"
@@ -247,7 +261,11 @@ def build_target_cache_lookup(
         matching_snapshot_records(snapshot_store, url=url, target_key=target_key, canonical=True)
     )
     generated = generated_at or datetime.now(timezone.utc).isoformat()
-    freshness = snapshot_freshness(records, generated_at=generated, source="local_snapshot")
+    freshness = snapshot_freshness(
+        [_record_with_original_capture_time(record) for record in records],
+        generated_at=generated,
+        source="local_snapshot",
+    )
     policy = stale_policy_for_freshness(freshness)
     if freshness["status"] == "recent":
         decision = "use_local_snapshot"

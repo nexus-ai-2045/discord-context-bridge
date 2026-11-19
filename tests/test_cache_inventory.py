@@ -336,3 +336,35 @@ def test_frontmatter_preserves_existing_unicode_character_limit(tmp_path):
     assert len(text[:text.index('title:')].encode('utf-8')) > 8192
     path.write_text(text, encoding='utf-8')
     assert _frontmatter(path)['title'] == 'retained'
+
+
+def test_target_lookup_uses_original_capture_time_of_reply_context(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from discord_context_bridge import cache_inventory, core
+
+    store = tmp_path / "snapshots.ndjson"
+    captured = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    core.build_bridge_intake(
+        url=URL,
+        messages=[
+            {
+                "author_label": "member-a",
+                "text": "古い取得の本文",
+                "sequence": 0,
+                "timestamp": "",
+                "is_thread_root": True,
+                "is_reply_target": True,
+                "id": "1",
+            }
+        ],
+        history_exhausted=True,
+        capture_observed_at=captured,
+        snapshot_store=store,
+    )
+
+    payload = cache_inventory.build_target_cache_lookup(url=URL, snapshot_store=store)
+
+    assert payload["exact_snapshot_record_count"] == 1
+    assert payload["freshness"]["status"] != "recent"
+    assert payload["decision"] != "use_local_snapshot"

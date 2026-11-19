@@ -899,6 +899,10 @@ def build_bridge_intake(
     generated = generated_at or utc_now()
     steps_completed: list[str] = []
     message_list = list(messages) if messages is not None else None
+    if message_list is not None:
+        ordered, _source, verified = order_reply_context_messages(message_list)
+        if verified and len(ordered) == len(message_list):
+            message_list = ordered
     if message_list is not None and text.strip():
         raise ValueError("text and messages are mutually exclusive")
     content = text.strip() if message_list is None else normalize_message_text(message_list)
@@ -4366,6 +4370,24 @@ def build_reply_context_gate(
     }
 
 
+def order_reply_context_messages(
+    messages: Iterable[Any],
+) -> tuple[list[dict[str, Any]], str, bool]:
+    loaded = [message for message in messages if isinstance(message, dict)]
+    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
+        return sorted(loaded, key=lambda message: int(message["sequence"])), "sequence", True
+    if loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
+        return (
+            sorted(
+                loaded,
+                key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            "timestamp",
+            True,
+        )
+    return loaded, "unknown", False
+
+
 def build_reply_context_gate_from_messages(
     messages: Iterable[dict[str, Any]],
     *,
@@ -4373,20 +4395,7 @@ def build_reply_context_gate_from_messages(
     max_context_messages: int = 100,
 ) -> dict[str, Any]:
     """structured message envelope を壊さず返信前文脈gateへ変換する。"""
-    loaded = [message for message in messages if isinstance(message, dict)]
-    order_source = "unknown"
-    order_verified = False
-    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
-        loaded = sorted(loaded, key=lambda message: int(message["sequence"]))
-        order_source = "sequence"
-        order_verified = True
-    elif loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
-        loaded = sorted(
-            loaded,
-            key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
-        )
-        order_source = "timestamp"
-        order_verified = True
+    loaded, order_source, order_verified = order_reply_context_messages(messages)
     root_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_thread_root"))]
     target_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_reply_target"))]
     target_present = bool(target_indexes)
