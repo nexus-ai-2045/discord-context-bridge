@@ -426,3 +426,44 @@ def test_export_keeps_reobserved_message_in_its_first_month(tmp_path):
     assert "七月の一件目" in july and "七月の二件目" in july
     assert "message_count: 2" in july
     assert list((output_root / "Channels").rglob("* 2026-08.md")) == []
+
+
+def test_export_uses_latest_title_for_every_month_of_a_target(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    rows = [
+        (1, "m1", "2026-07-16T10:00:00+09:00", "Old title", "七月の本文"),
+        (2, "m2", "2026-08-02T10:00:00+09:00", "Old title", "八月の本文"),
+        (3, "m1", "2026-09-03T10:00:00+09:00", "New title", "七月の本文"),
+    ]
+    snapshot_store.parent.mkdir(parents=True, exist_ok=True)
+    for sequence, message_id, captured_at, title, text in rows:
+        record = {
+            "event_type": "message_observation",
+            "target_key": "safe-target-a",
+            "stream_id": "safe-target-a",
+            "stream_sequence": sequence,
+            "message_id": message_id,
+            "author_label": "member-a",
+            "captured_at": captured_at,
+            "title": title,
+            "source": "structured",
+            "content_hash": f"hash-{sequence}",
+            "text": text,
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    channel = next((output_root / "Channels").iterdir())
+    names = sorted(path.name for path in channel.glob("*.md"))
+    assert names == [
+        "New title 2026-07.md",
+        "New title 2026-08.md",
+        "New title メモ.md",
+        "New title 概要.md",
+    ]
+    for month in ("2026-07", "2026-08"):
+        note = (channel / f"New title {month}.md").read_text(encoding="utf-8")
+        assert "[[New title メモ]]" in note

@@ -394,6 +394,17 @@ def export_obsidian_projection(
         (max(group, key=lambda message: message.sequence).record, group)
         for group in observation_groups
     ]
+    latest_label_record: dict[str, tuple[int, dict[str, Any]]] = {}
+    for record, group in month_sources:
+        target = _target_label(record)
+        sequence = (
+            int(record.get("stream_sequence") or 0)
+            if group is None
+            else max(message.sequence for message in group)
+        )
+        previous = latest_label_record.get(target)
+        if previous is None or sequence >= previous[0]:
+            latest_label_record[target] = (sequence, record)
     statuses: list[str] = []
     month_files_by_target: dict[str, list[str]] = defaultdict(list)
     labels_by_target: dict[str, str] = {}
@@ -401,7 +412,7 @@ def export_obsidian_projection(
 
     for record, group in month_sources:
         target = _target_label(record)
-        label = _display_label(record)
+        label = _display_label(latest_label_record[target][1])
         labels_by_target[target] = label
         month = _record_month(record) if group is None else group[0].month
         month_name = f"{label} {month}"
