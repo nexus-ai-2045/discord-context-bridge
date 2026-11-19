@@ -302,3 +302,18 @@ def test_compile_checks_use_distinct_temporary_cache_roots_and_clean_them(monkey
     assert all(result.ok for result in results)
     assert len(set(cache_roots)) == 10
     assert all(not path.exists() for path in cache_roots)
+
+
+def test_process_runner_timeout_covers_descendant_holding_output_pipes():
+    grandchild = "import time; time.sleep(5)"
+    parent_code = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])"
+    )
+    started = time.perf_counter()
+    result = run_process([sys.executable, "-c", parent_code], timeout=0.3)
+    elapsed = time.perf_counter() - started
+
+    assert result.returncode == 124
+    assert result.failure_stage == "timeout"
+    assert elapsed < 3.0
