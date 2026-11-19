@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/discord_bridge_report_acquisition_context.v1.schema.json",
+  "title": "Discord Bridge report acquisition context",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "description",
+    "live_browser_access",
+    "new_capture",
+    "snapshot_store_read"
+  ],
+  "properties": {
+    "schema": {
+      "const": "discord_bridge_report_acquisition_context.v1"
+    },
+    "mode": {
+      "const": "existing_saved_snapshot"
+    },
+    "description": {
+      "type": "string"
+    },
+    "live_browser_access": {
+      "const": false
+    },
+    "new_capture": {
+      "const": false
+    },
+    "snapshot_store_read": {
+      "const": true
+    }
+  },
+  "additionalProperties": true
+}

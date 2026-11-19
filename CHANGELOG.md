@@ -1,0 +1,107 @@
+# Changelog
+
+## Unreleased
+
+- 次の変更をここに記録します。
+
+## 0.12.0 - 2026-10-15
+
+- ブラウザで取得した本文を保存する前に、取得経路と取得直前に観測したURLを照合するようにしました。要求先と観測先が違う場合、ログイン画面へ移った場合、本文が空の場合は保存せずに止まります。既存のDMとスレッド内メッセージのURLは同じ対象として保存できます（#93）。
+- 完全・最新・理解済みと表明する前に、正本の取得記録と鮮度を再監査する表明ゲート（`context_claim_gate.py`）を追加しました。ボット経路は、資格情報の設定だけでは取得可能と判定せず、同じ資格情報と対象に結び付いたアクセス確認記録（`discord_bot_live_verify.py`）を要求します。送信後の照合は、起動時に指定した正本台帳を読み戻して対象・時刻・ハッシュを照合します（#92）。
+- 外部スナップショットの取り込み、不正な観測行の失効（`revoke_invalid_snapshot_observation.py`）、アーカイブ済みスレッド列挙の運用契約、可視取得の観測完了判定を正本へ統合しました。改行のない台帳への失効記録の追記で台帳が壊れる問題も修正しました（#91）。
+- 同じ対象を取り直した時に取得試行の証拠が混ざらないよう、任意の取得試行IDを追加しました。指定しない場合は従来の識別と保存形式のままです（#90）。
+- デスクトップキャッシュの読み込みで、シンボリックリンクの項目を読む前に拒否するようにしました（#89）。
+- REST backfillの出力先を個別に検査し、ブラウザやDiscordの資格情報領域、シンボリックリンク経由の書き込みを拒否するようにしました（#76）。
+- ライセンスの著作権者表記を、公開名義の `nexus-ai-2045` に揃えました。
+- READMEを0.12.0の取得経路と検証入口に合わせて更新しました。MCP用の追加依存のインストール、保存先の選び方、単発の保存と全文取得の区別、保存先が壊れた時に停止することを追記しました。
+- 実環境での全履歴の取得、保存先の修復、WindowsのACLの確認は、このリリースの検証成功だけでは保証しません。
+
+## 0.11.1 - 2026-09-29
+
+- Codex内部ブラウザを可視取得の既定fallbackにしました。API / private inboxの取得順序と保存確認を維持し、Chrome拡張は人間承認が必要な二次fallbackとして扱います。旧Chrome既定の契約文言と生成runtime skillの矛盾を解消しました。
+- READMEを現在の取得経路へ更新し、図から契約の根拠へ辿れるようにしました。
+- Windowsの保存往復とPOSIXの権限検査を区別し、Windows ACL未検証を完了扱いにしない検証へ修正しました。プロセス回収テストは既存cleanup budgetに合わせて停止完了を確認します。
+- completeness storeはcommit／rollback後にSQLite接続を閉じ、一時領域の後始末がWindowsで失敗する問題を修正しました。
+- optional MCP依存の下限を、修正済みの1.28.1へ上げました。既存環境の依存更新と新規解決した依存の監査は別々に確認してください。
+
+## v0.11.0公開分の追補（2026-09-25）
+
+以下の3項目はv0.11.0の公開tagに既に含まれる変更です。
+
+- ライブラリとして `discover_discord_local_cache` / `build_cache_first_intake` を `cache_root` 省略で呼んだ場合も、CLI と同じく `DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT` > config `shared_snapshot_root` > OS 既定 の順で shared snapshot root を解決するよう修正しました (従来は import 時の OS 既定に固定され、env / config が無視されていました)。`scripts/discord_url_measure.py` も同じ resolver を使い、解決した root に `discord` を付けて参照します。旧 env `DISCORD_CONTEXT_BRIDGE_SNAPSHOT_ROOT` は非推奨 alias として、正規 env が未設定の場合に限り値をそのまま (`discord` を付けずに) 使い、stderr に警告を出します。正規 env と旧 env が両方設定され指す root が異なる場合は正規 env を採用し、stderr に警告 (path なし) を出します。`cache_root` 省略時は config を読むため、config が壊れている場合は `LocalConfigError` を送出します (`discord_url_measure.py` は `discord_context_bridge_local_config_error.v1` を返して終了コード 2 で停止します)。
+- `desktop-cache-export-records` を追加しました。Discord Desktop cache (Cache_Data) に残る `channels/{id}/messages` 応答を読み取り専用で `dcb.visible_message_record.v1` の NDJSON (1 target = 1 ファイル、target_key は `target_key_for_url`) へ変換し、`scripts/ingest_capture.py --input` で S1 へ取り込める形で出力します。本文が空のメッセージ・system message・server 不明 channel・DM は理由別件数を報告して除外し、S1 には書きません。
+- Knowledge Wiki projectionの日次運用runnerとWindows Task Scheduler設定スクリプトを追加しました。同時起動防止、metadata-only実行receipt、dry-run、設定照合を備え、人物・話題判断は人間レビューのまま維持します。
+
+## 0.11.0 - 2026-07-28
+
+- ADR-0162 Phase 1 の capture ingest / target registry / capture store layout lint / backfill を、codex review 2 巡目の指摘 9 件 (複数 target/url 混在 NDJSON バッチの reject、既存 writer の JSON 配列形式の受容、backfill の manifest schema 検証順序、capture 時刻の保持、baseline の出現回数ベース検知、NDJSON 行区切りの統一、capture budget の enforce、incremental target の stream_id 導出、target registry の URL 省略時無変更判定) を反映した修正版に更新しました。target_key/url/title を持たず stream_id のみを持つ incremental capture は、target_key の導出元が本文ハッシュから stream_id ハッシュ (`stream_id_hash_16`) へ変わります。
+- ADR-0162 Phase 1 の capture ingest / target registry / capture store layout lint / backfill を、実 capture artifact のフラットな shape、event envelope 整合、dedupe の編集検知、symlink・非UTF-8耐性、schema validate 付きの append を反映したレビュー指摘対応版に更新しました。
+- `send-operation-status` を追加し、既存の staging / dry-run / closeout JSON ログからDiscord送信テスト運転表を作れるようにしました。
+- README を短い入口に圧縮し、詳細手順を `docs/discord-send-operation-runbook.md` と `docs/full-reference.md` へ分離しました。
+- `PROCESS_BOUNDARY.md` を追加し、Discord Context Bridge を「公開チャンネルに入る前の文脈理解と下書き補助」に絞る開発境界を明文化しました。
+- FDE / Obsidian / 記事 draft をこの public package の PR に混ぜない repo routing を明記しました。
+
+## 0.10.0 - 2026-06-19
+
+- `scripts/read_visible_discord_text.py` を追加し、Discord 可視本文取得 adapter の public-safe な入口を用意しました。
+- `scripts/local_smoke.py --source-command` を追加し、adapter を挟んだ実運用風 smoke を実行できるようにしました。
+- adapter は stdout に可視本文だけを出し、Discord webhook URL、token 風文字列、profile path を検出した場合は出力前に停止します。
+- Discord login、token、cookie、webhook、送信 tool を使わない public-safe 境界は維持しています。
+
+## 0.9.0 - 2026-06-19
+
+- `watch-passport` を追加し、local observer command の出力が変わった時だけスレッド文脈カードを自動更新できるようにしました。
+- `watch-passport` でも文脈庫キーと明示文脈ファイルを使えるようにしました。
+- README に次MVPの Discord 本文取得 adapter ロードマップと skeleton 契約を追加しました。
+- Discord login、token、cookie、webhook、送信 tool を使わない public-safe 境界は維持しています。
+
+## 0.8.0 - 2026-06-19
+
+- ローカル文脈庫 `context-library.json` を追加しました。
+- `context-upsert`、`context-list`、`audit-context-store` を追加し、サーバー/チャンネル/スレッド文脈を保存・監査・再利用できるようにしました。
+- `context-passport` で `--server-context-key`、`--channel-context-key`、`--thread-context-key` を使い、文脈庫から明示文脈を読み込めるようにしました。
+- MCP でも文脈庫の保存、一覧、監査、キー参照を使えるようにしました。
+
+## 0.7.0 - 2026-06-19
+
+- `context-passport` に `--server-context`、`--channel-context`、`--thread-context` を追加しました。
+- MCP `get_context_passport_from_visible_text` でも、サーバー文脈、チャンネル文脈、スレッド文脈を明示入力できるようにしました。
+- 可視本文だけに頼らず、サーバールール、チャンネル目的、スレッド目的を文脈カードへ併用できるようにしました。
+- 文脈ソースと明示文脈の使用有無を日本語ラベルで返すようにしました。
+
+## 0.6.0 - 2026-06-19
+
+- `context-passport` と MCP `get_context_passport_from_visible_text` を追加しました。
+- Discord 可視テキストから、スレッド目的、直近の流れ、暗黙の前提候補、ルール注意、温度感、自然な入り方を確認できるようにしました。
+- 文脈把握を返信前ガイドより前の MVP 中核として扱い、Discord 送信 disabled の境界は維持しています。
+- `scripts/local_smoke.py` で文脈パスポートも確認するようにしました。
+
+## 0.5.0 - 2026-06-19
+
+- HTTP MCP server に `--require-safe-store` を追加しました。
+- tunnel / ChatGPT connector 公開前の store 監査に失敗した場合、HTTP MCP server を起動しないようにしました。
+- `import-clipboard` と `scripts/local_smoke.py --from-clipboard` で、Discord 上でコピーした可視テキストを local clipboard から取り込めるようにしました。
+- `watch-clipboard` で clipboard の変化を監視し、コピーし直した可視テキストだけを取り込めるようにしました。
+- `guide-reply` と MCP `guide_reply_from_visible_text` で、Discord 可視テキストと返信 draft から会話ガイドを作れるようにしました。
+- `guide-reply --source-command` と `watch-guide` で、private な local observer command から可視テキストを自動取得し、返信ガイドを更新できるようにしました。
+
+## 0.4.0 - 2026-06-19
+
+- tunnel 公開前に local event store を監査する `audit-store` CLI と MCP tool を追加しました。
+- Discord webhook URL、token 風文字列、Discord snowflake ID、local absolute path を検出します。
+
+## 0.3.0 - 2026-06-19
+
+- Discord の rich copy に含まれる timestamp metadata を読み飛ばせるようにしました。
+- `import-visible-text --dry-run` と MCP `import_visible_discord_text(dry_run=true)` で、保存前 preview を確認できるようにしました。
+
+## 0.2.0 - 2026-06-18
+
+- ChatGPT connector 向けに streamable HTTP MCP entrypoint を追加しました。
+- `discord-context-bridge-mcp-http --host 127.0.0.1 --port 8000 --path /mcp` で `/mcp` を公開できます。
+- Discord token、cookie、webhook URL、送信 tool を使わない local-first 境界は維持しています。
+
+## 0.1.0 - 2026-06-18
+
+- Discord の可視テキストを local event store に取り込む最小 package を公開しました。
+- briefing と送信前 review の CLI / MCP stdio entrypoint を追加しました。

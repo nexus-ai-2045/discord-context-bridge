@@ -1,0 +1,531 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from discord_context_bridge.process_runner import minimal_child_env, run_process
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    name: str
+    ok: bool
+    elapsed: float
+    command: list[str]
+    output: str
+    failure_stage: str | None = None
+    output_truncated: bool = False
+
+
+DEFAULT_COMMAND_TIMEOUT: float | None = None
+# 全pytestは他の運用チェックと同時に走るため、単独実行時間の約2倍では
+# WindowsのI/O競合時に不足する。2026-07-28のrelease profileで123秒を実測した。
+FULL_TEST_TIMEOUT = 240.0
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="実装後の運用チェックを並列で実行する")
+    parser.add_argument(
+        "--profile",
+        choices=["fast", "full", "release"],
+        default="full",
+        help="fast は通常開発用の軽量ゲート、full は従来相当、release は GitHub account確認も含める",
+    )
+    parser.add_argument("--port", type=int, default=8025, help="local smoke で使う port")
+    parser.add_argument("--http", action="store_true", help="HTTP MCP 起動スモークも含める")
+    parser.add_argument("--skip-http", action="store_true", help="HTTP MCP 起動スモークを省略する（既定動作の明示用）")
+    parser.add_argument("--gh", action="store_true", help="GitHub account と remote owner の一致も確認する")
+    parser.add_argument("--gh-account-only", action="store_true", help="GitHub token ではなく account 一致だけを確認する")
+    parser.add_argument("--fail-fast", action="store_true", help="失敗した時点で終了する")
+    return parser.parse_args(argv)
+
+
+def run_command(
+    name: str,
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> CheckResult:
+    started = time.perf_counter()
+    completed = run_process(
+        command,
+        cwd=ROOT,
+        env=env,
+        timeout=DEFAULT_COMMAND_TIMEOUT if timeout is None else timeout,
+    )
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return CheckResult(
+        name=name,
+        ok=completed.returncode == 0,
+        elapsed=time.perf_counter() - started,
+        command=command,
+        output=output,
+        failure_stage=completed.failure_stage,
+        output_truncated=completed.output_truncated,
+    )
+
+
+def run_compile_check() -> CheckResult:
+    cache_root = Path(tempfile.mkdtemp(prefix="dcb-pycache-"))
+    try:
+        return run_command(
+            "compile",
+            [sys.executable, "-m", "compileall", "src", "tests", "scripts"],
+            env={"PYTHONPYCACHEPREFIX": str(cache_root)},
+        )
+    finally:
+        shutil.rmtree(cache_root, ignore_errors=True)
+
+
+def reviewed_synthetic_scan_hit(line: str) -> bool:
+    parts = line.split(":", 2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        return False
+    path, _, source = parts
+    reviewed = {
+        "./tests/test_bot_live_verification.py": {
+            "609c41c03d514932022738713e2670a06a9496d20f31ae4a334939c31c73c365",
+            "e6ed5c0b7611f4ca030d0b598516e28477d9fa4fa39c57270f7e56821694c10e",
+        },
+        "./tests/test_safety_contract.py": {
+            "e238c6fe552ce4bd3f9cf6562a81fc291134c3ba3b72eb6684f0a7a621b5effd",
+        },
+        "./tests/test_message_query.py": {
+            "6fc72e740b88293e8e1f0dc844cc3b26f74bbc8e513a28bc0ffc77133650682d",
+            "f285d76d4815b36cf1599baa52abfd39fa7df420b0cb62eabb5effdbf7829677",
+            "ac49652d198e16209f981faeb338de98d37bb9720c841700bc5d24c9177ab9a5",
+        },
+    }
+    return hashlib.sha256(source.encode("utf-8")).hexdigest() in reviewed.get(path.replace("\\", "/"), set())
+
+
+def run_secret_scan() -> CheckResult:
+    credential_pattern = (
+        r"(DISCORD_(BOT_TOKEN|WEBHOOK_URL)|"
+        r"discord(app)?\.com/api/webhooks|"
+        "Author" + r"ization|"
+        "Bear" + r"er |"
+        r"mfa\.|"
+        r"[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27})"
+    )
+    # Fragment markers avoid embedding contiguous personal-home path literals
+    # that repo-preflight PATH_PATTERNS would flag in this detector source.
+    _users = "Us" + "ers"
+    personal_path_pattern = (
+        rf"(C:\\\\{_users}\\\\[^\\\\s]+|"
+        rf"C:\\{_users}\\[^\\\s]+|"
+        rf"C:/{_users}/[^/\s]+|"
+        rf"/{_users}/[^/\s]+)"
+    )
+    pattern = f"{credential_pattern}|{personal_path_pattern}"
+    result = run_command("秘密情報スキャン", ["rg", "-n", pattern, "."])
+    allowed_prefixes = (
+        "./PUBLIC_RELEASE_CHECKLIST.md:",
+        "./SECURITY.md:",
+        "./src/discord_context_bridge/core.py:",
+        "./src/discord_context_bridge/mcp_server.py:",
+        "./scripts/lint_runtime_skill_sync.py:",
+        "./scripts/ops_check.py:",
+        "./scripts/pr_scope_guard.py:",
+        "./scripts/read_visible_discord_text.py:",
+        "./scripts/send_pdca_preflight_smoke.py:",
+        "./scripts/verify_ssot_projection.py:",
+        "./tests/test_core.py:",
+        "./tests/test_mcp_http_auth.py:",
+        "./tests/test_process_runner.py:",
+    )
+    fixture_markers = (
+        rf"C:\\{_users}\\example",
+        rf"C:\\\\{_users}\\\\example",
+        rf"C:/{_users}/example",
+        rf"/{_users}/example",
+        rf"/{_users}/Shared",
+    )
+    unexpected = []
+    for line in result.output.splitlines():
+        if reviewed_synthetic_scan_hit(line):
+            continue
+        normalized = line.replace("\\", "/") if line.startswith(".\\") else line
+        if any(safe in line for safe in fixture_markers):
+            continue
+        if line.strip() and not normalized.startswith(allowed_prefixes):
+            unexpected.append(line)
+    output = result.output
+    ok = result.ok and not unexpected
+    if unexpected:
+        output += "\n想定外の一致:\n" + "\n".join(unexpected)
+    return CheckResult(result.name, ok, result.elapsed, result.command, output)
+
+
+def run_context_operating_mode_smoke(env: dict[str, str]) -> CheckResult:
+    started = time.perf_counter()
+    commands: list[str] = []
+    outputs: list[str] = []
+    failures: list[str] = []
+    for command_name in ("triage-mode", "catchup-mode", "join-thread-mode", "boundary-mode"):
+        command = [
+            sys.executable,
+            "-m",
+            "discord_context_bridge.cli",
+            command_name,
+            "--input",
+            "tests/fixtures/discord_rich_copy.txt",
+            "--focus",
+            "公開時期",
+            "--json",
+        ]
+        commands.append(" ".join(command))
+        result = run_command(f"{command_name} smoke", command, env=env)
+        outputs.append(f"$ {' '.join(command)}\n{result.output}")
+        if not result.ok:
+            failures.append(f"{command_name}: command failed")
+            continue
+        try:
+            payload = json.loads(result.output)
+        except json.JSONDecodeError as exc:
+            failures.append(f"{command_name}: invalid JSON: {exc}")
+            continue
+        if payload.get("schema") != "discord_context_operating_mode.v1":
+            failures.append(f"{command_name}: schema mismatch")
+        if payload.get("send_capability") != "disabled":
+            failures.append(f"{command_name}: send_capability is not disabled")
+        boundary = payload.get("safety_boundary") or {}
+        if boundary.get("raw_text_returned") is not False:
+            failures.append(f"{command_name}: raw_text_returned is not false")
+        if boundary.get("participant_names_returned") is not False:
+            failures.append(f"{command_name}: participant_names_returned is not false")
+    output = "\n".join(outputs)
+    if failures:
+        output += "\n失敗:\n" + "\n".join(failures)
+    return CheckResult(
+        "文脈運用モード smoke",
+        not failures,
+        time.perf_counter() - started,
+        ["; ".join(commands)],
+        output,
+    )
+
+
+def run_capture_store_layout_lint(env: dict[str, str], *, root: Path = ROOT) -> CheckResult:
+    """H6: capture store layout lint (ADR-0162 Phase 1 W4) を ops_check に組み込む。
+
+    設計判断: 初回は `<store-root>/lint-baseline.json` が無いため、既存の
+    レガシー artifact 由来の violation まで一括で fail 対象になってしまう。
+    baseline が存在する時だけ実際に lint を実行して enforce し、baseline が
+    無い場合は「未生成」を情報として返して ok=True にする (`--write-baseline`
+    で明示的に baseline を作るまでは fail させない)。
+    """
+    store_root = root / ".local" / "discord-context-bridge"
+    baseline_path = store_root / "lint-baseline.json"
+    command = [
+        sys.executable,
+        "scripts/lint_capture_store_layout.py",
+        "--store-root",
+        str(store_root),
+        "--baseline",
+        str(baseline_path),
+        "--json",
+    ]
+    if not baseline_path.exists():
+        return CheckResult(
+            "capture store layout lint",
+            True,
+            0.0,
+            command,
+            "lint-baseline.json が未生成のため skip しました。"
+            " `python scripts/lint_capture_store_layout.py --write-baseline` で baseline を作成してください。",
+        )
+    return run_command("capture store layout lint", command, env=env)
+
+
+def smoke_store_paths() -> tuple[Path, Path]:
+    run_id = f"{os.getpid()}-{time.time_ns()}"
+    smoke_dir = Path(tempfile.gettempdir()) / "discord-context-bridge-smoke"
+    return (
+        smoke_dir / f"dcb-local-smoke-{run_id}.ndjson",
+        smoke_dir / f"dcb-context-library-smoke-{run_id}.json",
+    )
+
+
+def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], CheckResult]]:
+    global DEFAULT_COMMAND_TIMEOUT
+    DEFAULT_COMMAND_TIMEOUT = 20.0 if args.profile == "fast" else 60.0
+    env = minimal_child_env()
+    env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    smoke_store, context_store = smoke_store_paths()
+    smoke_command = [
+        sys.executable,
+        "scripts/local_smoke.py",
+        "--reset",
+        "--port",
+        str(args.port),
+        "--store",
+        str(smoke_store),
+        "--context-store",
+        str(context_store),
+    ]
+    if not args.http:
+        smoke_command.append("--skip-http")
+    ingest_route_policy_command = [sys.executable, "scripts/lint_ingest_route_policy.py", "--json"]
+    if os.environ.get("CI"):
+        ingest_route_policy_command.append("--skip-local-claude-skill")
+    runtime_skill_sync_command = [
+        sys.executable,
+        "scripts/lint_runtime_skill_sync.py",
+        "--target",
+        "claude-code=~/.claude/skills/discord-context-bridge/SKILL.md",
+    ]
+    if os.environ.get("CI"):
+        runtime_skill_sync_command.append("--allow-missing")
+    runtime_skill_sync_command.append("--json")
+    all_checks = {
+        "テスト": lambda: run_command(
+            "テスト",
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            env=env,
+            timeout=FULL_TEST_TIMEOUT,
+        ),
+        "返信文脈契約": lambda: run_command(
+            "返信文脈契約",
+            [sys.executable, "-m", "pytest", "tests/test_reply_context_contract.py", "-q"],
+            env=env,
+        ),
+        "compile": run_compile_check,
+        "差分チェック": lambda: run_command("差分チェック", ["git", "diff", "--check"]),
+        "version整合性": lambda: run_command("version整合性", [sys.executable, "scripts/bump_version.py", "--check"]),
+        "秘密情報スキャン": run_secret_scan,
+        "Codex ingress smoke": lambda: run_command(
+            "Codex ingress smoke",
+            [
+                sys.executable,
+                "scripts/codex_discord_ingress_smoke.py",
+                "--chrome-opened",
+                "--current-url",
+                "https://discord.com/channels/@me/111111111111111111/222222222222222222",
+                "--human-state",
+                "ready",
+                "--confirm-decision",
+                "approved",
+                "--json",
+            ],
+            env=env,
+        ),
+        "13工程fixture E2E": lambda: run_command(
+            "13工程fixture E2E",
+            [
+                sys.executable,
+                "scripts/fixture_13_step_e2e.py",
+                "--entry-metadata",
+                "tests/fixtures/codex_ingress_ready.json",
+                "--understanding-confirmed",
+                "--json",
+            ],
+            env=env,
+        ),
+        "status dashboard": lambda: run_command(
+            "status dashboard",
+            [sys.executable, "scripts/discord_inventory_dashboard.py", "--json"],
+            env=env,
+        ),
+        "report-latest smoke": lambda: run_command(
+            "report-latest smoke",
+            [sys.executable, "scripts/report_latest_smoke.py", "--json"],
+            env=env,
+        ),
+        "report-latest schema": lambda: run_command(
+            "report-latest schema",
+            [sys.executable, "scripts/report_latest_schema_check.py", "--json"],
+            env=env,
+        ),
+        "url-intake-fast-path smoke": lambda: run_command(
+            "url-intake-fast-path smoke",
+            [sys.executable, "scripts/url_intake_fast_path_smoke.py", "--json"],
+            env=env,
+        ),
+        "send-pdca-preflight smoke": lambda: run_command(
+            "send-pdca-preflight smoke",
+            [sys.executable, "scripts/send_pdca_preflight_smoke.py", "--json"],
+            env=env,
+        ),
+        "discord-url-measure smoke": lambda: run_command(
+            "discord-url-measure smoke",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/test_discord_url_measure.py",
+                "-q",
+            ],
+            env=env,
+        ),
+        "SSOT projection": lambda: run_command(
+            "SSOT projection",
+            [sys.executable, "scripts/verify_ssot_projection.py", "--json"],
+            env=env,
+        ),
+        "boundary logic": lambda: run_command(
+            "boundary logic",
+            [sys.executable, "scripts/boundary_logic_check.py", "--json"],
+            env=env,
+        ),
+        "文脈運用モード smoke": lambda: run_context_operating_mode_smoke(env),
+        "runtime skill sync lint": lambda: run_command(
+            "runtime skill sync lint",
+            runtime_skill_sync_command,
+            env=env,
+        ),
+        "ingest route policy lint": lambda: run_command(
+            "ingest route policy lint",
+            ingest_route_policy_command,
+            env=env,
+        ),
+        "capture store layout lint": lambda: run_capture_store_layout_lint(env),
+        "capture-loop metadata smoke": lambda: run_command(
+            "capture-loop metadata smoke",
+            [sys.executable, "scripts/capture_loop_metadata_smoke.py", "--json"],
+            env=env,
+        ),
+        "parallel closeout metadata smoke": lambda: run_command(
+            "parallel closeout metadata smoke",
+            [sys.executable, "scripts/parallel_closeout_metadata_smoke.py", "--json"],
+            env=env,
+        ),
+        "アーカイブ棚卸しsmoke": lambda: run_command(
+            "アーカイブ棚卸しsmoke",
+            [sys.executable, "scripts/archived_thread_inventory_smoke.py", "--json"],
+            env=env,
+        ),
+        "Bot live verification": lambda: run_command(
+            "Bot live verification",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/test_bot_live_verification.py",
+                "-q",
+            ],
+            env=env,
+        ),
+        "context claim gate smoke": lambda: run_command(
+            "context claim gate smoke",
+            [sys.executable, "scripts/context_claim_gate_smoke.py", "--json"],
+            env=env,
+        ),
+        "context claim gate wiring lint": lambda: run_command(
+            "context claim gate wiring lint",
+            [sys.executable, "scripts/lint_context_claim_gate_wiring.py", "--json"],
+            env=env,
+        ),
+        "context claim gate trusted audit": lambda: run_command(
+            "context claim gate trusted audit",
+            [
+                sys.executable,
+                "scripts/verify_context_claim_gate_head.py",
+                "--head-root",
+                str(ROOT),
+                "--json",
+            ],
+            env=env,
+        ),
+        "ローカルスモーク": lambda: run_command("ローカルスモーク", smoke_command, env=env),
+    }
+    if args.profile == "fast":
+        checks = {
+            name: all_checks[name]
+            for name in (
+                "compile",
+                "差分チェック",
+                "秘密情報スキャン",
+                "返信文脈契約",
+                "boundary logic",
+                "url-intake-fast-path smoke",
+                "send-pdca-preflight smoke",
+                "discord-url-measure smoke",
+                "アーカイブ棚卸しsmoke",
+                "context claim gate smoke",
+                "context claim gate wiring lint",
+                "context claim gate trusted audit",
+                "Bot live verification",
+                "ローカルスモーク",
+            )
+        }
+    else:
+        checks = dict(all_checks)
+    if args.profile == "release":
+        args.gh = True
+    if args.gh:
+        gh_command = [sys.executable, "scripts/gh_guard.py"]
+        if args.profile == "release":
+            gh_command.append("--switch")
+        if args.gh_account_only:
+            gh_command.append("--account-only")
+        checks["GitHub account確認"] = lambda: run_command("GitHub account確認", gh_command, env=env)
+    return checks
+
+
+def summarize_result(result: CheckResult) -> None:
+    status = "成功" if result.ok else "失敗"
+    print(f"[{status}] {result.name}: {result.elapsed:.2f}s")
+    if not result.ok:
+        print("command:", " ".join(result.command))
+        tail = "\n".join(result.output.splitlines()[-80:])
+        print(tail or "(output なし)")
+
+
+def main() -> int:
+    args = parse_args()
+    checks = build_checks(args)
+    started = time.perf_counter()
+    failures: list[CheckResult] = []
+
+    # 全pytestと個別pytest smokeを同時に起動すると、Windowsではプロセス終了待ちと
+    # I/Oが競合し、テスト本文が成功してもtimeout扱いになることがある。
+    # 全テストを単独で先に通し、残りだけを並列実行する。
+    full_test_check = checks.pop("テスト", None)
+    if full_test_check is not None:
+        print("全テストを単独で開始します。")
+        full_test_result = full_test_check()
+        summarize_result(full_test_result)
+        if not full_test_result.ok:
+            print(f"\n結果: 全テストが失敗しました。合計 {time.perf_counter() - started:.2f}s")
+            return 1
+
+    print("残りの運用チェックを並列で開始します。")
+    with ThreadPoolExecutor(max_workers=len(checks)) as executor:
+        futures = {executor.submit(check): name for name, check in checks.items()}
+        for future in as_completed(futures):
+            result = future.result()
+            summarize_result(result)
+            if not result.ok:
+                failures.append(result)
+                if args.fail_fast:
+                    for pending in futures:
+                        pending.cancel()
+                    break
+    elapsed = time.perf_counter() - started
+    if failures:
+        print(f"\n未完了: {len(failures)} 件のチェックが失敗しました。合計 {elapsed:.2f}s")
+        return 1
+    print(f"\n完了: 全チェックが成功しました。合計 {elapsed:.2f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_raw_capture.v1.schema.json",
+  "title": "DCB raw capture",
+  "type": "object",
+  "required": [
+    "schema",
+    "site",
+    "adapter_id",
+    "adapter_version",
+    "source_url",
+    "captured_at",
+    "capture_method",
+    "read_scope",
+    "messages",
+    "drift",
+    "safety"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dcb.raw_capture.v1"
+    },
+    "site": {
+      "const": "discord"
+    },
+    "adapter_id": {
+      "const": "discord.v1"
+    },
+    "adapter_version": {
+      "type": "string"
+    },
+    "source_url": {
+      "type": "string"
+    },
+    "captured_at": {
+      "type": "string"
+    },
+    "capture_method": {
+      "enum": [
+        "structured_dom",
+        "body_inner_text",
+        "message_container_text",
+        "clipboard",
+        "local_file",
+        "source_command",
+        "gateway_live_event",
+        "rest_backfill"
+      ]
+    },
+    "read_scope": {
+      "type": "string"
+    },
+    "channel_or_thread_title": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": [
+          "ordinal",
+          "visible_timestamp",
+          "author_label",
+          "body_text",
+          "attachments",
+          "extraction_confidence"
+        ],
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message_id": {"type": "string"},
+          "visible_timestamp": {
+            "type": "string"
+          },
+          "author_label": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": "string",
+            "maxLength": 1000000
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 100
+          },
+          "message_metadata": {
+            "type": "object",
+            "required": ["author_id", "attachments", "deleted", "edited_at"],
+            "properties": {
+              "author_id": {"type": ["string", "null"], "pattern": "^[0-9]{17,20}$"},
+              "deleted": {"type": "boolean"},
+              "edited_at": {"type": ["string", "null"], "maxLength": 40},
+              "component_labels": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 256}},
+              "embeds": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "title": {"type": "string", "maxLength": 8192},
+                    "description": {"type": "string", "maxLength": 8192},
+                    "fields": {
+                      "type": "array",
+                      "maxItems": 25,
+                      "items": {
+                        "type": "object",
+                        "required": ["name", "value"],
+                        "properties": {"name": {"type": "string", "maxLength": 4096}, "value": {"type": "string", "maxLength": 4096}},
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "attachments": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "required": ["id", "filename"],
+                  "properties": {
+                    "id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "filename": {"type": "string", "minLength": 1, "maxLength": 1024},
+                    "content_type": {"type": "string", "minLength": 1, "maxLength": 1024},
+                    "size": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+                    "url": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "proxy_url": {"type": "string", "minLength": 1, "maxLength": 4096}
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "nearby_attachment_urls": {
+            "type": "array"
+          },
+          "reply_reference_text": {
+            "type": "string"
+          },
+          "extraction_confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        },
+        "allOf": [{"if": {"required": ["message_metadata"]}, "then": {"required": ["message_id"], "properties": {"message_id": {"pattern": "^[0-9]{17,20}$"}}}}],
+        "additionalProperties": true
+      }
+    },
+    "attachments": {
+      "type": "array"
+    },
+    "unattributed_cache_candidates": {
+      "type": "array",
+      "maxItems": 2000
+    },
+    "completion_evidence": {
+      "type": "object",
+      "required": ["source", "trusted"],
+      "properties": {
+        "source": {"const": "caller_supplied"},
+        "trusted": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "drift": {
+      "type": "object",
+      "required": [
+        "detected",
+        "items"
+      ],
+      "properties": {
+        "detected": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "outbound_actions",
+        "raw_contains_private_text"
+      ],
+      "properties": {
+        "outbound_actions": {
+          "const": "disabled"
+        },
+        "raw_contains_private_text": {
+          "type": "boolean"
+        },
+        "external_share_allowed": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [{"if": {"properties": {"capture_method": {"const": "gateway_live_event"}}, "required": ["capture_method"]}, "then": {"properties": {"messages": {"items": {"required": ["message_metadata"]}}}}}],
+  "additionalProperties": true
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/dcb_capture_manifest.v1.schema.json",
+  "title": "DCB capture manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "capture_id",
+    "site",
+    "adapter_id",
+    "adapter_version",
+    "status",
+    "raw_json",
+    "source_url_hash",
+    "capture_state",
+    "coverage",
+    "freshness",
+    "drift",
+    "review_required",
+    "outbound_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dcb.capture_manifest.v1"
+    },
+    "capture_id": {
+      "type": "string"
+    },
+    "site": {
+      "const": "discord"
+    },
+    "adapter_id": {
+      "const": "discord.v1"
+    },
+    "adapter_version": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "captured",
+        "partial",
+        "drift_detected",
+        "blocked"
+      ]
+    },
+    "capture_state": {
+      "enum": ["blocked", "partial", "full"]
+    },
+    "raw_json": {
+      "type": "string"
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "source_url_hash": {
+      "type": "string"
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["visible_message_count", "required_fields_complete"]
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["captured_at", "viewport_bottom_confirmed"]
+    },
+    "drift": {
+      "type": "object",
+      "required": ["detected", "items"]
+    },
+    "title_safe_label": {
+      "type": "string"
+    },
+    "attachment_mapping_status": {
+      "enum": [
+        "complete",
+        "partial",
+        "unattributed"
+      ]
+    },
+    "review_required": {
+      "const": true
+    },
+    "outbound_actions": {
+      "const": "disabled"
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "blocked"}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "blocked"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "captured"}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "full"}}}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["partial", "drift_detected"]}}, "required": ["status"]},
+      "then": {"properties": {"capture_state": {"const": "partial"}}}
+    }
+  ],
+  "additionalProperties": true
+}
