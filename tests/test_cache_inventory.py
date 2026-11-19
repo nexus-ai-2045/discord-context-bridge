@@ -373,7 +373,7 @@ def test_target_lookup_uses_original_capture_time_of_reply_context(tmp_path):
 def test_target_lookup_ignores_original_capture_time_without_timezone(tmp_path):
     from datetime import datetime, timedelta
 
-    from discord_context_bridge import cache_inventory
+    from discord_context_bridge import core
 
     record = {
         "captured_at": "2026-11-19T01:00:00+00:00",
@@ -382,8 +382,8 @@ def test_target_lookup_ignores_original_capture_time_without_timezone(tmp_path):
         },
     }
 
-    assert cache_inventory._record_with_original_capture_time(record) == record
-    assert cache_inventory._record_with_original_capture_time({**record, "reply_context_evidence": "bad"}) == {
+    assert core.record_with_original_capture_time(record) == record
+    assert core.record_with_original_capture_time({**record, "reply_context_evidence": "bad"}) == {
         **record,
         "reply_context_evidence": "bad",
     }

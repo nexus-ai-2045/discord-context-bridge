@@ -267,6 +267,16 @@ def analyze_discord_forum_url_shape(url: str) -> dict[str, Any]:
     }
 
 
+def record_with_original_capture_time(record: dict[str, Any]) -> dict[str, Any]:
+    evidence = record.get("reply_context_evidence")
+    original = evidence.get("capture_observed_at") if isinstance(evidence, dict) else None
+    original_time = _parse_timezone_aware_timestamp(original)
+    saved_time = parse_snapshot_timestamp(record.get("captured_at"))
+    if original_time is None or (saved_time is not None and saved_time <= original_time):
+        return record
+    return {**record, "captured_at": original}
+
+
 def snapshot_freshness(
     records: list[dict[str, Any]],
     *,
@@ -274,6 +284,7 @@ def snapshot_freshness(
     source: str,
     max_age_hours: int = 24,
 ) -> dict[str, Any]:
+    records = [record_with_original_capture_time(record) for record in records]
     newest_captured_at = latest_captured_at(records)
     if not records:
         return {

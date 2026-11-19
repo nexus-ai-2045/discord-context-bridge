@@ -210,3 +210,20 @@ def test_structured_messages_are_saved_in_the_reply_gate_order(tmp_path):
 
     saved = load_content_snapshot_records(store)[-1]['text']
     assert saved.index('スレッドの始まり') < saved.index('返信先の発言')
+
+
+def test_coverage_recency_uses_original_capture_time(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    payload = build_bridge_intake(
+        url=URL,
+        messages=[
+            {'author_label': 'member-a', 'text': '古い取得の本文', 'sequence': 0,
+             'timestamp': '', 'is_thread_root': True, 'is_reply_target': True, 'id': '1'},
+        ],
+        history_exhausted=True,
+        capture_observed_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+        snapshot_store=tmp_path / 'snapshots.ndjson',
+    )
+
+    assert payload['coverage']['recency']['status'] != 'recent'

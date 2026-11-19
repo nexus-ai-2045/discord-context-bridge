@@ -210,8 +210,6 @@ def load_reply_consultation(output: Path) -> dict[str, Any]:
             or canonical_event_hash(row) != receipt.get("event_hash")
             or stable_text_hash(row["text"]) != receipt.get("content_hash")):
         raise ValueError("consultation_snapshot_binding_invalid")
-    if snapshot_freshness([row], generated_at=utc_now(), source="saved_snapshot")["status"] != "recent":
-        raise ValueError("consultation_snapshot_refresh_required")
     evidence = row.get("reply_context_evidence") or {}
     if not isinstance(evidence, dict):
         raise ValueError("consultation_snapshot_binding_invalid")
@@ -221,6 +219,8 @@ def load_reply_consultation(output: Path) -> dict[str, Any]:
             or snapshot_freshness([{"captured_at": capture_observed_at}],
                                   generated_at=utc_now(), source="original_capture")["status"] != "recent"):
         raise ValueError("consultation_original_capture_refresh_required")
+    if snapshot_freshness([row], generated_at=utc_now(), source="saved_snapshot")["status"] != "recent":
+        raise ValueError("consultation_snapshot_refresh_required")
     gate = build_reply_context_gate_from_messages(
         evidence.get("messages", []), history_exhausted=evidence.get("history_exhausted", False)
     )
