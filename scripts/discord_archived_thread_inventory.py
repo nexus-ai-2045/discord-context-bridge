@@ -16,8 +16,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-CURRENT_USER_ID = "@me"
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -37,6 +35,7 @@ from discord_context_bridge.archive_inventory import (
     write_private_scope_receipts,
 )
 from discord_context_bridge.cli import JapaneseArgumentParser
+from discord_context_bridge.live_verification import CURRENT_USER_ID
 from discord_context_bridge.url_identity import parse_guild_channel_url
 
 API_BASE = "https://discord.com/api/v10"

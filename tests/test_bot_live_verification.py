@@ -513,3 +513,7 @@ def test_live_receipts_reject_unsupported_target_before_fetch(target) -> None:
     assert verify_saved_receipt(
         payload=payload, expected_url=target, token="private-token",
     ) == "expected_target_url_invalid"
+
+
+def test_current_user_route_matches_discord_current_user_endpoint() -> None:
+    assert CURRENT_USER_ROUTE == "/".join(("", "users", "@me"))
