@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .core import (
+    _parse_timezone_aware_timestamp,
     DEFAULT_TEXT_SNAPSHOT_STORE,
     matching_snapshot_records,
     parse_snapshot_timestamp,
@@ -93,7 +94,7 @@ def _record_title(records: list[dict[str, Any]]) -> tuple[str, str]:
 def _record_with_original_capture_time(record: dict[str, Any]) -> dict[str, Any]:
     evidence = record.get("reply_context_evidence")
     original = evidence.get("capture_observed_at") if isinstance(evidence, dict) else None
-    original_time = parse_snapshot_timestamp(original) if original else None
+    original_time = _parse_timezone_aware_timestamp(original)
     saved_time = parse_snapshot_timestamp(record.get("captured_at"))
     if original_time is None or (saved_time is not None and saved_time <= original_time):
         return record

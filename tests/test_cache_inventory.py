@@ -368,3 +368,22 @@ def test_target_lookup_uses_original_capture_time_of_reply_context(tmp_path):
     assert payload["exact_snapshot_record_count"] == 1
     assert payload["freshness"]["status"] != "recent"
     assert payload["decision"] != "use_local_snapshot"
+
+
+def test_target_lookup_ignores_original_capture_time_without_timezone(tmp_path):
+    from datetime import datetime, timedelta
+
+    from discord_context_bridge import cache_inventory
+
+    record = {
+        "captured_at": "2026-11-19T01:00:00+00:00",
+        "reply_context_evidence": {
+            "capture_observed_at": (datetime(2026, 11, 18, 1, 0) - timedelta(hours=1)).isoformat()
+        },
+    }
+
+    assert cache_inventory._record_with_original_capture_time(record) == record
+    assert cache_inventory._record_with_original_capture_time({**record, "reply_context_evidence": "bad"}) == {
+        **record,
+        "reply_context_evidence": "bad",
+    }

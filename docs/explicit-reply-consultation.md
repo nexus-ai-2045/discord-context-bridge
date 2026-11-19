@@ -51,7 +51,7 @@ consultation = load_reply_consultation(Path('/private/dcb/consultation-new.json'
 
 consumerは正規台帳のchain・失効、receipt、保存本文hash、保存された関係情報からのgate、鮮度、参照先の現在hashを再検証する。packet準備後に参照先が変わった場合は再準備する。別の投稿が追記されても、相談対象を新しい本文へ切り替えない。原文はcanonicalに残し、LCS本文はpacketへコピーしない。
 
-`LCS_REPO_ROOT`があればその指定先を使い、未指定だけ既存の既定checkoutを参照する。空指定・文書不在ではLCS未参照として停止する。skillは明示したfileを読み、LCS参照口を持たない旧home版なら停止する。skill参照先を指定してもhome配布は行われない。
+`--lcs-root`か`LCS_REPO_ROOT`の指定先を使う。既定の場所は持たない。未指定・空指定・文書不在ではLCS未参照として停止する。skillは明示したfileを読み、LCS参照口を持たない旧home版なら停止する。skill参照先を指定してもhome配布は行われない。
 
 `ready_for_ai_consultation` は助言生成完了ではない。hostによる本文理解と短い提案、本人の採否、実利用の確認は別段階。Bot、provider API、拡張、常駐processは追加していない。`guide-reply`は既存の局所ルールで、LCSを参照したAI相談の代替にはしない。`watch-guide`は構造化関係情報を受け取れず、文脈gateで停止する。
 

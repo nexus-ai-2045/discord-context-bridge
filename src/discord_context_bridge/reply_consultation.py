@@ -136,10 +136,11 @@ def prepare_reply_consultation(
         return {**result, "reason": gate.get("reason_code") or "reply_context_required"}
     # 明示指定が空なら不正とし、既定checkoutへ黙って切替えない。
     configured = os.environ.get("LCS_REPO_ROOT") if lcs_root is None else str(lcs_root)
-    if configured is not None and not configured.strip():
+    if configured is None:
+        return {**result, "reason": "lcs_root_missing"}
+    if not configured.strip():
         return {**result, "reason": "lcs_root_empty"}
-    root = (Path(configured).expanduser() if configured is not None else
-            Path.home() / "Projects/Documents/.repos/nexus_ai/life-commons-system")
+    root = Path(configured).expanduser()
     refs = []
     try:
         for name in ("README.md", "interpersonal.md"):
@@ -213,6 +214,8 @@ def load_reply_consultation(output: Path) -> dict[str, Any]:
     if snapshot_freshness([row], generated_at=utc_now(), source="saved_snapshot")["status"] != "recent":
         raise ValueError("consultation_snapshot_refresh_required")
     evidence = row.get("reply_context_evidence") or {}
+    if not isinstance(evidence, dict):
+        raise ValueError("consultation_snapshot_binding_invalid")
     capture_observed_at = evidence.get("capture_observed_at")
     capture_time = _parse_timezone_aware_timestamp(capture_observed_at)
     if (capture_time is None or capture_time > parse_snapshot_timestamp(utc_now())

@@ -220,3 +220,15 @@ def test_watch_guide_stops_without_relationship_context(monkeypatch, capsys):
         remaining = remaining[end:].strip()
     assert updates[0]['reply_review']['quick_verdict'] == 'reply-context-blocked'
     assert updates[0]['reply_review']['final_candidate'] == ''
+
+
+def test_missing_lcs_root_stops_without_a_built_in_default(consultation, monkeypatch):
+    consultation['lcs_root'] = None
+    monkeypatch.delenv('LCS_REPO_ROOT', raising=False)
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: consultation['output'].parent))
+
+    status = prepare_reply_consultation(**consultation)
+
+    assert status['state'] == 'blocked'
+    assert status['reason'] == 'lcs_root_missing'
+    assert not status['lcs_read']
