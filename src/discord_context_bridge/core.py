@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
 
 from .capture.store import (
     CaptureCheckpointStore,
@@ -266,6 +267,16 @@ def analyze_discord_forum_url_shape(url: str) -> dict[str, Any]:
     }
 
 
+def record_with_original_capture_time(record: dict[str, Any]) -> dict[str, Any]:
+    evidence = record.get("reply_context_evidence")
+    original = evidence.get("capture_observed_at") if isinstance(evidence, dict) else None
+    original_time = _parse_timezone_aware_timestamp(original)
+    saved_time = parse_snapshot_timestamp(record.get("captured_at"))
+    if original_time is None or (saved_time is not None and saved_time <= original_time):
+        return record
+    return {**record, "captured_at": original}
+
+
 def snapshot_freshness(
     records: list[dict[str, Any]],
     *,
@@ -273,6 +284,7 @@ def snapshot_freshness(
     source: str,
     max_age_hours: int = 24,
 ) -> dict[str, Any]:
+    records = [record_with_original_capture_time(record) for record in records]
     newest_captured_at = latest_captured_at(records)
     if not records:
         return {
@@ -343,10 +355,13 @@ def load_snapshot_like_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def snapshot_record_matches(record: dict[str, Any], *, url: str, target_key: str) -> bool:
-    if record.get("url") == url or record.get("target_key") == target_key:
+def snapshot_record_matches(
+    record: dict[str, Any], *, url: str, target_key: str, allow_embedded_url: bool = True
+) -> bool:
+    if (url and record.get("url") == url) or (target_key and record.get("target_key") == target_key):
         return True
-    return bool(url and url in json.dumps(record, ensure_ascii=False))
+    # 外部legacy cacheの発見だけが本文URL探索を使う。canonicalの対象一致には使わない。
+    return bool(allow_embedded_url and url and url in json.dumps(record, ensure_ascii=False))
 
 
 def matching_snapshot_records(
@@ -362,7 +377,7 @@ def matching_snapshot_records(
     return [
         record
         for record in records
-        if snapshot_record_matches(record, url=url, target_key=target_key)
+        if snapshot_record_matches(record, url=url, target_key=target_key, allow_embedded_url=not canonical)
     ]
 
 
@@ -600,9 +615,6 @@ def build_coverage_report(
     user_confirmed: bool = False,
     full_capture_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
-    from .acquisition_gate import build_acquisition_completion_gate
-
-    generated = generated_at or utc_now()
     key = target_key or (target_key_for_url(url) if url else "")
     raw_matches = (
         matching_snapshot_records(raw_cache_path, url=url, target_key=key)
@@ -610,6 +622,26 @@ def build_coverage_report(
         else []
     )
     ai_matches = matching_snapshot_records(ai_log_path, url=url, target_key=key, canonical=True) if url and key else []
+    return _build_coverage_report_from_matches(
+        url=url, target_key=key, raw_cache_path=raw_cache_path, ai_log_path=ai_log_path,
+        source_kind=source_kind, dedupe_policy=dedupe_policy, generated_at=generated_at,
+        requested_start=requested_start, requested_end=requested_end,
+        user_confirmed=user_confirmed, full_capture_receipt_path=full_capture_receipt_path,
+        raw_matches=raw_matches, ai_matches=ai_matches,
+    )
+
+
+def _build_coverage_report_from_matches(
+    *, url: str, target_key: str, raw_cache_path: Path | None, ai_log_path: Path,
+    source_kind: str, dedupe_policy: str = "by_hash", generated_at: str | None = None,
+    requested_start: str = "", requested_end: str = "", user_confirmed: bool = False,
+    full_capture_receipt_path: Path | None = None,
+    raw_matches: list[dict[str, Any]], ai_matches: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from .acquisition_gate import build_acquisition_completion_gate
+
+    generated = generated_at or utc_now()
+    key = target_key
     exact_coverage = bool(url and key and (ai_matches or (source_kind == "saved_log" and raw_matches)))
     selected_records = ai_matches or raw_matches
     freshness_source = "ai_log" if ai_matches else "raw_cache" if raw_matches else "none"
@@ -797,6 +829,25 @@ _BRIDGE_BROWSER_SOURCES = {
 _BRIDGE_CAPTURE_ROUTES = {"manual_visible_text", "in_app_browser", "chrome_extension"}
 
 
+def _ax_embedded_urls(text: str) -> list[str]:
+    """Extract only the browser-provided AX document headers, never message text.
+
+    This is a contradiction check on supplied data, not browser attestation.
+    Other capture formats deliberately remain supported without an AX header.
+    """
+    result: list[str] = []
+    for line in text.split("\n", 3)[:3]:
+        if not (line.startswith("Browser tab:") or re.match(r"^\s*0 AXWebArea\b", line)):
+            continue
+        # AX headers may include user-controlled titles containing "URL:".
+        # Only the final URL field emitted by the browser is a document URL.
+        match = re.search(r'\bURL:\s*(?:"([^"]+)"\.?|(\S+))\s*$', line)
+        if match:
+            value = match.group(1) or match.group(2)
+            result.append(value if "://" in value else "https://" + value)
+    return result
+
+
 def _bridge_source_binding(*, url: str, observed_url: str, capture_route: str, source: str) -> dict[str, Any]:
     route = _BRIDGE_BROWSER_SOURCES.get(source, capture_route)
     required = route in {"in_app_browser", "chrome_extension"}
@@ -836,6 +887,9 @@ def build_bridge_intake(
     snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
     raw_cache_path: Path | None = None,
     text: str = "",
+    messages: Iterable[dict[str, Any]] | None = None,
+    history_exhausted: bool = False,
+    capture_observed_at: str = "",
     draft: str = "",
     understanding_confirmed: bool = False,
     title: str = "",
@@ -856,9 +910,26 @@ def build_bridge_intake(
     key = target_key or target_key_for_url(url)
     generated = generated_at or utc_now()
     steps_completed: list[str] = []
-    content = text.strip()
+    message_list = list(messages) if messages is not None else None
+    if message_list is not None:
+        ordered, _source, verified = order_reply_context_messages(message_list)
+        if verified and len(ordered) == len(message_list):
+            message_list = ordered
+    if message_list is not None and text.strip():
+        raise ValueError("text and messages are mutually exclusive")
+    content = text.strip() if message_list is None else normalize_message_text(message_list)
+    if message_list is not None:
+        # 文脈gateは保存する入力そのものに結び付け、別入力のready判定を流用しない。
+        reply_context_gate = build_reply_context_gate_from_messages(
+            message_list, history_exhausted=history_exhausted
+        )
     binding = _bridge_source_binding(url=url, observed_url=observed_url, capture_route=capture_route, source=source)
     binding["input_text_present"] = bool(content)
+    if binding["required"] and not binding["blocked_reason"] and message_list is None:
+        requested = parse_discord_target_url(url)
+        embedded = _ax_embedded_urls(content)
+        if any(parse_discord_target_url(value) != requested for value in embedded):
+            binding["blocked_reason"] = "embedded_document_url_mismatch"
     if binding["required"] and not content and not binding["blocked_reason"]:
         binding["blocked_reason"] = "visible_text_missing"
     binding_blocked = bool(binding["blocked_reason"])
@@ -874,13 +945,23 @@ def build_bridge_intake(
         "snapshot_receipt": {},
     }
 
+    verified_records = None
     if content and not binding_blocked:
-        snapshot_payload = snapshot_visible_text(
-            text=content,
+        snapshot_payload, verified_records = _snapshot_visible_text_with_records(
+            text=content if message_list is None else "",
+            messages=message_list,
             url=url,
             title=title,
             source=source,
             path=snapshot_store,
+            _reply_context_evidence={
+                "messages": [{name: row[name] for name in (
+                    "sequence", "timestamp", "observed_at", "is_thread_root", "is_reply_target",
+                    "unresolved_reference", "id", "reply_to_message_id"
+                ) if name in row} for row in message_list],
+                "history_exhausted": history_exhausted,
+                "capture_observed_at": capture_observed_at,
+            } if message_list is not None else None,
         )
         steps_completed.append("snapshot")
         snapshot_meta = {
@@ -900,19 +981,21 @@ def build_bridge_intake(
     latest_report: dict[str, Any] = {}
     saved_text = ""
     if not binding_blocked:
-        coverage = build_coverage_report(
-            url=url,
-            target_key=key,
-            raw_cache_path=raw_cache_path,
-            ai_log_path=snapshot_store,
-            source_kind="saved_log",
-            generated_at=generated,
+        if verified_records is None:
+            verified_records = load_content_snapshot_records(snapshot_store)
+        ai_matches = [row for row in verified_records
+                      if snapshot_record_matches(row, url=url, target_key=key, allow_embedded_url=False)]
+        raw_matches = (matching_snapshot_records(raw_cache_path, url=url, target_key=key)
+                       if raw_cache_path is not None else [])
+        coverage = _build_coverage_report_from_matches(
+            url=url, target_key=key, raw_cache_path=raw_cache_path,
+            ai_log_path=snapshot_store, source_kind="saved_log", generated_at=generated,
+            ai_matches=ai_matches, raw_matches=raw_matches,
         )
         steps_completed.append("coverage")
-
-        latest = select_latest_snapshot(path=snapshot_store, target_key=key, url=url)
+        latest = _select_latest_snapshot_from_records(verified_records, target_key=key, url=url)
         saved_text = str((latest or {}).get("text") or "").strip()
-        latest_report = build_latest_snapshot_report(path=snapshot_store, target_key=key, url=url)
+        latest_report = _build_latest_snapshot_report_from_snapshot(latest, target_key=key, url=url)
 
     payload: dict[str, Any] = {
         "language": DEFAULT_LANGUAGE,
@@ -932,6 +1015,7 @@ def build_bridge_intake(
         },
         "snapshot": snapshot_meta,
         "source_binding": binding,
+        "reply_context_gate": reply_context_gate or {},
         "coverage": {
             "exact_coverage": bool(coverage.get("coverage", {}).get("exact_coverage")),
             "target_match": bool(coverage.get("coverage", {}).get("target_match")),
@@ -1560,6 +1644,11 @@ def load_content_snapshot_records(path: Path) -> list[dict[str, Any]]:
         return snapshots
     _validate_text_snapshot_chain(snapshots)
     _verify_physical_revocation_hashes(path, snapshots)
+    return _content_records_from_verified(snapshots)
+
+
+def _content_records_from_verified(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同じ依頼の検証済み観測から、失効・訂正行を除く。永続キャッシュではない。"""
     excluded: set[int] = set()
     for index, row in enumerate(snapshots):
         if row.get("event_type") == "discord.snapshot_store.invalid_observation_revoked":
@@ -2477,7 +2566,14 @@ def select_latest_snapshot(
     target_key: str = "",
     url: str = "",
 ) -> dict[str, Any] | None:
-    snapshots = load_text_snapshots(path)
+    return _select_latest_snapshot_from_records(
+        load_content_snapshot_records(path), target_key=target_key, url=url
+    )
+
+
+def _select_latest_snapshot_from_records(
+    snapshots: list[dict[str, Any]], *, target_key: str = "", url: str = ""
+) -> dict[str, Any] | None:
     if target_key:
         for snapshot in reversed(snapshots):
             if (snapshot.get("target_key") == target_key
@@ -2508,6 +2604,15 @@ def build_latest_snapshot_report(
     include_preview: bool = False,
 ) -> dict[str, Any]:
     snapshot = select_latest_snapshot(path=path, target_key=target_key, url=url)
+    return _build_latest_snapshot_report_from_snapshot(
+        snapshot, target_key=target_key, url=url, include_preview=include_preview
+    )
+
+
+def _build_latest_snapshot_report_from_snapshot(
+    snapshot: dict[str, Any] | None, *, target_key: str = "", url: str = "",
+    include_preview: bool = False,
+) -> dict[str, Any]:
     requested_filter = "target_key" if target_key else "url" if url else "latest"
     report_acquisition_context = {
         "schema": "discord_bridge_report_acquisition_context.v1",
@@ -3239,6 +3344,22 @@ def snapshot_visible_text(
     source: str = "visible_text",
     path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
 ) -> dict[str, Any]:
+    result, _records = _snapshot_visible_text_with_records(
+        text=text, messages=messages, url=url, title=title, source=source, path=path
+    )
+    return result
+
+
+def _snapshot_visible_text_with_records(
+    *,
+    text: str = "",
+    messages: Iterable[Any] | None = None,
+    url: str = "",
+    title: str = "",
+    source: str = "visible_text",
+    path: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    _reply_context_evidence: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     message_list = list(messages or [])
     reply_reference = _snapshot_reply_reference(message_list, url)
     content = text.strip() or normalize_message_text(message_list)
@@ -3298,15 +3419,18 @@ def snapshot_visible_text(
             "external_share_allowed": False,
             "outbound_actions": "disabled",
         }
+        if _reply_context_evidence is not None:
+            snapshot["reply_context_evidence"] = _reply_context_evidence
         if reply_reference:
             snapshot["reply_to_message_id"] = reply_reference
         snapshot["event_hash"] = canonical_event_hash(snapshot)
         return snapshot
 
     _, snapshot, read_back = _append_text_snapshot_transaction(build_snapshot, Path(path))
+    verified_records = _content_records_from_verified(read_back)
     snapshot_count = sum(
         1
-        for item in load_content_snapshot_records(Path(path))
+        for item in verified_records
         if _snapshot_stream_id(item) == target_key
     )
     previous_hash = snapshot["previous_content_hash"]
@@ -3349,7 +3473,7 @@ def snapshot_visible_text(
         "context_ready": True,
         "visible_text_saved": True,
         "snapshot_receipt": snapshot_receipt,
-    }
+    }, verified_records
 
 
 def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
@@ -4258,6 +4382,24 @@ def build_reply_context_gate(
     }
 
 
+def order_reply_context_messages(
+    messages: Iterable[Any],
+) -> tuple[list[dict[str, Any]], str, bool]:
+    loaded = [message for message in messages if isinstance(message, dict)]
+    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
+        return sorted(loaded, key=lambda message: int(message["sequence"])), "sequence", True
+    if loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
+        return (
+            sorted(
+                loaded,
+                key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            "timestamp",
+            True,
+        )
+    return loaded, "unknown", False
+
+
 def build_reply_context_gate_from_messages(
     messages: Iterable[dict[str, Any]],
     *,
@@ -4265,20 +4407,7 @@ def build_reply_context_gate_from_messages(
     max_context_messages: int = 100,
 ) -> dict[str, Any]:
     """structured message envelope を壊さず返信前文脈gateへ変換する。"""
-    loaded = [message for message in messages if isinstance(message, dict)]
-    order_source = "unknown"
-    order_verified = False
-    if loaded and all(isinstance(message.get("sequence"), int) for message in loaded):
-        loaded = sorted(loaded, key=lambda message: int(message["sequence"]))
-        order_source = "sequence"
-        order_verified = True
-    elif loaded and all(parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) for message in loaded):
-        loaded = sorted(
-            loaded,
-            key=lambda message: parse_snapshot_timestamp(message.get("timestamp") or message.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
-        )
-        order_source = "timestamp"
-        order_verified = True
+    loaded, order_source, order_verified = order_reply_context_messages(messages)
     root_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_thread_root"))]
     target_indexes = [index for index, message in enumerate(loaded) if bool(message.get("is_reply_target"))]
     target_present = bool(target_indexes)
@@ -4731,6 +4860,42 @@ DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS = (
     "edit",
     "delete",
 )
+
+
+_POST_SEND_MESSAGE_HOSTS = {"discord.com", "discordapp.com"}
+_POST_SEND_SNOWFLAKE_RE = re.compile(r"[0-9]{17,20}")
+
+
+def _post_send_message_target(url: str) -> tuple[str, str, str] | None:
+    """Return (guild or @me, channel, message) for one exact Discord message URL.
+
+    Path parsing is delegated to the shared url_identity parser so DM messages
+    use the same identity as bridge-intake. Host, ID length, and query/fragment
+    limits match DISCORD_MESSAGE_URL_RE for guild URLs, except that IDs must be
+    ASCII digits; non-ASCII Unicode digits accepted by ``\\d`` are rejected.
+    """
+    candidate = url.strip()
+    head = candidate.split("?", 1)[0]
+    try:
+        parsed = urlsplit(head)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc not in _POST_SEND_MESSAGE_HOSTS
+        or "#" in head
+        or len(parsed.path.split("/")) != 5
+    ):
+        return None
+    parts = parse_discord_target_url(candidate)
+    if parts is None or len(parts) != 3:
+        return None
+    scope, channel, message = parts
+    if scope != "@me" and not _POST_SEND_SNOWFLAKE_RE.fullmatch(scope):
+        return None
+    if not all(_POST_SEND_SNOWFLAKE_RE.fullmatch(value) for value in (channel, message)):
+        return None
+    return scope, channel, message
 
 
 def _canonical_discord_message_url(url: str) -> str:
@@ -5264,7 +5429,7 @@ def _resolve_saved_post_send_snapshot(
     if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(str(record.get("event_id") or "")):
         blockers.append("post_send_snapshot_record_capture_id_invalid")
     if (
-        not DISCORD_MESSAGE_URL_RE.fullmatch(record_url)
+        _post_send_message_target(record_url) is None
         or not record_target_key
         or record_target_key != target_key_for_url(record_url)
         or record.get("stream_id") != record_target_key
@@ -5386,7 +5551,7 @@ def build_discord_post_send_closeout_packet(
     snapshot_age_seconds: float | None = None
     if snapshot_observed_time is not None:
         snapshot_age_seconds = (closeout_time - snapshot_observed_time).total_seconds()
-    observed_target_valid = bool(DISCORD_MESSAGE_URL_RE.fullmatch(observed_url.strip()))
+    observed_target_valid = _post_send_message_target(observed_url) is not None
     snapshot_target_match = bool(
         observed_target_valid
         and snapshot_target_key
@@ -5458,13 +5623,13 @@ def build_discord_post_send_closeout_packet(
             operation_binding_blockers.append("post_send_operation_target_mismatch")
         elif str(staging_packet.get("mode") or "").strip().casefold() == "reply":
             reply_reference = str(snapshot_record.get("reply_to_message_id") or "")
-            captured_target = DISCORD_MESSAGE_URL_RE.fullmatch(str(snapshot_record.get("url") or ""))
+            captured_target = _post_send_message_target(str(snapshot_record.get("url") or ""))
             if captured_target is None or not re.fullmatch(r"[0-9]{17,20}", reply_reference):
                 operation_binding_blockers.append("post_send_reply_reference_missing")
             else:
                 reply_target_url = (
-                    f"https://discord.com/channels/{captured_target['guild']}/"
-                    f"{captured_target['channel']}/{reply_reference}"
+                    f"https://discord.com/channels/{captured_target[0]}/"
+                    f"{captured_target[1]}/{reply_reference}"
                 )
                 if staging_operation_binding.get("target_fingerprint") != target_key_for_url(reply_target_url):
                     operation_binding_blockers.append("post_send_reply_reference_mismatch")

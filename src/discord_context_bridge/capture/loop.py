@@ -135,6 +135,14 @@ def build_capture_status_projection(run: Mapping[str, Any]) -> dict[str, Any]:
         "capture_id": str(run.get("capture_id") or ""),
         "state": state,
         "operational_tags": list(run.get("operational_tags") or []),
+        # A checkpoint describes a resumable state, not a live worker lease.
+        # Even a persisted lane status of "running" is not process evidence.
+        "execution": {
+            "status_basis": "checkpoint_only",
+            "worker_active": None,
+            "worker_status": "unknown",
+            "automatic_resume_verified": False,
+        },
         "fde": {
             "status": fde_status,
             "decision": decision,

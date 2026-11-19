@@ -9,6 +9,47 @@ URL = 'https://discord.com/channels/1/10'
 TEXT = 'synthetic-member: synthetic visible message'
 
 
+@pytest.mark.parametrize('route', ['in_app_browser', 'chrome_extension'])
+@pytest.mark.parametrize('header', [
+    'Browser tab: 3, Title: "Discord", URL: "https://discord.com/login?redirect_to=%2Fchannels%2F1%2F10".\n0 AXWebArea Discord, URL: discord.com/login',
+    'Browser tab: 3, Title: "Discord", URL: "https://discord.com/channels/1/10".\n0 AXWebArea Discord, URL: discord.com/login',
+    '0 AXWebArea Discord, URL: discord.com/channels/1/20',
+])
+def test_browser_ax_header_contradiction_blocks_before_store_access(tmp_path, route, header):
+    store = tmp_path / 'snapshots.ndjson'
+    build_bridge_intake(url=URL, text=TEXT, snapshot_store=store)
+    before = store.read_bytes()
+    result = build_bridge_intake(
+        url=URL, observed_url=URL, capture_route=route,
+        text=header + '\n  1 text synthetic', snapshot_store=store,
+    )
+    assert result['blocked_reason'] == 'embedded_document_url_mismatch'
+    assert result['snapshot']['saved'] is False
+    assert result['pipeline']['completed'] == []
+    assert store.read_bytes() == before
+
+
+def test_matching_ax_headers_allow_capture_without_promising_body_truth(tmp_path):
+    text = f'Browser tab: 1, Title: "Discord", URL: "{URL}".\n0 AXWebArea Discord, URL: discord.com/channels/1/10\n  1 text hi'
+    result = build_bridge_intake(url=URL, observed_url=URL, capture_route='in_app_browser', text=text, snapshot_store=tmp_path / 'snapshots.ndjson')
+    assert result['snapshot']['saved'] is True
+    assert result['source_binding']['body_verified'] is False
+
+
+@pytest.mark.parametrize('title', ['URL: hello', 'URL: https://discord.com/login', 'X URL: abc URL: xyz'])
+def test_ax_header_title_url_marker_does_not_override_document_url(tmp_path, title):
+    text = f'Browser tab: 1, Title: "{title}", URL: "{URL}".\n0 AXWebArea {title}, URL: discord.com/channels/1/10\n  1 text hi'
+    result = build_bridge_intake(url=URL, observed_url=URL, capture_route='in_app_browser', text=text, snapshot_store=tmp_path / 'snapshots.ndjson')
+    assert result['snapshot']['saved'] is True
+    assert result['source_binding']['body_verified'] is False
+
+
+def test_link_in_ordinary_message_is_not_treated_as_document_header(tmp_path):
+    text = 'member: click https://discord.com/login\n  1 text hello'
+    result = build_bridge_intake(url=URL, observed_url=URL, capture_route='in_app_browser', text=text, snapshot_store=tmp_path / 'snapshots.ndjson')
+    assert result['snapshot']['saved'] is True
+
+
 def test_legacy_browser_source_requires_observed_target_before_save(tmp_path):
     store = tmp_path / 'snapshots.ndjson'
     payload = build_bridge_intake(url=URL, text=TEXT, source='in_app_browser_accessibility', snapshot_store=store)
@@ -149,3 +190,40 @@ def test_reserved_dm_marker_and_malformed_urls_remain_rejected(tmp_path, observe
     payload = build_bridge_intake(url=URL, observed_url=observed, capture_route='in_app_browser', text=TEXT, snapshot_store=tmp_path / 'snapshots.ndjson')
     assert payload['blocked_reason'] == 'observed_url_invalid'
     assert payload['snapshot']['saved'] is False
+
+
+def test_structured_messages_are_saved_in_the_reply_gate_order(tmp_path):
+    from discord_context_bridge.core import load_content_snapshot_records
+
+    store = tmp_path / 'snapshots.ndjson'
+    build_bridge_intake(
+        url=URL,
+        messages=[
+            {'author_label': 'member-b', 'text': '返信先の発言', 'sequence': 1,
+             'timestamp': 'not-a-time-b', 'is_reply_target': True, 'id': '2'},
+            {'author_label': 'member-a', 'text': 'スレッドの始まり', 'sequence': 0,
+             'timestamp': 'not-a-time-a', 'is_thread_root': True, 'id': '1'},
+        ],
+        history_exhausted=True,
+        snapshot_store=store,
+    )
+
+    saved = load_content_snapshot_records(store)[-1]['text']
+    assert saved.index('スレッドの始まり') < saved.index('返信先の発言')
+
+
+def test_coverage_recency_uses_original_capture_time(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    payload = build_bridge_intake(
+        url=URL,
+        messages=[
+            {'author_label': 'member-a', 'text': '古い取得の本文', 'sequence': 0,
+             'timestamp': '', 'is_thread_root': True, 'is_reply_target': True, 'id': '1'},
+        ],
+        history_exhausted=True,
+        capture_observed_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+        snapshot_store=tmp_path / 'snapshots.ndjson',
+    )
+
+    assert payload['coverage']['recency']['status'] != 'recent'

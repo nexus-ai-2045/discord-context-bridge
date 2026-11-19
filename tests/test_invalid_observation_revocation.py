@@ -240,3 +240,13 @@ def test_topic_candidates_reject_changed_revoked_row_bytes(tmp_path):
             snapshot_store=store, topic_registry=registry, output_path=output,
         )
     assert not output.exists()
+
+
+def test_latest_consumers_exclude_revoked_observation(tmp_path):
+    path = tmp_path / 'text-snapshots.ndjson'
+    _bad_store(path)
+    core.revoke_invalid_snapshot_observation(path)
+    latest = core.select_latest_snapshot(path=path, target_key=core.target_key_for_url(IAB_URL))
+    assert latest['text'] == 'second'
+    report = core.build_latest_snapshot_report(path=path, target_key=core.target_key_for_url(CHROME_URL))
+    assert report['reason'] == 'snapshot_missing'

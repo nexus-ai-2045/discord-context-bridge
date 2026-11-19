@@ -7,6 +7,7 @@ import os
 import secrets
 import stat
 import sys
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,6 +17,7 @@ from .loop import (
     build_capture_status_projection,
     new_capture_loop,
 )
+from .orchestrator import validate_retry_failure_event
 from .store import (
     CaptureCheckpointStore,
     CheckpointCorruptError,
@@ -32,10 +34,76 @@ from .message_ledger import (
 
 def _event_digest(event: str | Mapping[str, Any]) -> str:
     payload = dict(event) if isinstance(event, Mapping) else {"type": str(event)}
+    if payload.get("type") == "retryable_failure":
+        validate_retry_failure_event(event)
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def _capture_status_projection(
+    run: Mapping[str, Any], store: CaptureCheckpointStore
+) -> dict[str, Any]:
+    result = build_capture_status_projection(run)
+    for entry in reversed(run.get("checkpoints", [])):
+        if isinstance(entry, Mapping) and entry.get("event") == "retryable_failure":
+            try:
+                reason, stage = validate_retry_failure_event({
+                    "type": "retryable_failure",
+                    "reason_code": entry.get("reason_code", "unknown"),
+                    "failure_stage": entry.get("failure_stage", "unknown"),
+                })
+            except ValueError as exc:
+                raise CheckpointCorruptError("failure metadata invalid") from exc
+            received_at = _validated_failure_received_at(entry.get("received_at"))
+            events = store.load_events(str(run.get("capture_id") or ""))
+            sequence = entry.get("sequence")
+            if not isinstance(sequence, int) or isinstance(sequence, bool) or not 1 <= sequence <= len(events):
+                raise CheckpointCorruptError("failure receipt event missing")
+            event = events[sequence - 1]
+            # Old records may lack timestamps on both sides. Missing only on
+            # one side is an inconsistency, not a legacy record.
+            candidates: list[str | Mapping[str, Any]] = [
+                {"type": "retryable_failure", "reason_code": reason, "failure_stage": stage}
+            ]
+            if reason == "unknown":
+                candidates.append({"type": "retryable_failure", "failure_stage": stage})
+            if stage == "unknown":
+                candidates.append({"type": "retryable_failure", "reason_code": reason})
+            if reason == stage == "unknown":
+                candidates.extend(["retryable_failure", {"type": "retryable_failure"}])
+            if not (
+                event.get("event") == "retryable_failure"
+                and event.get("state") == entry.get("state")
+                and ("received_at" in event) == ("received_at" in entry)
+                and event.get("received_at") == received_at
+                and event.get("semantic_event_digest") in {_event_digest(c) for c in candidates}
+            ):
+                raise CheckpointCorruptError("failure receipt event mismatch")
+            receipt_verified = received_at is not None
+            result["latest_failure"] = {
+                "reason_code": reason, "failure_stage": stage,
+                "received_at": received_at, "observed_at": None,
+                "receipt_verified": receipt_verified,
+            }
+            break
+    return result
+
+
+def _validated_failure_received_at(value: Any) -> str | None:
+    """Validate the service receipt timestamp, never infer observation time."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise CheckpointCorruptError("failure receipt time invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise CheckpointCorruptError("failure receipt time invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise CheckpointCorruptError("failure receipt time invalid")
+    return value
 
 
 def _new_attachment_save_ledger(capture_id: str) -> dict[str, Any]:
@@ -604,9 +672,9 @@ def start_capture_loop(
                 raise CheckpointCorruptError(
                     "checkpoint capture attempt identity does not match requested run"
                 )
-            return build_capture_status_projection(existing)
+            return _capture_status_projection(existing, store)
         store.save_checkpoint(run, expected_sequence=0)
-        return build_capture_status_projection(run)
+        return _capture_status_projection(run, store)
 
 
 def _coverage_projection(coverage: Mapping[str, Any]) -> dict[str, Any]:
@@ -648,7 +716,7 @@ def read_capture_loop_status(
     run = store.load_checkpoint(capture_id)
     if run is None:
         raise SequenceConflictError("capture checkpoint does not exist")
-    result = build_capture_status_projection(run)
+    result = _capture_status_projection(run, store)
     coverage = store.load_coverage(capture_id)
     result["coverage"] = _coverage_projection(
         coverage or new_virtual_scroll_coverage(capture_id)
@@ -695,7 +763,7 @@ def merge_persisted_capture_window(
             updated,
             expected_window_count=expected_window_count,
         )
-        result = build_capture_status_projection(run)
+        result = _capture_status_projection(run, store)
         result["coverage"] = _coverage_projection(updated)
         result["message_event_sequence"] = len(updated_ledger["events"])
         return result
@@ -762,7 +830,7 @@ def merge_capture_windows_cache_first(
             coverage,
             expected_window_count=expected_window_count,
         )
-        result = build_capture_status_projection(run)
+        result = _capture_status_projection(run, store)
         result["coverage"] = _coverage_projection(coverage)
         result["message_event_sequence"] = len(ledger["events"])
         return result
@@ -896,12 +964,16 @@ def advance_persisted_capture(
                 current_sequence = len(run["checkpoints"])
                 event_sequence = existing["sequence"]
                 if current_sequence == event_sequence:
-                    return build_capture_status_projection(run)
+                    return _capture_status_projection(run, store)
                 if current_sequence != event_sequence - 1:
                     raise SequenceConflictError(
                         "ledger and checkpoint sequences cannot be recovered"
                     )
                 recovered = advance_capture_loop(run, event)
+                if event_name == "retryable_failure" and existing.get("received_at") is not None:
+                    recovered["checkpoints"][-1]["received_at"] = _validated_failure_received_at(
+                        existing["received_at"]
+                    )
                 if (
                     len(recovered["checkpoints"]) != event_sequence
                     or recovered["state"] != existing.get("state")
@@ -912,7 +984,7 @@ def advance_persisted_capture(
                     )
                 store.invalidate_full_capture_receipt(capture_id)
                 store.save_checkpoint(recovered, expected_sequence=current_sequence)
-                return build_capture_status_projection(recovered)
+                return _capture_status_projection(recovered, store)
         current_sequence = len(run["checkpoints"])
         if current_sequence != expected_sequence:
             raise SequenceConflictError(
@@ -921,6 +993,12 @@ def advance_persisted_capture(
             )
 
         updated = advance_capture_loop(run, event)
+        received_at = None
+        if event_name == "retryable_failure":
+            # This is the service's receipt time; observation and durable-write
+            # times are not implied. Persist it in the event for crash replay.
+            received_at = datetime.now(timezone.utc).isoformat()
+            updated["checkpoints"][-1]["received_at"] = received_at
         next_sequence = len(updated["checkpoints"])
         ledger_event = {
             "schema": "dcb-capture-event.v1",
@@ -934,7 +1012,9 @@ def advance_persisted_capture(
             "raw_text_returned": False,
             "outbound_actions": "disabled",
         }
+        if received_at is not None:
+            ledger_event["received_at"] = received_at
         store.invalidate_full_capture_receipt(capture_id)
         store.append_event(ledger_event, expected_sequence=expected_sequence)
         store.save_checkpoint(updated, expected_sequence=expected_sequence)
-        return build_capture_status_projection(updated)
+        return _capture_status_projection(updated, store)

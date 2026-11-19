@@ -290,6 +290,9 @@ def test_persisted_loop_merges_background_cache_and_dom_windows(tmp_path) -> Non
     assert status["coverage"]["unique_message_count"] == 3
     assert status["coverage"]["window_count"] == 2
     assert status["raw_text_returned"] is False
+    assert status["execution"]["status_basis"] == "checkpoint_only"
+    assert status["execution"]["worker_active"] is None
+    assert status["execution"]["automatic_resume_verified"] is False
 
 
 def test_cache_first_batch_ingests_cache_before_browser_regardless_of_arrival_order(

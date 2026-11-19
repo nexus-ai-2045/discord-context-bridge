@@ -6676,3 +6676,175 @@ def test_http_mcp_require_safe_store_allows_safe_store(monkeypatch, tmp_path):
     assert result == 0
     assert len(calls) == 1
     assert "--require-safe-store" in mcp_server.build_http_parser().format_help()
+
+
+DM_POST_SEND_URL = "https://discord.com/channels/@me/223456789012345678/423456789012345678"
+DM_CHANNEL_URL = "https://discord.com/channels/@me/223456789012345678"
+
+
+def _dm_closeout(saved, snapshot_store, snapshot_observed_at, **overrides):
+    arguments = {
+        "snapshot_receipt": saved,
+        "_trusted_snapshot_store_override": snapshot_store,
+        "external_action_state": "human-sent",
+        "human_sent_observed": True,
+        "human_send_observed_at": timestamp_before(snapshot_observed_at),
+        "human_reviewed": True,
+        "observed_text_status": "matches_copy_block",
+        "unread_check_status": "none_unread",
+        "observed_url": DM_POST_SEND_URL,
+        "learning_handoff_status": "completed",
+    }
+    arguments.update(overrides)
+    return build_discord_post_send_closeout_packet(**arguments)
+
+
+def test_human_sent_closeout_closes_for_dm_message_url(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, DM_POST_SEND_URL)
+
+    closeout = _dm_closeout(saved, snapshot_store, snapshot_observed_at)
+    serialized = json.dumps(closeout, ensure_ascii=False)
+
+    assert closeout["closeout_status"] == "closed"
+    assert closeout["blockers"] == []
+    assert closeout["recommended_next_state"] == "done"
+    assert closeout["snapshot_receipt"]["verified"] is True
+    assert closeout["snapshot_receipt"]["target_binding"] == "exact_match"
+    assert "@me" not in serialized
+    assert "423456789012345678" not in serialized
+    assert "discord.com/channels" not in serialized
+
+
+def test_dm_human_sent_closeout_still_requires_human_review(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, DM_POST_SEND_URL)
+
+    closeout = _dm_closeout(saved, snapshot_store, snapshot_observed_at, human_reviewed=False)
+
+    assert closeout["closeout_status"] == "blocked"
+    assert closeout["blockers"] == ["human_review_not_confirmed"]
+    assert closeout["recommended_next_state"] == "human_review_required"
+
+
+def test_dm_channel_url_does_not_bind_a_sent_message(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, DM_CHANNEL_URL)
+
+    closeout = _dm_closeout(saved, snapshot_store, snapshot_observed_at, observed_url=DM_CHANNEL_URL)
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_record_target_invalid" in closeout["blockers"]
+    assert "post_send_snapshot_target_invalid" in closeout["blockers"]
+
+
+def test_dm_closeout_rejects_observed_url_for_another_dm_message(tmp_path):
+    saved, snapshot_store, snapshot_observed_at = persist_post_send_snapshot(tmp_path, DM_POST_SEND_URL)
+
+    closeout = _dm_closeout(
+        saved,
+        snapshot_store,
+        snapshot_observed_at,
+        observed_url="https://discord.com/channels/@me/223456789012345678/523456789012345678",
+    )
+
+    assert closeout["closeout_status"] == "blocked"
+    assert "post_send_snapshot_target_mismatch" in closeout["blockers"]
+
+
+POST_SEND_TARGET_SHAPES = [
+    POST_SEND_URL,
+    "https://discordapp.com/channels/123456789012345678/223456789012345678/423456789012345678",
+    f"{POST_SEND_URL}?jump=1",
+    f"{POST_SEND_URL}?#anchor",
+    f"{POST_SEND_URL}/",
+    f"{POST_SEND_URL}#anchor",
+    "https://canary.discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+    "http://discord.com/channels/123456789012345678/223456789012345678/423456789012345678",
+    "https://discord.com:443/channels/123456789012345678/223456789012345678/423456789012345678",
+    "https://discord.com.evil.example/channels/123456789012345678/223456789012345678/423456789012345678",
+    "https://discord.com/channels/123456789012345678/223456789012345678",
+    "https://discord.com/channels/1234/223456789012345678/423456789012345678",
+    "https://discord.com/channels/123456789012345678/223456789012345678/threads/323456789012345678/423456789012345678",
+    "https://discord.com/channels/123456789012345678/threads/323456789012345678/423456789012345678",
+    "https://discord.com/channels/123456789012345678/223456789012345678/423456789012345678/523456789012345678",
+]
+
+
+@pytest.mark.parametrize("url", POST_SEND_TARGET_SHAPES)
+def test_post_send_message_target_keeps_guild_url_acceptance_unchanged(url):
+    accepted = core_module._post_send_message_target(url) is not None
+
+    assert accepted is bool(core_module.DISCORD_MESSAGE_URL_RE.fullmatch(url.strip()))
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (DM_POST_SEND_URL, ("@me", "223456789012345678", "423456789012345678")),
+        (f"{DM_POST_SEND_URL}?jump=1", ("@me", "223456789012345678", "423456789012345678")),
+        (DM_CHANNEL_URL, None),
+        (f"{DM_POST_SEND_URL}/", None),
+        (f"{DM_POST_SEND_URL}#anchor", None),
+        ("https://canary.discord.com/channels/@me/223456789012345678/423456789012345678", None),
+        ("https://discord.com.evil.example/channels/@me/223456789012345678/423456789012345678", None),
+        ("https://discord.com/channels/@me/2234/423456789012345678", None),
+        ("https://discord.com/channels/@me/223456789012345678/not-numeric", None),
+        ("https://discord.com/channels/@me/@me/423456789012345678", None),
+        ("https://discord.com/channels/123456789012345678/@me/423456789012345678", None),
+        ("https://discord.com/channels/@me/223456789012345678/threads/423456789012345678", None),
+    ],
+)
+def test_post_send_message_target_accepts_only_exact_dm_message_urls(url, expected):
+    assert core_module._post_send_message_target(url) == expected
+
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://discord.com/channels/" + "\u0661" * 18 + "/223456789012345678/423456789012345678",
+        "https://discord.com/channels/123456789012345678/" + "\uff12" * 18 + "/423456789012345678",
+        "https://discord.com/channels/@me/223456789012345678/" + "\u0664" * 18,
+    ],
+)
+def test_post_send_message_target_rejects_non_ascii_digit_ids(url):
+    assert core_module._post_send_message_target(url) is None
+
+def test_cli_closeout_human_sent_closes_for_dm_message_url(monkeypatch, tmp_path, capsys):
+    shared_root = tmp_path / "trusted-shared-root"
+    monkeypatch.setenv("DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT", str(shared_root))
+    canonical_store = shared_root / ".dcb" / "text-snapshots.ndjson"
+    saved, _, snapshot_observed_at = persist_post_send_snapshot(tmp_path, DM_POST_SEND_URL, store=canonical_store)
+    receipt_path = tmp_path / "snapshot-receipt.json"
+    receipt_path.write_text(json.dumps(saved), encoding="utf-8")
+    base_arguments = [
+        "closeout-discord-send",
+        "--external-action-state",
+        "human-sent",
+        "--snapshot-receipt",
+        str(receipt_path),
+        "--human-sent-observed",
+        "--human-send-observed-at",
+        timestamp_before(snapshot_observed_at),
+        "--observed-text-status",
+        "matches-copy-block",
+        "--unread-check-status",
+        "none-unread",
+        "--observed-url",
+        DM_POST_SEND_URL,
+        "--json",
+    ]
+
+    unreviewed_result = cli_main(base_arguments)
+    unreviewed = json.loads(capsys.readouterr().out)
+    reviewed_result = cli_main([*base_arguments, "--human-reviewed"])
+    output = capsys.readouterr().out
+    reviewed = json.loads(output)
+
+    assert unreviewed_result != 0
+    assert unreviewed["closeout_status"] == "blocked"
+    assert unreviewed["blockers"] == ["human_review_not_confirmed"]
+    assert reviewed_result == 0
+    assert reviewed["closeout_status"] == "closed"
+    assert reviewed["blockers"] == []
+    assert "@me" not in output
+    assert "423456789012345678" not in output
+    assert "discord.com/channels" not in output

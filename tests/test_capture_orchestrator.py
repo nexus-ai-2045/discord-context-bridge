@@ -72,6 +72,33 @@ def test_retry_is_bounded_and_preserves_resume_state() -> None:
     assert run["blocker"] == "retry_budget_exhausted"
 
 
+def test_retry_keeps_safe_failure_details_after_resume() -> None:
+    run = new_capture_run("target", "chrome_extension", "m9")
+    run = advance_capture_run(run, {
+        "type": "retryable_failure", "reason_code": "debugger_unattached",
+        "failure_stage": "capture",
+    })
+    run = advance_capture_run(run, "retry_due")
+    failure = run["checkpoints"][0]
+    assert failure["reason_code"] == "debugger_unattached"
+    assert failure["failure_stage"] == "capture"
+    assert "private transcript token" not in str(run)
+    assert run["state"] == "received"
+
+
+def test_retry_rejects_unrecognized_or_private_reason_values() -> None:
+    run = new_capture_run("target", "chrome_extension", "m9")
+    with pytest.raises(ValueError, match="invalid failure reason code"):
+        advance_capture_run(run, {"type": "retryable_failure", "reason_code": "secret token"})
+    with pytest.raises(ValueError, match="invalid failure stage"):
+        advance_capture_run(run, {"type": "retryable_failure", "failure_stage": "private URL"})
+    with pytest.raises(ValueError, match="unexpected retry failure fields"):
+        advance_capture_run(run, {"type": "retryable_failure", "raw_error": "secret token"})
+    old = advance_capture_run(run, "retryable_failure")
+    assert old["checkpoints"][0]["reason_code"] == "unknown"
+    assert old["checkpoints"][0]["failure_stage"] == "unknown"
+
+
 def test_rest_and_saved_routes_do_not_require_visible_snapshot() -> None:
     for route in ("rest_backfill", "saved_artifacts"):
         run = new_capture_run("discord:thread", route, "m9")
