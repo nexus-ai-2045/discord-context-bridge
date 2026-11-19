@@ -1,0 +1,301 @@
+# `Discord`送信テスト運転表
+
+この`runbook`は、`Discord` `Context` `Bridge`を「送信直前まで支える」ための手順です。
+既定は人間送信です。この `public` `core` 自体は`Discord`へ送信しません。自動送信を使う場合は `private` `adapter` 境界で `auto-send-preflight` を通し、`ready` `packet` が出た一回だけ実行します。
+
+## すぐ使う手順
+
+```mermaid
+flowchart TD
+  start["対象チャンネル/投稿先をsafe labelで決める"] --> review["review-draftで本文レビュー"]
+  review --> stage["stage-discord-sendでfill-only packet作成"]
+  stage --> dry["verify-chrome-fill-dry-runでdry-run確認"]
+  dry --> fill["Chrome拡張または人間操作で下書き欄へ入力"]
+  fill --> pdca["send-pdca-preflightで対象/本文/添付/route_failureを確認"]
+  pdca --> stop["送信ボタン手前で停止"]
+  stop --> human["人間がテスト用チャンネルで送信判断"]
+  human --> snapshot["exact message URLをsnapshot-discord-url-textで保存"]
+  snapshot --> closeout["receipt付きcloseout-discord-sendで送信後metadata確認"]
+  closeout --> status["send-operation-statusでチェック表を吸い上げ"]
+  status --> prod["本番送信手順へ進むか判断"]
+
+  pdca --> auto_preflight["任意: auto-send-preflight"]
+  auto_preflight --> adapter["private adapter が一回送信"]
+  adapter --> snapshot
+
+  stage -. "public coreでは禁止" .-> auto_send["自動送信 / Enter送信 / 送信ボタンclick"]
+  dry -. "禁止" .-> reaction["reaction / edit / delete"]
+  closeout -. "出力しない" .-> raw["raw本文 / URL / snowflake / 参加者名"]
+```
+
+## 送信前 `gate`
+
+送信補助を行う場合でも、このリポは `Discord` への実送信をしません。
+送信前 `gate` は「どこへ、何を、どの経路で置こうとしているか」を止まって確認するためのものです。
+
+### 送信経路照合
+
+- `webhook` / `bot` / `browser` の投稿先が一致しない場合は送信しない。
+- 通知用 `webhook`、別 `guild` の `bot` `token`、別用途の自動通知チャンネルを、目的チャンネルの代替経路として使わない。
+- ブラウザで進める場合は、ブラウザタイトルや画面上のサーバー名・チャンネル名を `title` `evidence` として確認する。
+- `title` `evidence` は `target_verified_by_browser_title` のような `metadata` に残し、`raw` `URL` / `snowflake` / `handle` を `visible` `output` に出さない。
+
+### 自動送信 `preflight`
+
+- 自動送信は `auto-send-preflight` が `ready_for_auto_send_adapter` を返した時だけ `private` `adapter` が実行できる。
+- 必須条件は、明示承認、対象 `route` 一致、`ready` な `stage-discord-send` `packet`、`ready` な `verify-chrome-fill-dry-run` `report`、`transport` 設定、`operator` `label`、`idempotency` `key`、`rollback` `plan`、`metadata-only` `audit` `log`。
+- `auto-send-preflight` が `blocked` の場合は送信しない。
+- `public` `core` の `send_message()` は無効のままにする。`private` `adapter` は `idempotency` `key` を使って一回だけ送信し、送信後は `closeout-discord-send` を必ず残す。
+
+### 添付と停止の扱い
+
+- ファイル添付に失敗した場合は、送信せず `blocked` として止める。
+- 添付前に、対象ファイルの存在、サイズ 0 でないこと、意図したファイル名であることを `local` `evidence` として確認する。
+- `Unicode` 分解文字などでブラウザ `upload` が不安定な場合、`repo`外の一時 `ASCII` 名コピーまたは `hard` `link` は使ってよい。ただし元ファイルと同一内容であることを `local` `evidence` に残す。
+- ユーザーが停止した場合は `not_sent` として閉じる。入力欄準備、添付試行、送信先確認は送信済みではない。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  closeout-discord-send \
+  --external-action-state not-sent \
+  --note-label "user-stopped-before-send" \
+  --json > .local/discord-context-bridge/not-sent-closeout.json
+```
+
+### `closeout` 出力
+
+- 送信後の照合では本文を出さず、状態だけを残す。`closed` / `verified` は設定されたローカル保存先との照合結果であり、実際の `Discord` アクセスや送信を認証しない。本文と送信観測時刻は信頼された操作担当から受け取る。
+- `human_sent` は、正確な投稿の参照先と本文を保存した `discord_saved_snapshot_receipt.v1` と、タイムゾーン付きの送信観測時刻 `human_send_observed_at` が必須。
+- `capture_id` を設定された共有保存領域から検索し、実際の記録の対象・`observed_at`・イベントと本文のハッシュ値・安全属性を検証する。呼び出しごとに保存先を変更できず、`MCP` の保存先指定はサーバー起動時だけに限定する。
+- 保存した観測は `human_send_observed_at` 以後かつサーバーの実際の現在時刻から 15 分以内でなければならない。送信観測前、未来、期限超過、別対象、改変、未保存は `blocked` にする。互換引数 `closeout_observed_at` は判定に使わず、過去時刻を指定しても鮮度や判定時刻を上書きできない。
+- 送信前の準備記録か試験実行の記録を渡す場合は両方を必須とし、同じ操作の識別子と投稿先の照合値が一致することを確認する。返信では、保存した実投稿自身の `reply_to_message_id` から返信先の正確な参照先を再構成し、準備記録の `target_fingerprint` と照合する。同じチャンネル内でも別の投稿への返信、返信参照の欠落・不正は `blocked` にする。呼びかけの `mention` は返信参照を必要としない。
+- 送信前の記録を持たない事後確認は `retrospective_snapshot_only` として閉じられるが、送信前の検査通過は主張しない。この検査は信頼されたローカル取得記録との照合であり、実際の投稿や返信参照の出自を独立に認証しない。
+- `not_sent` は受領記録・送信観測時刻・操作の結合が不要で、送信なしとして閉じる。
+- 外部 `action` 状態は `not_sent` / `staged` / `human_sent` / `blocked` / `unknown` のどれかに分ける。
+- `evidence` がない場合は `not_sent` / `blocked` / `unknown` のどれかで閉じる。
+
+1. 対象チャンネル/投稿先を決める
+   - 実`URL`や`snowflake`を公開ログに出さず、`test-channel` のような`safe` `label`で扱います。
+
+2. 送信本文をレビューする
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  review-draft \
+  --understanding-confirmed \
+  --draft "まず前提を確認してから返事します。" \
+  --json
+```
+
+3. 下書き入力用`packet`を作る
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  --store .local/discord-context-bridge/events.ndjson \
+  stage-discord-send \
+  --mode reply \
+  --target-url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --understanding-confirmed \
+  --draft "まず前提を確認してから返事します。" \
+  --json > .local/discord-context-bridge/staging-packet.json
+```
+
+4. `dry-run` / `preview`を通す
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  verify-chrome-fill-dry-run \
+  --staging-packet .local/discord-context-bridge/staging-packet.json \
+  --socket-preflight \
+  --target-url-verified \
+  --socket-after-navigation \
+  --latest-target-snapshot-confirmed \
+  --reply-ui-candidates 1 \
+  --draft-matches-copy-block \
+  --socket-pre-send \
+  --json > .local/discord-context-bridge/fill-dry-run.json
+```
+
+5. 送信直前の`PDCA` `gate`を通す
+
+添付つき投稿では、画像ファイルが存在するだけでは`OK`にしません。
+`Discord`入力欄に添付プレビューが出ていることを `attachment-preview-verified`
+として確認します。`Chrome` `DOM`、`file` `chooser`、`clipboard`、`Webhook` などの経路が
+不安定または対象違いの場合は、同じ操作を繰り返さず `route_failure` として
+止めます。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-pdca-preflight \
+  --target-verified \
+  --draft-verified \
+  --attachment-required \
+  --attachment-file-verified \
+  --attachment-preview-verified \
+  --browser-route-status ready \
+  --webhook-route-status not-used \
+  --json > .local/discord-context-bridge/send-pdca-preflight.json
+```
+
+添付プレビューが確認できない場合の例:
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-pdca-preflight \
+  --target-verified \
+  --draft-verified \
+  --attachment-required \
+  --attachment-file-verified \
+  --browser-route-status filechooser-timeout \
+  --webhook-route-status wrong-target \
+  --failure-note "attachment preview was not visible before send" \
+  --json
+```
+
+この場合は `ok_to_send=false` になり、送信しません。
+
+6. テスト用チャンネルで人間が送信する
+   - このリポは送信しません。
+   - `Chrome`拡張や人間操作で下書き欄に入れたあと、最後の送信だけ人間が判断します。
+
+6-`a`. 任意: `private` `adapter` の自動送信 `preflight` を通す
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  auto-send-preflight \
+  --staging-packet .local/discord-context-bridge/staging-packet.json \
+  --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --explicit-auto-send-approval \
+  --target-route-verified \
+  --transport-label private-test-adapter \
+  --transport-configured \
+  --operator-label human-approved-operator \
+  --idempotency-key "<send-once-key>" \
+  --rollback-plan-reviewed \
+  --audit-log-path .local/discord-context-bridge/auto-send-audit.jsonl \
+  --json > .local/discord-context-bridge/auto-send-preflight.json
+```
+
+7. 送信後の正確な投稿の参照先と本文を保存する
+
+送信した投稿の参照先を指定し、可視本文を非公開の保存先へ保存します。
+出力は本文や参照先を返さず、保存記録の識別子・対象の照合値・観測時刻・鮮度を含みます。
+`configure-local-cache` または環境変数で設定した共有保存領域を使用します。
+任意の作業用保存先に記録した受領記録は、この照合の根拠になりません。
+
+返信の送信後確認では、非公開の投稿配列を `--messages-file` へ渡します。既存の投稿データと同じ `message_id`（または `id`）、`reply_to_message_id`、`text` を使用します。対象の投稿参照先と識別子が一致する一意な行からだけ返信参照を保存し、別の投稿・重複行・不正な識別子からは採用しません。`MCP` の既存 `messages` 引数でも同じ保存処理を使います。返信参照は非公開の保存記録にのみ残し、標準出力へ追加しません。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  snapshot-discord-url-text \
+  --url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --messages-file <private-post-send-messages.json> \
+  --json > .local/discord-context-bridge/post-send-snapshot.json
+```
+
+8. 受領記録を渡して送信後の照合を行う
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  closeout-discord-send \
+  --staging-packet .local/discord-context-bridge/staging-packet.json \
+  --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --snapshot-receipt .local/discord-context-bridge/post-send-snapshot.json \
+  --human-sent-observed \
+  --human-send-observed-at "<timezone付きISO-8601送信観測時刻>" \
+  --human-reviewed \
+  --observed-text-status human-edited-and-reviewed \
+  --unread-check-status none-unread \
+  --observed-message-id "<message-id>" \
+  --observed-url "https://discord.com/channels/<guild>/<channel>/<message>" \
+  --json > .local/discord-context-bridge/send-closeout.json
+```
+
+9. 既存ログから運転表を吸い上げる
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-operation-status \
+  --staging-packet .local/discord-context-bridge/staging-packet.json \
+  --dry-run-report .local/discord-context-bridge/fill-dry-run.json \
+  --closeout-report .local/discord-context-bridge/send-closeout.json \
+  --target-label test-channel \
+  --rollback-plan-reviewed \
+  --production-runbook-fixed \
+  --json
+```
+
+## 送信済みログの事後`closeout`
+
+既に人間送信が終わっているログを後から確認する場合は、事前の
+`stage-discord-send`、`verify-chrome-fill-dry-run`、テスト送信`gate`を
+通ったことにはしません。代わりに、送信後`metadata`だけを閉じる
+事後`closeout`として扱います。
+
+```bash
+PYTHONPATH=src python3 -m discord_context_bridge.cli \
+  send-operation-status \
+  --closeout-report .local/discord-context-bridge/posted-records/<closeout>.json \
+  --target-label posted-reply \
+  --target-environment production \
+  --rollback-plan-reviewed \
+  --production-runbook-fixed \
+  --post-send-retrospective \
+  --json
+```
+
+このモードが `post_send_retrospective_closed` になっても、次回以降の
+正式送信フローでは通常どおり `stage-discord-send`、`dry-run`、テスト送信、
+`closeout` を順に通します。
+
+## 送信チェック表
+
+| チェック | `OK`条件 | 足りない時 |
+|---|---|---|
+| 対象チャンネル/投稿先の明示 | `target-label` と `staging` `packet` がある | `safe` `label`を決める |
+| 送信本文のレビュー | `stage-discord-send` が `ready_to_fill` | `review-draft` / `understanding` `gate`を通す |
+| `dry-run` / `preview` | `verify-chrome-fill-dry-run` が `ready_to_fill` | `URL`、`UI`候補数、`snapshot`、`copy` `block`一致を直す |
+| 送信直前`PDCA` | `send-pdca-preflight` が `ok_to_send=true` | 対象、本文、添付プレビュー、`route_failure`を直す |
+| テスト用チャンネルで実送信 | 人間が実投稿を確認し、その観測を保存した照合結果が `closed` | テストチャンネルで人間が送信し、投稿の参照先と本文を保存して照合する |
+| 送信ログ/失敗時回復確認 | `closeout`、未読0、回復手順レビュー済み | 修正投稿、停止、人間確認の手順を確認する |
+| 本番送信手順の固定化 | `runbook`をレビュー済みにする | 本番前チェックリストを更新する |
+
+## 現状ロジック
+
+```mermaid
+stateDiagram-v2
+  [*] --> TargetMissing
+  TargetMissing --> DraftReview: target-label + visible context
+  DraftReview --> StageBlocked: understanding未確認 / copy block未ready
+  DraftReview --> StageReady: stage-discord-send ready_to_fill
+  StageReady --> DryRunBlocked: URL/UI/snapshot/copy不一致
+  StageReady --> DryRunReady: fill-only dry-run ready_to_fill
+  DryRunReady --> PdcaBlocked: 対象/本文/添付/route_failure未解決
+  DryRunReady --> PdcaReady: send-pdca-preflight ok_to_send
+  PdcaReady --> HumanSend: 下書き入力後に人間が送信判断
+  HumanSend --> CloseoutBlocked: snapshot receipt欠落・別対象・stale / 未観測 / 未レビュー / 未読あり
+  HumanSend --> CloseoutClosed: closeout closed
+  CloseoutClosed --> OperationReady: rollback-plan + production-runbook確認済み
+  OperationReady --> [*]
+```
+
+## 失敗時の扱い
+
+- 誤送信の自動削除や`edit`はしません。
+- 失敗時は、人間が対象チャンネルを見て、停止、修正投稿、再送、追記説明のどれにするか決めます。
+- このリポが残すのは`metadata-only`の状態です。本文、`URL`、`snowflake`、参加者名は出力しません。
+- 同じ `route_failure` が残っている間は、同じブラウザ操作や`Webhook`経路を再試行しません。
+- 添付必須の投稿では、添付ファイル存在と添付プレビュー確認を別チェックにします。
+
+## 本番前の最低条件
+
+本番チャンネルで送信する前に、次をすべて満たします。
+
+- `send-operation-status` が `ok: true`
+- テストチャンネルで`closeout`済み
+- 本文は人間レビュー済み
+- 送信先`safe` `label`が明示されている
+- 添付必須なら、送信直前に添付プレビューが確認済み
+- 失敗時の回復方針が確認済み
+- `Discord`送信は人間が最後に実行する

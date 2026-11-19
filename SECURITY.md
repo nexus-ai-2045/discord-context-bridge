@@ -1,9 +1,26 @@
-# Security
+# Security Policy
 
-## データ境界
+Discord Context Bridge は local-first かつ read-only が既定です。
 
-- secret / token / 個人の絶対 path を repository に入れない。
+## Supported Boundary
 
-## 報告経路
+- ユーザーにすでに見えているテキストだけを受け取ります。
+- 小さな local event snippet を append-only file に保存します。
+- Discord credential を要求しません。
+- Discord message を送信しません。
 
-脆弱性や個人情報の混入は GitHub の Private vulnerability reporting (public 化後に有効) か、機微情報を含めない Issue で知らせてください。
+## Sensitive Data
+
+次のものを commit しません。
+
+- Discord user token、bot token、webhook URL。
+- Discord snowflake らしき ID、HTTP 認証 header 形式の credential。
+- Browser cookie、profile、session store、screenshot。
+- 実 guild ID、channel ID、user ID、handle、local absolute path、private message 本文。
+- private conversation を含む local event store。
+
+## Reporting
+
+sensitive data が release candidate に見つかった場合は、公開を止めます。
+必要なら credential を rotate し、release branch から該当データを取り除き、
+public release checklist を再実行します。

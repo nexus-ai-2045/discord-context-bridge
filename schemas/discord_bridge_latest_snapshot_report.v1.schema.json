@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus-ai-2045.github.io/discord-context-bridge/schemas/discord_bridge_latest_snapshot_report.v1.schema.json",
+  "title": "Discord Bridge latest snapshot report",
+  "type": "object",
+  "required": [
+    "language",
+    "schema",
+    "ok",
+    "message",
+    "requested_filter",
+    "raw_text_returned",
+    "participant_names_returned",
+    "local_paths_returned",
+    "path_output",
+    "outbound_actions"
+  ],
+  "properties": {
+    "language": {
+      "const": "ja"
+    },
+    "schema": {
+      "const": "discord_bridge_latest_snapshot_report.v1"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "message": {
+      "type": "string"
+    },
+    "requested_filter": {
+      "type": "string"
+    },
+    "raw_text_returned": {
+      "const": false
+    },
+    "participant_names_returned": {
+      "const": false
+    },
+    "local_paths_returned": {
+      "const": false
+    },
+    "path_output": {
+      "const": "omitted"
+    },
+    "target": {
+      "type": "object"
+    },
+    "latest_saved_or_visible_message": {
+      "type": "object"
+    },
+    "input_state": {
+      "type": "object"
+    },
+    "source_summary": {
+      "type": "object"
+    },
+    "uncaptured_range": {
+      "type": "object"
+    },
+    "report_acquisition_context": {
+      "type": "object"
+    },
+    "outbound_actions": {
+      "const": "disabled"
+    }
+  },
+  "additionalProperties": true
+}

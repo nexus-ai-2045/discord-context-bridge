@@ -1,0 +1,678 @@
+from __future__ import annotations
+
+import argparse
+import hmac
+import json
+import os
+from pathlib import Path
+from typing import Any, Callable, NamedTuple
+
+from .local_config import default_cross_device_snapshot_store
+from .core import (
+    DEFAULT_CONTEXT_STORE,
+    DEFAULT_STORE,
+    audit_context_store,
+    audit_event_store,
+    build_discord_post_send_closeout_packet,
+    build_discord_auto_send_preflight,
+    build_discord_send_staging_packet,
+    build_reply_context_gate,
+    build_reply_context_gate_from_messages,
+    context_operating_mode_from_text,
+    context_passport_from_text,
+    digest_context_from_text,
+    fast_briefing,
+    get_context_document,
+    guide_reply_from_text,
+    import_visible_text,
+    list_context_documents,
+    load_events,
+    plan_discord_url_read as plan_discord_url_read_core,
+    review_reply_intent,
+    snapshot_visible_text,
+    upsert_context_document,
+    verify_chrome_extension_fill_only_dry_run,
+)
+
+MCP_DEPENDENCY_HELP = (
+    "MCP server を使うには optional dependency が必要です: "
+    "python3 -m pip install 'discord-context-bridge[mcp]'"
+)
+
+
+class _MCPRuntime(NamedTuple):
+    server_type: Any
+    api_version: int
+
+
+def _load_mcp_runtime() -> _MCPRuntime:
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ModuleNotFoundError:
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
+        return _MCPRuntime(FastMCP, 1)
+    return _MCPRuntime(MCPServer, 2)
+
+
+def _is_mcp_v2(server: Any) -> bool:
+    return getattr(server, "_dcb_mcp_api_version", None) == 2
+
+
+def build_server(
+    *,
+    store: Path = DEFAULT_STORE,
+    context_store: Path = DEFAULT_CONTEXT_STORE,
+    snapshot_store: Path | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    http_path: str = "/mcp",
+) -> Any:
+    trusted_snapshot_store = snapshot_store or default_cross_device_snapshot_store()
+    runtime = _load_mcp_runtime()
+    Server = runtime.server_type
+    if runtime.api_version == 2:
+        server = Server("discord-context-bridge")
+    else:
+        server = Server(
+            "discord-context-bridge",
+            host=host,
+            port=port,
+            streamable_http_path=http_path,
+        )
+    server._dcb_mcp_api_version = runtime.api_version
+
+    @server.tool()
+    def import_visible_discord_text(
+        text: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Discord の可視テキストを local event store に取り込みます。"""
+        return import_visible_text(
+            text,
+            path=store,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            dry_run=dry_run,
+        )
+
+    @server.tool()
+    def get_fast_briefing(limit: int = 3) -> dict[str, Any]:
+        """直近文脈の短い briefing を返します。"""
+        return fast_briefing(load_events(store), limit=limit)
+
+    @server.tool()
+    def audit_event_store_before_tunnel() -> dict[str, Any]:
+        """tunnel 公開前に event store の安全性を確認します。"""
+        return audit_event_store(store)
+
+    @server.tool()
+    def upsert_context_library_entry(
+        kind: str,
+        key: str,
+        text: str,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        """サーバー/チャンネル/スレッド文脈をローカル文脈庫へ保存します。"""
+        return upsert_context_document(kind, key, text, path=context_store, source=source)
+
+    @server.tool()
+    def list_context_library_entries() -> dict[str, Any]:
+        """ローカル文脈庫の一覧を返します。本文は返さず summary だけ返します。"""
+        return list_context_documents(context_store)
+
+    @server.tool()
+    def audit_context_library_before_tunnel() -> dict[str, Any]:
+        """tunnel 公開前にローカル文脈庫の安全性を確認します。"""
+        return audit_context_store(context_store)
+
+    @server.tool()
+    def review_reply_before_send(
+        draft: str,
+        understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+    ) -> dict[str, Any]:
+        """送信前の返信 draft を直近文脈と照合します。"""
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
+        return review_reply_intent(
+            draft,
+            load_events(store),
+            understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
+        )
+
+    @server.tool()
+    def plan_reply_context_before_draft(
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+        fetched_message_count: int | None = None,
+        max_context_messages: int = 100,
+    ) -> dict[str, Any]:
+        """返信前の起点・対象・直前10件と追加取得要否を本文なしで判定します。"""
+        return build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+            fetched_message_count=fetched_message_count,
+            max_context_messages=max_context_messages,
+        )
+
+    @server.tool()
+    def stage_discord_send_before_human_action(
+        draft: str,
+        mode: str = "reply",
+        target_url: str = "",
+        mention_label: str = "",
+        understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+    ) -> dict[str, Any]:
+        """Discord 返信/メンションの下書き入力準備 packet を返します。実送信はしません。"""
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
+        return build_discord_send_staging_packet(
+            draft,
+            load_events(store),
+            mode=mode,
+            target_url=target_url,
+            mention_label=mention_label,
+            understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
+        )
+
+    @server.tool()
+    def verify_chrome_extension_fill_only_before_action(
+        staging_packet: dict[str, Any],
+        socket_preflight: bool = False,
+        target_url_verified: bool = False,
+        socket_after_navigation: bool = False,
+        latest_target_snapshot_confirmed: bool = False,
+        reply_ui_candidates: int = 0,
+        message_box_candidates: int = 0,
+        draft_matches_copy_block: bool = False,
+        socket_pre_send: bool = False,
+    ) -> dict[str, Any]:
+        """Chrome 拡張が下書き入力してよいかを dry-run 観測だけで判定します。"""
+        return verify_chrome_extension_fill_only_dry_run(
+            staging_packet,
+            socket_preflight=socket_preflight,
+            target_url_verified=target_url_verified,
+            socket_after_navigation=socket_after_navigation,
+            latest_target_snapshot_confirmed=latest_target_snapshot_confirmed,
+            reply_ui_candidates=reply_ui_candidates,
+            message_box_candidates=message_box_candidates,
+            draft_matches_copy_block=draft_matches_copy_block,
+            socket_pre_send=socket_pre_send,
+        )
+
+    @server.tool()
+    def preflight_discord_auto_send_before_private_adapter(
+        staging_packet: dict[str, Any],
+        dry_run_report: dict[str, Any],
+        explicit_auto_send_approval: bool = False,
+        target_route_verified: bool = False,
+        transport_label: str = "",
+        transport_configured: bool = False,
+        operator_label: str = "",
+        idempotency_key: str = "",
+        rollback_plan_reviewed: bool = False,
+        audit_log_path: str = "",
+        production_runbook_fixed: bool = False,
+        target_environment: str = "test",
+    ) -> dict[str, Any]:
+        """private adapter に自動送信を許可してよいかを fail-closed で判定します。実送信はしません。"""
+        return build_discord_auto_send_preflight(
+            staging_packet,
+            dry_run_report,
+            explicit_auto_send_approval=explicit_auto_send_approval,
+            target_route_verified=target_route_verified,
+            transport_label=transport_label,
+            transport_configured=transport_configured,
+            operator_label=operator_label,
+            idempotency_key=idempotency_key,
+            rollback_plan_reviewed=rollback_plan_reviewed,
+            audit_log_path=audit_log_path,
+            production_runbook_fixed=production_runbook_fixed,
+            target_environment=target_environment,
+        )
+
+    @server.tool()
+    def closeout_discord_send_after_human_action(
+        staging_packet: dict[str, Any] | None = None,
+        dry_run_report: dict[str, Any] | None = None,
+        snapshot_receipt: dict[str, Any] | None = None,
+        external_action_state: str = "human_sent",
+        human_sent_observed: bool = False,
+        human_send_observed_at: str = "",
+        human_reviewed: bool = False,
+        observed_text_status: str = "not_checked",
+        unread_check_status: str = "not_checked",
+        unread_signal_count: int = 0,
+        observed_message_id: str = "",
+        observed_url: str = "",
+        note_label: str = "",
+    ) -> dict[str, Any]:
+        """人間送信後の状態を metadata-only で閉じます。本文、URL、snowflake は返しません。"""
+        return build_discord_post_send_closeout_packet(
+            staging_packet=staging_packet,
+            dry_run_report=dry_run_report,
+            snapshot_receipt=snapshot_receipt,
+            _trusted_snapshot_store_override=trusted_snapshot_store,
+            external_action_state=external_action_state,
+            human_sent_observed=human_sent_observed,
+            human_send_observed_at=human_send_observed_at,
+            human_reviewed=human_reviewed,
+            observed_text_status=observed_text_status,
+            unread_check_status=unread_check_status,
+            unread_signal_count=unread_signal_count,
+            observed_message_id=observed_message_id,
+            observed_url=observed_url,
+            note_label=note_label,
+        )
+
+    @server.tool()
+    def guide_reply_from_visible_text(
+        text: str,
+        draft: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        understanding_confirmed: bool = False,
+        thread_root_present: bool = False,
+        reply_target_present: bool = False,
+        prior_message_count: int = 0,
+        history_exhausted: bool = False,
+        unresolved_reference_count: int = 0,
+    ) -> dict[str, Any]:
+        """Discord の可視テキストと返信 draft から会話ガイドを返します。"""
+        gate = build_reply_context_gate(
+            thread_root_present=thread_root_present,
+            reply_target_present=reply_target_present,
+            prior_message_count=prior_message_count,
+            history_exhausted=history_exhausted,
+            unresolved_reference_count=unresolved_reference_count,
+        )
+        return guide_reply_from_text(
+            text,
+            draft,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            understanding_confirmed=understanding_confirmed,
+            reply_context_gate=gate,
+        )
+
+    @server.tool()
+    def get_context_passport_from_visible_text(
+        text: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+        server_context_key: str = "",
+        channel_context_key: str = "",
+        thread_context_key: str = "",
+    ) -> dict[str, Any]:
+        """Discord の可視テキストからスレッド文脈カードを返します。"""
+        return context_passport_from_text(
+            text,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context="\n".join(
+                part
+                for part in [
+                    get_context_document("server", server_context_key, path=context_store) if server_context_key else "",
+                    server_context,
+                ]
+                if part.strip()
+            ),
+            channel_context="\n".join(
+                part
+                for part in [
+                    get_context_document("channel", channel_context_key, path=context_store) if channel_context_key else "",
+                    channel_context,
+                ]
+                if part.strip()
+            ),
+            thread_context="\n".join(
+                part
+                for part in [
+                    get_context_document("thread", thread_context_key, path=context_store) if thread_context_key else "",
+                    thread_context,
+                ]
+                if part.strip()
+            ),
+        )
+
+    @server.tool()
+    def chew_discord_context_from_visible_text(
+        text: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+        focus: str = "",
+    ) -> dict[str, Any]:
+        """Discord の可視テキストを咀嚼し、raw 本文なしの理解メモを返します。"""
+        return digest_context_from_text(
+            text,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+            focus=focus,
+        )
+
+    @server.tool()
+    def get_context_operating_mode_from_visible_text(
+        text: str,
+        mode: str,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+        focus: str = "",
+    ) -> dict[str, Any]:
+        """triage/catchup/join-thread/boundary の運用モード packet を返します。"""
+        return context_operating_mode_from_text(
+            text,
+            mode=mode,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+            focus=focus,
+        )
+
+    @server.tool()
+    def plan_discord_url_read(url: str) -> dict[str, Any]:
+        """Discord URL をブラウザ可視テキストで読むための local-first 計画を返します。"""
+        return plan_discord_url_read_core(url)
+
+    @server.tool()
+    def snapshot_discord_url_text(
+        url: str,
+        text: str = "",
+        title: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Discord URL で開いた画面の可視テキストをローカル snapshot として保存します。"""
+        return snapshot_visible_text(
+            text=text,
+            messages=messages or [],
+            url=url,
+            title=title,
+            source="discord_url_visible_text",
+            path=trusted_snapshot_store,
+        )
+
+    @server.tool()
+    def snapshot_chrome_extension_visible_text(
+        text: str = "",
+        title: str = "",
+        url: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Chrome 拡張や DOM 抽出で見えている Discord テキストをローカル snapshot として保存します。"""
+        message_list = messages or []
+        snapshot = snapshot_visible_text(
+            text=text,
+            messages=message_list,
+            url=url,
+            title=title,
+            source="chrome_extension_dom",
+            path=trusted_snapshot_store,
+        )
+        return {
+            **snapshot,
+            "reply_context_gate": build_reply_context_gate_from_messages(message_list),
+        }
+
+    @server.tool()
+    def get_context_passport_from_discord_url(
+        url: str,
+        text: str = "",
+        title: str = "",
+        messages: list[dict[str, Any]] | None = None,
+        guild_label: str = "example-community",
+        channel_label: str = "general",
+        server_context: str = "",
+        channel_context: str = "",
+        thread_context: str = "",
+    ) -> dict[str, Any]:
+        """Discord URL の可視テキストから、保存と文脈カード作成をまとめて行います。"""
+        message_list = messages or []
+        content = text or "\n".join(
+            str(message.get("text") or message.get("content") or message.get("text_snippet") or "")
+            for message in message_list
+        )
+        snapshot = snapshot_visible_text(
+            text=content,
+            messages=message_list,
+            url=url,
+            title=title,
+            source="discord_url_visible_text",
+            path=trusted_snapshot_store,
+        )
+        passport = context_passport_from_text(
+            content,
+            guild_label=guild_label,
+            channel_label=channel_label,
+            server_context=server_context,
+            channel_context=channel_context,
+            thread_context=thread_context,
+        )
+        return {
+            **passport,
+            "snapshot": snapshot,
+            "reply_context_gate": build_reply_context_gate_from_messages(message_list),
+            "url_read_plan": plan_discord_url_read_core(url),
+        }
+
+    return server
+
+
+def main(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = None) -> int:
+    if argv is None:
+        argv = []
+    if argv:
+        raise SystemExit("discord-context-bridge-mcp は引数なしで stdio MCP server として起動します。")
+    server = build_server()
+    if run is not None:
+        run(server)
+    else:
+        server.run()
+    return 0
+
+
+DEFAULT_HTTP_AUTH_TOKEN_ENV = "DISCORD_CONTEXT_BRIDGE_MCP_HTTP_TOKEN"
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower().strip("[]")
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+class BearerAuthASGI:
+    """HTTP MCP transport 用の最小 Bearer 認証 ASGI ラッパ。
+
+    token 不一致は 401 で fail-closed。lifespan は素通し、websocket は拒否する。
+    """
+
+    def __init__(self, app: Any, token: str) -> None:
+        self._app = app
+        self._token = token
+
+    def _authorized(self, scope: dict[str, Any]) -> bool:
+        headers = dict(scope.get("headers") or [])
+        provided = headers.get(b"authorization", b"").decode("latin-1").strip()
+        expected = f"Bearer {self._token}"
+        return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "lifespan":
+            await self._app(scope, receive, send)
+            return
+        if scope.get("type") == "http" and self._authorized(scope):
+            await self._app(scope, receive, send)
+            return
+        if scope.get("type") == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        body = json.dumps({"error": "unauthorized", "auth": "bearer_token_required"}).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"www-authenticate", b"Bearer"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+def _run_http_app(app: Any, *, host: str, port: int) -> None:
+    try:
+        import uvicorn
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(MCP_DEPENDENCY_HELP) from exc
+    uvicorn.run(app, host=host, port=port)
+
+
+def _streamable_http_app(server: Any, *, host: str, path: str) -> Any:
+    if _is_mcp_v2(server):
+        return server.streamable_http_app(host=host, streamable_http_path=path)
+    return server.streamable_http_app()
+
+
+def _run_streamable_http_server(
+    server: Any, *, host: str, port: int, path: str
+) -> None:
+    if _is_mcp_v2(server):
+        server.run(
+            transport="streamable-http",
+            host=host,
+            port=port,
+            streamable_http_path=path,
+        )
+        return
+    server.run(transport="streamable-http", mount_path=path)
+
+
+def build_http_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Discord Context Bridge を streamable HTTP MCP server として起動する"
+    )
+    parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
+    parser.add_argument("--context-store", type=Path, default=DEFAULT_CONTEXT_STORE)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--path", default="/mcp")
+    parser.add_argument(
+        "--require-safe-store",
+        action="store_true",
+        help="event store 監査は既定で有効。本フラグは後方互換のため残置 (指定は無害)",
+    )
+    parser.add_argument(
+        "--allow-unsafe-store",
+        action="store_true",
+        help="起動前の event store 監査を明示的にスキップする (非推奨)",
+    )
+    parser.add_argument(
+        "--auth-token-env",
+        default=DEFAULT_HTTP_AUTH_TOKEN_ENV,
+        help="Bearer token を読む環境変数名。既定は "
+        f"{DEFAULT_HTTP_AUTH_TOKEN_ENV}",
+    )
+    parser.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="認証なしで HTTP MCP server を起動する (非推奨。localhost 限定運用のみ)",
+    )
+    return parser
+
+
+def main_http(argv: list[str] | None = None, *, run: Callable[[Any], None] | None = None) -> int:
+    parser = build_http_parser()
+    args = parser.parse_args(argv)
+    if args.require_safe_store and args.allow_unsafe_store:
+        raise SystemExit("--require-safe-store と --allow-unsafe-store は同時に指定できません。")
+    if not args.allow_unsafe_store:
+        audit = audit_event_store(args.store)
+        if not audit["safe_for_tunnel"]:
+            raise SystemExit(
+                "保存データの監査に失敗しました: "
+                f"外部公開前に確認が必要です issue_count={audit['issue_count']} store={audit['store']}"
+            )
+    token = os.environ.get(args.auth_token_env, "").strip()
+    if not token and not args.allow_unauthenticated:
+        raise SystemExit(
+            "HTTP MCP server は認証必須です: "
+            f"環境変数 {args.auth_token_env} に Bearer token を設定するか、"
+            "localhost 限定運用に限り --allow-unauthenticated を明示してください。"
+        )
+    if not token and not _is_loopback_host(args.host):
+        raise SystemExit(
+            "--allow-unauthenticated は loopback host 限定です: "
+            f"host={args.host} では認証なし起動を許可しません。"
+            f"環境変数 {args.auth_token_env} に token を設定してください。"
+        )
+    server = build_server(
+        store=args.store,
+        context_store=args.context_store,
+        host=args.host,
+        port=args.port,
+        http_path=args.path,
+    )
+    if token:
+        app = BearerAuthASGI(
+            _streamable_http_app(server, host=args.host, path=args.path), token
+        )
+        if run is not None:
+            run(app)
+        else:
+            _run_http_app(app, host=args.host, port=args.port)
+        return 0
+    if run is not None:
+        run(server)
+    else:
+        _run_streamable_http_server(
+            server, host=args.host, port=args.port, path=args.path
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

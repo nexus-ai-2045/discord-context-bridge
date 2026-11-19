@@ -1,6 +1,13 @@
+.venv/
 __pycache__/
-*.pyc
 .pytest_cache/
-.DS_Store
+.ruff_cache/
+.local/
+*.pyc
+*.ndjson
 .env
 .env.*
+.codex/
+
+*.egg-info/
+

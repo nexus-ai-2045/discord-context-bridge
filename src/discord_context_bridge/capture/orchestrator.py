@@ -1,0 +1,230 @@
+"""Pure resumable state machine for autonomous full Discord capture."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from hashlib import sha256
+import re
+from typing import Any, Mapping
+
+from ..acquisition_gate import capture_id_from_attempt_identity
+
+
+_VERSION = "dcb-full-capture-orchestrator.v1"
+_ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_ATTEMPT_IDENTITY_SCHEMA = "dcb-capture-attempt-identity.v1"
+_SUPPORTED_ROUTES = {
+    "in_app_browser",
+    "chrome_extension",
+    "rest_backfill",
+    "saved_artifacts",
+    "discord_desktop_accessibility",
+}
+
+_TRANSITIONS = {
+    ("received", "visible_snapshot_saved"): "route_preflight",
+    ("route_preflight", "route_ready"): "traversing_to_oldest",
+    ("traversing_to_oldest", "oldest_reached"): "traversing_to_latest",
+    ("traversing_to_latest", "latest_reached"): "attachment_inventory",
+    ("attachment_inventory", "attachment_inventory_complete"): "downloading_attachments",
+    ("downloading_attachments", "attachments_saved"): "reconciling",
+    ("reconciling", "reconciled"): "stable_rescan",
+    ("stable_rescan", "stable_rescan_complete"): "gate_evaluating",
+    ("gate_evaluating", "gate_partial"): "stable_rescan",
+}
+_TERMINAL_STATES = {"full_closed", "blocked_closed"}
+
+
+def _digest(*parts: str) -> str:
+    framed = "".join(f"{len(part)}:{part}" for part in parts)
+    return sha256(framed.encode("utf-8")).hexdigest()
+
+
+def capture_watermark_digest(message_id: str) -> str:
+    """Bind an observed message ID to the persisted watermark digest format."""
+
+    return _digest("watermark", str(message_id))
+
+
+def new_capture_run(
+    target_key: str,
+    route: str,
+    upper_watermark: str,
+    *,
+    retry_budget: int = 3,
+    attempt_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a deterministic run envelope safe to persist and resume."""
+    if route not in _SUPPORTED_ROUTES:
+        raise ValueError(f"unsupported capture route: {route}")
+    if retry_budget < 0:
+        raise ValueError("retry_budget must be non-negative")
+    base_identity = _digest(_VERSION, target_key, route, upper_watermark)
+    capture_id = base_identity
+    attempt_identity: dict[str, str] | None = None
+    if attempt_id is not None:
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID_RE.fullmatch(attempt_id):
+            raise ValueError("attempt_id must be a safe opaque identifier")
+        attempt_identity = {
+            "schema": _ATTEMPT_IDENTITY_SCHEMA,
+            "base_capture_id": base_identity,
+            "attempt_id": attempt_id,
+        }
+        capture_id = capture_id_from_attempt_identity(attempt_identity)
+    run = {
+        "schema": _VERSION,
+        "capture_id": capture_id,
+        "idempotency_key": _digest("idempotency", capture_id),
+        "target_digest": _digest("target", target_key),
+        "upper_watermark_digest": capture_watermark_digest(upper_watermark),
+        "route": route,
+        "state": "received",
+        "resume_state": None,
+        "blocker": None,
+        "pending_approval_action": None,
+        "automatic_fallback_attempted": False,
+        "retry": {"budget": retry_budget, "used": 0},
+        "lanes": {
+            "immediate_visible": {
+                "status": "pending",
+                "terminal_for_full_capture": False,
+            },
+            "background_full": {
+                "status": "running",
+                "persistent": True,
+            },
+        },
+        "checkpoints": [],
+    }
+    if attempt_identity is not None:
+        run["capture_identity"] = attempt_identity
+    return run
+
+
+def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> dict[str, Any]:
+    """Apply one event without mutating the persisted input envelope."""
+    updated = deepcopy(run)
+    event_data = dict(event) if isinstance(event, Mapping) else {}
+    event_name = str(event_data.get("type") or event)
+    state = updated["state"]
+    if state in _TERMINAL_STATES:
+        raise ValueError(f"cannot advance terminal state: {state}")
+
+    if event_name in {"auth_required", "human_approval_required"}:
+        if updated.get("blocker") is not None:
+            # 既存 blocker が未解決のまま新しい blocker event が来た場合は
+            # resume_state / blocker を上書きせず reject する (P4-4)。
+            raise ValueError(
+                f"cannot raise {event_name}: unresolved blocker "
+                f"{updated['blocker']!r} is still pending"
+            )
+        updated["resume_state"] = state
+        updated["state"] = (
+            "paused_auth" if event_name == "auth_required" else "paused_human_approval"
+        )
+        updated["blocker"] = event_name
+        updated["automatic_fallback_attempted"] = False
+        # fallback action の承認を要求した場合は、要求 action の識別子を
+        # checkpoint 側で検証できるよう保持する (P4-3)。
+        updated["pending_approval_action"] = (
+            event_data.get("requested_action")
+            if event_name == "human_approval_required"
+            else None
+        )
+    elif event_name in {"auth_resolved", "human_approval_granted"}:
+        expected = (
+            "paused_auth" if event_name == "auth_resolved" else "paused_human_approval"
+        )
+        if state != expected or not updated.get("resume_state"):
+            raise ValueError(f"invalid transition: {state} + {event_name}")
+        if event_name == "human_approval_granted":
+            pending_action = updated.get("pending_approval_action")
+            if event_data.get("capture_id") != updated["capture_id"]:
+                raise ValueError("human approval is not scoped to this capture/action")
+            # requested_action を伴わない旧来の pause 経路 (文字列 event) では
+            # pending_approval_action が None になる。この場合は action 一致を
+            # 要求せず resume 可能に保つ (P4-3 の後方互換)。
+            if pending_action is not None and (
+                event_data.get("approved_action") != pending_action
+            ):
+                raise ValueError("human approval is not scoped to this capture/action")
+        updated["state"] = updated["resume_state"]
+        updated["resume_state"] = None
+        updated["blocker"] = None
+        updated["pending_approval_action"] = None
+    elif event_name == "retryable_failure":
+        retry = updated["retry"]
+        retry["used"] += 1
+        if retry["used"] > retry["budget"]:
+            updated["state"] = "blocked_closed"
+            updated["blocker"] = "retry_budget_exhausted"
+            updated["lanes"]["background_full"]["status"] = "blocked"
+        else:
+            updated["resume_state"] = state
+            updated["state"] = "retry_wait"
+            updated["blocker"] = "retryable_failure"
+    elif event_name == "retry_due":
+        if state != "retry_wait" or not updated.get("resume_state"):
+            raise ValueError(f"invalid transition: {state} + {event_name}")
+        updated["state"] = updated["resume_state"]
+        updated["resume_state"] = None
+        updated["blocker"] = None
+    else:
+        if state == "received" and event_name == "route_ready" and updated["route"] in {
+            "rest_backfill", "saved_artifacts"
+        }:
+            next_state = "traversing_to_oldest"
+        elif state == "gate_evaluating" and event_name == "gate_full":
+            gate = event_data.get("gate")
+            if not isinstance(gate, Mapping) or not (
+                gate.get("status") == "full"
+                and gate.get("full_capture_confirmed") is True
+                and event_data.get("capture_id") == updated["capture_id"]
+                # gate payload 自体の capture 紐付けも要求する。未設定 (旧 gate 結果)
+                # は許容し、値がある場合は run と一致していることを要求する。
+                and gate.get("capture_id", updated["capture_id"]) == updated["capture_id"]
+                and gate.get("outbound_actions") == "disabled"
+            ):
+                raise ValueError("gate_full requires a bound strict full-capture result")
+            next_state = "full_closed"
+            updated["gate_evidence_digest"] = _digest(
+                "gate", updated["capture_id"], str(sorted(gate.items()))
+            )
+        elif state == "gate_evaluating" and event_name == "gate_blocked":
+            # evaluate_full_capture が blocked を返した場合は orchestrator を
+            # 終端状態 (blocked_closed) に close する (P4-5)。
+            # gate payload 自体に capture 紐付けを要求し、別 run の gate 結果で
+            # この run を close できないようにする (PR #32 review P2)。
+            gate = event_data.get("gate")
+            if not isinstance(gate, Mapping) or not (
+                gate.get("status") == "blocked"
+                and event_data.get("capture_id") == updated["capture_id"]
+                and gate.get("capture_id") == updated["capture_id"]
+            ):
+                raise ValueError("gate_blocked requires a bound blocked full-capture result")
+            next_state = "blocked_closed"
+            updated["blocker"] = "full_capture_gate_blocked"
+            updated["gate_evidence_digest"] = _digest(
+                "gate", updated["capture_id"], str(sorted(gate.items()))
+            )
+        else:
+            next_state = _TRANSITIONS.get((state, event_name))
+        if next_state is None:
+            raise ValueError(f"invalid transition: {state} + {event_name}")
+        updated["state"] = next_state
+
+    if event_name == "visible_snapshot_saved":
+        updated["lanes"]["immediate_visible"]["status"] = "saved"
+    if updated["state"] == "full_closed":
+        updated["lanes"]["background_full"]["status"] = "full"
+    if updated["state"] == "blocked_closed":
+        updated["lanes"]["background_full"]["status"] = "blocked"
+
+    updated["checkpoints"].append(
+        {
+            "sequence": len(updated["checkpoints"]) + 1,
+            "event": event_name,
+            "state": updated["state"],
+        }
+    )
+    return updated
