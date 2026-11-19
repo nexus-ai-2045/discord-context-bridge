@@ -134,7 +134,6 @@ def prepare_reply_consultation(
     result["reply_context_gate"] = gate
     if not gate.get("reply_generation_allowed"):
         return {**result, "reason": gate.get("reason_code") or "reply_context_required"}
-    # 明示指定が空なら不正とし、既定checkoutへ黙って切替えない。
     configured = os.environ.get("LCS_REPO_ROOT") if lcs_root is None else str(lcs_root)
     if configured is None:
         return {**result, "reason": "lcs_root_missing"}
