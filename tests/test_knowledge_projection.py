@@ -969,3 +969,31 @@ def test_topic_relationships_require_human_review_provenance(tmp_path):
             output_root=tmp_path / "wiki",
             topic_registry=registry,
         )
+
+
+def test_projection_dedupes_ordinal_zero_observation_without_message_id(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Knowledge Wiki"
+    for sequence, text in ((1, "old body #topic"), (2, "edited body #topic")):
+        record = {
+            "event_type": "message_observation",
+            "target_key": "target",
+            "stream_id": "target",
+            "stream_sequence": sequence,
+            "message_id": None,
+            "ordinal": 0,
+            "author_label": "Alice",
+            "visible_timestamp": "2026-07-31T01:00:00+00:00",
+            "text": text,
+            "captured_at": f"2026-07-31T0{sequence}:00:00+00:00",
+            "source": "structured",
+            "content_hash": str(sequence),
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    result = export_knowledge_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    assert result["projected_event_count"] == 1
