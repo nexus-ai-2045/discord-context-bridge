@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
 
 from .capture.store import (
     CaptureCheckpointStore,
@@ -4733,6 +4734,42 @@ DISCORD_FILL_ONLY_FORBIDDEN_ACTIONS = (
 )
 
 
+_POST_SEND_MESSAGE_HOSTS = {"discord.com", "discordapp.com"}
+_POST_SEND_SNOWFLAKE_RE = re.compile(r"[0-9]{17,20}")
+
+
+def _post_send_message_target(url: str) -> tuple[str, str, str] | None:
+    """Return (guild or @me, channel, message) for one exact Discord message URL.
+
+    Path parsing is delegated to the shared url_identity parser so DM messages
+    use the same identity as bridge-intake. Host, ID length, and query/fragment
+    limits match DISCORD_MESSAGE_URL_RE for guild URLs, except that IDs must be
+    ASCII digits; non-ASCII Unicode digits accepted by ``\\d`` are rejected.
+    """
+    candidate = url.strip()
+    head = candidate.split("?", 1)[0]
+    try:
+        parsed = urlsplit(head)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc not in _POST_SEND_MESSAGE_HOSTS
+        or "#" in head
+        or len(parsed.path.split("/")) != 5
+    ):
+        return None
+    parts = parse_discord_target_url(candidate)
+    if parts is None or len(parts) != 3:
+        return None
+    scope, channel, message = parts
+    if scope != "@me" and not _POST_SEND_SNOWFLAKE_RE.fullmatch(scope):
+        return None
+    if not all(_POST_SEND_SNOWFLAKE_RE.fullmatch(value) for value in (channel, message)):
+        return None
+    return scope, channel, message
+
+
 def _canonical_discord_message_url(url: str) -> str:
     match = DISCORD_MESSAGE_URL_RE.fullmatch(url.strip())
     if match is None:
@@ -5264,7 +5301,7 @@ def _resolve_saved_post_send_snapshot(
     if not SAVED_SNAPSHOT_CAPTURE_ID_RE.fullmatch(str(record.get("event_id") or "")):
         blockers.append("post_send_snapshot_record_capture_id_invalid")
     if (
-        not DISCORD_MESSAGE_URL_RE.fullmatch(record_url)
+        _post_send_message_target(record_url) is None
         or not record_target_key
         or record_target_key != target_key_for_url(record_url)
         or record.get("stream_id") != record_target_key
@@ -5386,7 +5423,7 @@ def build_discord_post_send_closeout_packet(
     snapshot_age_seconds: float | None = None
     if snapshot_observed_time is not None:
         snapshot_age_seconds = (closeout_time - snapshot_observed_time).total_seconds()
-    observed_target_valid = bool(DISCORD_MESSAGE_URL_RE.fullmatch(observed_url.strip()))
+    observed_target_valid = _post_send_message_target(observed_url) is not None
     snapshot_target_match = bool(
         observed_target_valid
         and snapshot_target_key
@@ -5458,13 +5495,13 @@ def build_discord_post_send_closeout_packet(
             operation_binding_blockers.append("post_send_operation_target_mismatch")
         elif str(staging_packet.get("mode") or "").strip().casefold() == "reply":
             reply_reference = str(snapshot_record.get("reply_to_message_id") or "")
-            captured_target = DISCORD_MESSAGE_URL_RE.fullmatch(str(snapshot_record.get("url") or ""))
+            captured_target = _post_send_message_target(str(snapshot_record.get("url") or ""))
             if captured_target is None or not re.fullmatch(r"[0-9]{17,20}", reply_reference):
                 operation_binding_blockers.append("post_send_reply_reference_missing")
             else:
                 reply_target_url = (
-                    f"https://discord.com/channels/{captured_target['guild']}/"
-                    f"{captured_target['channel']}/{reply_reference}"
+                    f"https://discord.com/channels/{captured_target[0]}/"
+                    f"{captured_target[1]}/{reply_reference}"
                 )
                 if staging_operation_binding.get("target_fingerprint") != target_key_for_url(reply_target_url):
                     operation_binding_blockers.append("post_send_reply_reference_mismatch")
