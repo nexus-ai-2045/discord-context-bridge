@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 2959247adb862fba23a9ce81ef4f8cab5be0ee17
+ssot_commit: c7ca535a2cdf320e340def6aaed1dc87402dd572
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 36a9bcc1fe73532c72a311694a351533ffe525c1df8f44dab735413ac519c39d
-contract_checksum: 8aa45df496cbbb57aea493992e65d5b1a1df3c34571b9ed650d344e3a7fbf9b3
-generated_at: 2026-11-19T10:34:28+00:00
+contract_checksum: a96dee7a5b5cb457d8bc7128e441ce09975ca708b830a459b941a849d28c6238
+generated_at: 2026-11-19T14:01:20+00:00
 runtime_target: grok
 ---
 
@@ -81,7 +81,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 ## ローカルcache解決と鮮度判断
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
-- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- user configは既定で、`platformdirs` が返すこの OS の標準の設定フォルダの `discord-context-bridge/config.json` とする（Mac は `~/Library/Application Support/`、Windows は `%APPDATA%`、Linux は `$XDG_CONFIG_HOME` または `~/.config`）。新しい場所に無く旧い `~/.config/discord-context-bridge/config.json` だけがある時は旧い場所を読み、標準エラーに移し替えの案内を出す。自動では移さず、消さない。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
 - `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
 - `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
 - Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
