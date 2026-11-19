@@ -198,6 +198,20 @@ def run_process(
         time.sleep(0.01)
     else:
         returncode = process.returncode
+        while any(reader.is_alive() for reader in readers):
+            if limit_reached.is_set():
+                _terminate_process_tree(process)
+                returncode = 125
+                failure_stage = "output_limit"
+                break
+            if deadline is not None and time.perf_counter() >= deadline:
+                _terminate_process_tree(process)
+                returncode = 124
+                failure_stage = "timeout"
+                break
+            if deadline is None:
+                break
+            time.sleep(0.01)
 
     join_timeout = (
         POST_TERMINATE_READER_JOIN

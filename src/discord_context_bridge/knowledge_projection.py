@@ -211,6 +211,20 @@ def _latest_by_target(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return [entry[1] for entry in latest.values()]
 
 
+def message_observation_identity(record: dict[str, Any], index: int) -> str:
+    message_id = record.get("message_id")
+    if message_id:
+        return str(message_id)
+    ordinal = record.get("ordinal")
+    return "|".join(
+        [
+            str(index if ordinal is None else ordinal),
+            str(record.get("author_label") or ""),
+            str(record.get("visible_timestamp") or ""),
+        ]
+    )
+
+
 def _projection_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     structured: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
     legacy: list[dict[str, Any]] = []
@@ -219,16 +233,7 @@ def _projection_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any
             legacy.append(record)
             continue
         target = str(record.get("target_key") or record.get("stream_id") or "unknown")
-        message_identity = str(
-            record.get("message_id")
-            or "|".join(
-                [
-                    str(record.get("ordinal") or index),
-                    str(record.get("author_label") or ""),
-                    str(record.get("visible_timestamp") or ""),
-                ]
-            )
-        )
+        message_identity = message_observation_identity(record, index)
         sequence = int(record.get("stream_sequence") or index + 1)
         key = (target, message_identity)
         previous = structured.get(key)

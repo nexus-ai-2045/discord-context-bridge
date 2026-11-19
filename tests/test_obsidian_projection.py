@@ -247,3 +247,223 @@ def test_export_cli_returns_metadata_only_json(tmp_path, capsys):
     assert str(snapshot_store) not in output
     assert str(output_root) not in output
     assert '"paths_returned": false' in output
+
+
+def _write_message_observation(
+    path: Path, *, sequence: int, message_id: str, author: str, text: str
+) -> None:
+    record = {
+        "schema": "discord_context_bridge_text_snapshot_observation.v1",
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": sequence,
+        "message_id": message_id,
+        "ordinal": 0,
+        "author_label": author,
+        "visible_timestamp": "",
+        "captured_at": f"2026-07-16T1{sequence}:00:00+09:00",
+        "source": "structured",
+        "content_hash": f"hash-{sequence}",
+        "text": text,
+        "private_local_only": True,
+        "outbound_actions": "disabled",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def test_export_keeps_every_message_observation_in_the_month_note(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_message_observation(
+        snapshot_store, sequence=1, message_id="m1", author="member-a", text="一件目の本文"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=2, message_id="m2", author="member-b", text="二件目の本文"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=3, message_id="m1", author="member-a", text="一件目の編集後"
+    )
+
+    result = export_obsidian_projection(
+        snapshot_store=snapshot_store, output_root=output_root
+    )
+
+    assert result["projected_target_count"] == 1
+    month_notes = list((output_root / "Channels").rglob("* 2026-07.md"))
+    assert len(month_notes) == 1
+    note = month_notes[0].read_text(encoding="utf-8")
+    assert "二件目の本文" in note
+    assert "一件目の編集後" in note
+    assert "一件目の本文" not in note
+    assert "message_count: 2" in note
+    assert note.index("一件目の編集後") < note.index("二件目の本文")
+
+
+def test_export_block_id_of_unidentified_message_follows_ledger_identity(tmp_path):
+    from discord_context_bridge import obsidian_projection
+
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    other_target = {
+        "target_key": "safe-target-b",
+        "stream_id": "safe-target-b",
+        "stream_sequence": 1,
+        "captured_at": "2026-07-16T10:00:00+09:00",
+        "source": "visible_text",
+        "content_hash": "other",
+        "text": "member-c: 別の場所の本文",
+    }
+    snapshot_store.parent.mkdir(parents=True, exist_ok=True)
+    with snapshot_store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(other_target, ensure_ascii=False) + "\n")
+    record = {
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": 2,
+        "message_id": None,
+        "ordinal": None,
+        "author_label": "member-a",
+        "visible_timestamp": "",
+        "captured_at": "2026-07-16T12:00:00+09:00",
+        "source": "structured",
+        "content_hash": "hash-2",
+        "text": "識別子なし",
+    }
+    with snapshot_store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    note = next(
+        (output_root / "Channels" / obsidian_projection._target_label(record)).glob("* 2026-07.md")
+    ).read_text(encoding="utf-8")
+    expected = obsidian_projection._block_id(
+        obsidian_projection._target_label(record), "1|member-a|"
+    )
+    assert f"^{expected}" in note
+
+
+def test_export_splits_message_observations_by_month(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_message_observation(
+        snapshot_store, sequence=1, message_id="m1", author="member-a", text="七月の本文"
+    )
+    record = {
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": 2,
+        "message_id": "m2",
+        "author_label": "member-b",
+        "captured_at": "2026-08-02T10:00:00+09:00",
+        "source": "structured",
+        "content_hash": "hash-aug",
+        "text": "八月の本文",
+    }
+    with snapshot_store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    july = next((output_root / "Channels").rglob("* 2026-07.md")).read_text(encoding="utf-8")
+    august = next((output_root / "Channels").rglob("* 2026-08.md")).read_text(encoding="utf-8")
+    assert "七月の本文" in july and "八月の本文" not in july
+    assert "八月の本文" in august and "七月の本文" not in august
+    index = next((output_root / "Channels").rglob("* 概要.md")).read_text(encoding="utf-8")
+    assert "2026-07" in index and "2026-08" in index
+
+
+def test_export_prefers_message_observations_over_snapshot_for_same_target(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_snapshot(snapshot_store, sequence=1, text="member-a: 全体の本文", content_hash="snap")
+    _write_message_observation(
+        snapshot_store, sequence=2, message_id="m1", author="member-b", text="発言ごとの本文"
+    )
+
+    result = export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    assert result["projected_target_count"] == 1
+    notes = list((output_root / "Channels").rglob("* 2026-07.md"))
+    assert len(notes) == 1
+    note = notes[0].read_text(encoding="utf-8")
+    assert "発言ごとの本文" in note
+    assert "全体の本文" not in note
+
+
+def test_export_keeps_reobserved_message_in_its_first_month(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_message_observation(
+        snapshot_store, sequence=1, message_id="m1", author="member-a", text="七月の一件目"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=2, message_id="m2", author="member-b", text="七月の二件目"
+    )
+    record = {
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": 3,
+        "message_id": "m1",
+        "author_label": "member-a",
+        "captured_at": "2026-08-02T10:00:00+09:00",
+        "source": "structured",
+        "content_hash": "hash-3",
+        "text": "七月の一件目",
+    }
+    with snapshot_store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    july = next((output_root / "Channels").rglob("* 2026-07.md")).read_text(encoding="utf-8")
+    assert "七月の一件目" in july and "七月の二件目" in july
+    assert "message_count: 2" in july
+    assert list((output_root / "Channels").rglob("* 2026-08.md")) == []
+
+
+def test_export_uses_latest_title_for_every_month_of_a_target(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    rows = [
+        (1, "m1", "2026-07-16T10:00:00+09:00", "Old title", "七月の本文"),
+        (2, "m2", "2026-08-02T10:00:00+09:00", "Old title", "八月の本文"),
+        (3, "m1", "2026-09-03T10:00:00+09:00", "New title", "七月の本文"),
+    ]
+    snapshot_store.parent.mkdir(parents=True, exist_ok=True)
+    for sequence, message_id, captured_at, title, text in rows:
+        record = {
+            "event_type": "message_observation",
+            "target_key": "safe-target-a",
+            "stream_id": "safe-target-a",
+            "stream_sequence": sequence,
+            "message_id": message_id,
+            "author_label": "member-a",
+            "captured_at": captured_at,
+            "title": title,
+            "source": "structured",
+            "content_hash": f"hash-{sequence}",
+            "text": text,
+        }
+        with snapshot_store.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    channel = next((output_root / "Channels").iterdir())
+    names = sorted(path.name for path in channel.glob("*.md"))
+    assert names == [
+        "New title 2026-07.md",
+        "New title 2026-08.md",
+        "New title メモ.md",
+        "New title 概要.md",
+    ]
+    for month in ("2026-07", "2026-08"):
+        note = (channel / f"New title {month}.md").read_text(encoding="utf-8")
+        assert "[[New title メモ]]" in note
