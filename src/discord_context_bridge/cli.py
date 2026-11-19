@@ -27,6 +27,7 @@ from .local_config import (
     configured_discord_user_data_dir,
     default_config_path,
     default_cross_device_snapshot_store,
+    legacy_config_notice,
     local_config_error_payload,
     resolve_shared_snapshot_root,
 )
@@ -2698,6 +2699,9 @@ def _promote_cwd_local_snapshot_args(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    notice = legacy_config_notice(getattr(args, "config_path", None))
+    if notice:
+        print(notice, file=sys.stderr)
     try:
         _promote_cwd_local_snapshot_args(args)
         return int(args.handler(args))

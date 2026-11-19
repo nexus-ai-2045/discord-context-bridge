@@ -2,10 +2,16 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
+from discord_context_bridge import local_config
 from discord_context_bridge.local_config import (
     build_configure_local_cache,
     classify_snapshot_store,
+    default_config_path,
     default_cross_device_snapshot_store,
+    legacy_config_notice,
+    legacy_config_path,
     promote_default_snapshot_store,
     resolve_shared_snapshot_root,
 )
@@ -212,3 +218,55 @@ def test_cache_inventory_cli_reports_malformed_config_in_human_language(tmp_path
     assert payload["state"] == "blocked"
     assert payload["message"] == "ローカルcache設定を読めません。JSON形式と読取権限を確認してください。"
     assert str(tmp_path) not in rendered
+
+
+def _write_config(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    return path
+
+
+def test_default_config_path_prefers_env_then_platform_then_legacy(tmp_path: Path) -> None:
+    platform_path = tmp_path / "platform" / "discord-context-bridge" / "config.json"
+    home = tmp_path / "home"
+
+    assert default_config_path(home=home, env={}, platform_path=platform_path) == platform_path
+
+    legacy = _write_config(legacy_config_path(home=home))
+    assert legacy == home / ".config" / "discord-context-bridge" / "config.json"
+    assert default_config_path(home=home, env={}, platform_path=platform_path) == legacy
+
+    _write_config(platform_path)
+    assert default_config_path(home=home, env={}, platform_path=platform_path) == platform_path
+
+    override = tmp_path / "override.json"
+    assert default_config_path(
+        home=home, env={"DISCORD_CONTEXT_BRIDGE_CONFIG": str(override)}, platform_path=platform_path
+    ) == override
+
+
+def test_legacy_config_notice_only_when_reading_legacy_location(tmp_path: Path) -> None:
+    platform_path = tmp_path / "platform" / "discord-context-bridge" / "config.json"
+    home = tmp_path / "home"
+    legacy = legacy_config_path(home=home)
+
+    assert legacy_config_notice(legacy, home=home, platform_path=platform_path) is None
+    _write_config(legacy)
+    notice = legacy_config_notice(legacy, home=home, platform_path=platform_path)
+    assert notice is not None
+    assert str(tmp_path) not in notice
+    assert legacy_config_notice(platform_path, home=home, platform_path=platform_path) is None
+    assert legacy_config_notice(None, home=home, platform_path=platform_path) is None
+    assert legacy_config_notice(legacy, home=home, platform_path=legacy) is None
+
+
+def test_platform_config_path_uses_roaming_app_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_user_config_path(appname: str, **kwargs: object) -> Path:
+        calls.append((appname, kwargs))
+        return tmp_path / appname
+
+    monkeypatch.setattr(local_config.platformdirs, "user_config_path", fake_user_config_path)
+    assert local_config.platform_config_path() == tmp_path / "discord-context-bridge" / "config.json"
+    assert calls == [("discord-context-bridge", {"appauthor": False, "roaming": True})]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 import re
 import struct
 import subprocess
@@ -11,7 +10,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Sequence
+
+import platformdirs
 
 
 SIMPLE_INITIAL_MAGIC = 0xFCFB6D1BA7725C30
@@ -103,24 +104,15 @@ def _process_user_data_dirs(commands: Iterable[str]) -> list[Path]:
     return paths
 
 
-def _platform_default_user_data_dir(
-    *, platform_name: str, env: Mapping[str, str], home: Path
-) -> Path | None:
-    if platform_name.startswith("win"):
-        appdata = env.get("APPDATA", "").strip()
-        return Path(appdata) / "discord" if appdata else None
-    if platform_name == "darwin":
-        return home / "Library" / "Application Support" / "discord"
-    config_home = env.get("XDG_CONFIG_HOME", "").strip()
-    return (Path(config_home) if config_home else home / ".config") / "discord"
+def platform_default_user_data_dir() -> Path:
+    return platformdirs.user_config_path("discord", appauthor=False, roaming=True)
 
 
 def resolve_discord_user_data_dir(
     *,
     explicit: Path | None = None,
     platform_name: str | None = None,
-    env: Mapping[str, str] | None = None,
-    home: Path | None = None,
+    default_user_data_dir: Path | None = None,
     process_commands: Sequence[str] | None = None,
 ) -> ResolvedUserDataDir:
     if explicit is not None:
@@ -133,14 +125,8 @@ def resolve_discord_user_data_dir(
         if candidate.is_dir():
             return ResolvedUserDataDir(candidate, "running_process")
 
-    env_value = env if env is not None else os.environ
-    home_value = home if home is not None else Path.home()
-    candidate = _platform_default_user_data_dir(
-        platform_name=platform_value,
-        env=env_value,
-        home=home_value,
-    )
-    if candidate is not None and candidate.is_dir():
+    candidate = default_user_data_dir if default_user_data_dir is not None else platform_default_user_data_dir()
+    if candidate.is_dir():
         return ResolvedUserDataDir(candidate, "platform_default")
     return ResolvedUserDataDir(None, "unresolved")
 
@@ -232,8 +218,7 @@ def probe_discord_desktop_cache(
     explicit_user_data_dir: Path | None = None,
     include_labels: bool = False,
     platform_name: str | None = None,
-    env: Mapping[str, str] | None = None,
-    home: Path | None = None,
+    default_user_data_dir: Path | None = None,
     process_commands: Sequence[str] | None = None,
     max_files: int = 50_000,
     max_scan_seconds: float = 30.0,
@@ -252,8 +237,7 @@ def probe_discord_desktop_cache(
     resolved = resolve_discord_user_data_dir(
         explicit=explicit_user_data_dir,
         platform_name=platform_name,
-        env=env,
-        home=home,
+        default_user_data_dir=default_user_data_dir,
         process_commands=process_commands,
     )
     platform_value = platform_name or sys.platform

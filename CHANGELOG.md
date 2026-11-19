@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- 次の変更をここに記録します。
+- 設定ファイルと Discord 本体の置き場所の既定値を、自前の OS 判定ではなく `platformdirs` で求めるようにしました。依存関係に `platformdirs` を加えました。
+- 設定ファイルの既定の置き場所が、Mac では `~/Library/Application Support/discord-context-bridge/`、Windows では `%APPDATA%\discord-context-bridge\` に変わります。Linux は変わりません。新しい場所に設定が無く旧い `~/.config/discord-context-bridge/config.json` がある時は旧い場所を読み続け、標準エラーに移し替えの案内を出します。自動では移しません。
+- `resolve_discord_user_data_dir` と `probe_discord_desktop_cache` の `env`・`home` 引数を、既定の置き場所を直接渡す `default_user_data_dir` に置き換えました。
 
 ## 0.12.0 - 2026-10-15
 

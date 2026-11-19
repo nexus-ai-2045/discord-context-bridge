@@ -63,7 +63,7 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 ## ローカルcache解決と鮮度判断
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
-- user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- user configは既定で、`platformdirs` が返すこの OS の標準の設定フォルダの `discord-context-bridge/config.json` とする（Mac は `~/Library/Application Support/`、Windows は `%APPDATA%`、Linux は `$XDG_CONFIG_HOME` または `~/.config`）。新しい場所に無く旧い `~/.config/discord-context-bridge/config.json` だけがある時は旧い場所を読み、標準エラーに移し替えの案内を出す。自動では移さず、消さない。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
 - `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
 - `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
 - Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
