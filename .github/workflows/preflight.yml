@@ -1,0 +1,14 @@
+name: preflight
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  gate:
+    uses: nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml@e0ef434ae39163fe1b372a18ef3e52dc4c705e01
+    with:
+      preflight-ref: e0ef434ae39163fe1b372a18ef3e52dc4c705e01
