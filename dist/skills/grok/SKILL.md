@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 8861bbced571c8c09e43a91600395f4ee10d2262
+ssot_commit: 2959247adb862fba23a9ce81ef4f8cab5be0ee17
 manifest_version: discord_context_bridge_capability_manifest.v1
 manifest_checksum: 36a9bcc1fe73532c72a311694a351533ffe525c1df8f44dab735413ac519c39d
 contract_checksum: 8aa45df496cbbb57aea493992e65d5b1a1df3c34571b9ed650d344e3a7fbf9b3
-generated_at: 2026-11-18T16:12:35+00:00
+generated_at: 2026-11-19T10:34:28+00:00
 runtime_target: grok
 ---
 
