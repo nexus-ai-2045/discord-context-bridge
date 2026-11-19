@@ -33,6 +33,30 @@ _TRANSITIONS = {
     ("gate_evaluating", "gate_partial"): "stable_rescan",
 }
 _TERMINAL_STATES = {"full_closed", "blocked_closed"}
+_FAILURE_REASON_CODES = frozenset({
+    "unknown", "timeout", "debugger_unattached", "navigation_failed",
+    "target_mismatch", "authentication_required", "snapshot_failed",
+    "storage_failed", "readback_failed", "other",
+})
+_FAILURE_STAGES = frozenset({
+    "unknown", "preflight", "navigation", "target_verification", "capture",
+    "storage", "readback", "reconcile", "other",
+})
+
+
+def validate_retry_failure_event(event: str | Mapping[str, Any]) -> tuple[str, str]:
+    """Return allowlisted metadata, rejecting extra fields before hashing."""
+    if isinstance(event, str):
+        return "unknown", "unknown"
+    if set(event) - {"type", "reason_code", "failure_stage"}:
+        raise ValueError("unexpected retry failure fields")
+    reason = event.get("reason_code", "unknown")
+    stage = event.get("failure_stage", "unknown")
+    if not isinstance(reason, str) or reason not in _FAILURE_REASON_CODES:
+        raise ValueError("invalid failure reason code")
+    if not isinstance(stage, str) or stage not in _FAILURE_STAGES:
+        raise ValueError("invalid failure stage")
+    return reason, stage
 
 
 def _digest(*parts: str) -> str:
@@ -153,6 +177,9 @@ def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> 
         updated["blocker"] = None
         updated["pending_approval_action"] = None
     elif event_name == "retryable_failure":
+        # Only stable, non-sensitive classifications are persisted. Legacy
+        # string events keep their semantics and explicitly leave details unknown.
+        reason, stage = validate_retry_failure_event(event)
         retry = updated["retry"]
         retry["used"] += 1
         if retry["used"] > retry["budget"]:
@@ -220,11 +247,13 @@ def advance_capture_run(run: dict[str, Any], event: str | Mapping[str, Any]) -> 
     if updated["state"] == "blocked_closed":
         updated["lanes"]["background_full"]["status"] = "blocked"
 
-    updated["checkpoints"].append(
-        {
-            "sequence": len(updated["checkpoints"]) + 1,
-            "event": event_name,
-            "state": updated["state"],
-        }
-    )
+    checkpoint = {
+        "sequence": len(updated["checkpoints"]) + 1,
+        "event": event_name,
+        "state": updated["state"],
+    }
+    if event_name == "retryable_failure":
+        checkpoint["reason_code"] = reason
+        checkpoint["failure_stage"] = stage
+    updated["checkpoints"].append(checkpoint)
     return updated

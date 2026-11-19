@@ -54,7 +54,8 @@ def _dedupe_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _frontmatter(path: Path) -> dict[str, str]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")[:8192]
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(8192)
     except OSError:
         return {}
     if not text.startswith("---"):
@@ -201,4 +202,79 @@ def build_cache_inventory(
         "local_paths_returned": False,
         "path_output": "omitted",
         "outbound_actions": "disabled",
+    }
+
+
+def build_target_cache_lookup(
+    *,
+    url: str,
+    snapshot_store: Path = DEFAULT_TEXT_SNAPSHOT_STORE,
+    include_private_title: bool = False,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """正規台帳だけを検証して対象を照会する。外部cacheの発見や全体棚卸しはしない。"""
+    started = time.monotonic()
+    plan = plan_discord_url_read(url)
+    scope = {
+        "source": "canonical_snapshot_store",
+        "full_inventory": False,
+        "external_cache_discovery": False,
+        "markdown_discovery": False,
+    }
+    privacy = {
+        "raw_text_returned": False,
+        "participant_names_returned": False,
+        "discord_ids_returned": False,
+        "local_paths_returned": False,
+        "path_output": "omitted",
+        "url_output": "omitted",
+        "outbound_actions": "disabled",
+    }
+    if not plan.get("ok_to_open"):
+        return {
+            "language": "ja",
+            "schema": "discord_target_cache_lookup.v1",
+            "ok": False,
+            "state": "invalid_url",
+            "reason": plan.get("reason", "discord_channel_url_required"),
+            "lookup_scope": scope,
+            **privacy,
+        }
+
+    target_key = target_key_for_url(url)
+    # 必ず正式台帳の検証を通す。mtime/sizeや別の永続索引を信頼境界にしない。
+    records = _dedupe_records(
+        matching_snapshot_records(snapshot_store, url=url, target_key=target_key, canonical=True)
+    )
+    generated = generated_at or datetime.now(timezone.utc).isoformat()
+    freshness = snapshot_freshness(records, generated_at=generated, source="local_snapshot")
+    policy = stale_policy_for_freshness(freshness)
+    if freshness["status"] == "recent":
+        decision = "use_local_snapshot"
+    elif freshness["status"] in {"stale", "unknown"}:
+        decision = "refresh_exact_url_snapshot"
+    else:
+        decision = "capture_visible_or_read_only_adapter"
+    title, title_source = _record_title(records)
+    title_payload: dict[str, Any] = {
+        "available": bool(title),
+        "source": title_source,
+        "value_output": "included" if include_private_title and title else "omitted",
+    }
+    if include_private_title and title:
+        title_payload["value"] = title
+    return {
+        "language": "ja",
+        "schema": "discord_target_cache_lookup.v1",
+        "ok": bool(records),
+        "state": "ready" if records else "snapshot_missing",
+        "target": {"target_key": target_key, "url_present": True, "url_output": "omitted"},
+        "lookup_scope": scope,
+        "exact_snapshot_record_count": len(records),
+        "title": title_payload,
+        "freshness": freshness,
+        "stale_policy": policy,
+        "decision": decision,
+        "scan_elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+        **privacy,
     }

@@ -75,7 +75,8 @@ from .credentials import (
 from .site_adapter_runtime import build_capture, build_manifest, select_adapter
 from .full_capture import build_capture_route_policy, evaluate_full_capture
 from .site_adapter_store import store_capture
-from .cache_inventory import build_cache_inventory
+from .cache_inventory import build_cache_inventory, build_target_cache_lookup
+from .reply_consultation import prepare_reply_consultation, load_reply_consultation
 from .desktop_cache import (
     parse_simple_cache_entry,
     probe_discord_desktop_cache,
@@ -163,6 +164,9 @@ __all__ = [
     "build_manifest",
     "store_capture",
     "build_cache_inventory",
+    "build_target_cache_lookup",
+    "prepare_reply_consultation",
+    "load_reply_consultation",
     "parse_simple_cache_entry",
     "probe_discord_desktop_cache",
     "resolve_discord_user_data_dir",

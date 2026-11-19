@@ -2,11 +2,11 @@
 name: discord-context-bridge
 description: Runtime adapter for the Discord Context Bridge SSOT. Generated for grok; do not edit by hand.
 ssot_repo: nexus-ai-2045/discord-context-bridge
-ssot_commit: 21dbc3db032f4f49fd2f6651dbf9ee4a8668b56e
+ssot_commit: ef641ef58ab528213973520b8fa24b8aeadae41c
 manifest_version: discord_context_bridge_capability_manifest.v1
-manifest_checksum: 36a9bcc1fe73532c72a311694a351533ffe525c1df8f44dab735413ac519c39d
-contract_checksum: 031b6ee6f323817b0a0f2759ff1432d28affeb0e0a74a33a3ddcaeafc2d862e2
-generated_at: 2026-11-19T12:53:29+00:00
+manifest_checksum: 9885c655f3050d954c6777406f4097174eadf6cc54a91e314fde97faf15610a1
+contract_checksum: fa85367e878aa0fd3f8f3811ffef74aacc847554d709e17b6cb899a3cb3b35f6
+generated_at: 2026-11-19T14:28:23+00:00
 runtime_target: grok
 ---
 
@@ -82,6 +82,10 @@ DCB に取り込む判断は、本文取得の read-only 性、raw Discord text 
 
 - 正規化済みsnapshot rootは、`--cache-root`、`DISCORD_CONTEXT_BRIDGE_SHARED_SNAPSHOT_ROOT`、user config、OS既定の順で解決する。最初にユーザーが場所を指定して保存した後は、同じuser configを参照する。
 - user configは既定で `~/.config/discord-context-bridge/config.json` とする。`DISCORD_CONTEXT_BRIDGE_CONFIG` で変更できる。`configure-local-cache` はdry-runを既定とし、`--apply` の時だけatomic writeとmode `0600`で保存する。
+- 通常の対象照会は `target-cache-lookup` でcanonical保存先だけを毎回厳密検証する。外部cache発見・Markdown探索・全体容量棚卸しは行わず、その未探索範囲を返す。全体の棚卸しは `cache-inventory` のまま維持する。mtime/sizeで検証を省略する永続索引は追加しない。
+- `bridge-intake` は同一依頼のwriter lock内で検証・再読した観測をcoverage・latest・passportへ渡す。後続の別依頼は台帳を再検証し、失効済みの本文をlatestへ戻さない。保存成功はその観測時点に束縛し、後から追記された内容へ黙って切替えない。
+- `prepare-reply-consultation` は承認済みの構造化可視取得を保存し、同じ入力の関係情報を正規台帳へ結び付けて返信文脈gateを計算する。十分な場合だけ、LCS正本と対人skillの参照先・hash・安定IDを持つprivate相談packetを作る。LCS判断軸やDiscord原文を別のDBへ複写しない。`ready_for_ai_consultation` はhostが相談を始められる状態で、AI助言の生成・本人採用・配布・実機利用の証拠ではない。private consumerは台帳・receipt・gate・参照先を再検証する。
+- `watch-guide` は文脈の関係情報を受け取らないため、返信文脈gate不足として停止する。局所単語判定を対人判断や感情評価としない。自動発動・常時監視・scheduleの新設は行わない。
 - `cache-inventory` は対象URLの完全一致snapshot件数、ローカルMarkdown/NDJSON件数、title evidence、freshnessをmetadata-onlyで返す。raw本文、実ID、local path、title値は既定出力に含めない。
 - `cache-inventory.decision` は `use_local_snapshot`、`refresh_exact_url_snapshot`、`capture_visible_or_read_only_adapter` のいずれかとし、古いsnapshotを最新として扱わない。
 - Discord Desktop cacheは対象参照の有無を調べるread-only補助経路であり、append-only ledgerや正規化済みsnapshotの正本ではない。cache hitだけで本文取得、完全保存、title確定を主張しない。
@@ -282,6 +286,8 @@ python3 scripts/lint_runtime_skill_sync.py \
 - `python3 scripts/context_claim_gate.py --run-dir <canonical-run> --completeness-db <canonical-db> --parent-target-key <target> --claim <complete|current|understood> --json`: 完全・最新・理解済みという表明を既存の正本検証へ束縛する
 - `reply-context-plan`: 返信前のスレッド起点・返信対象・直前10件と追加取得要否を本文なしで判定する
 - `cache-first-intake`: ローカル cache / snapshot を先に見て private book を作る
+- `target-cache-lookup`: canonical保存先だけを厳密検証する通常対象照会。外部cache発見と全体棚卸しを分離する
+- `prepare-reply-consultation`: 保存receiptと返信文脈gateからLCS正本・対人skillを参照するprivate明示相談を準備する。助言生成はhostで行う
 - `cache-inventory`: URL完全一致のsnapshot件数、Markdown件数、title根拠、鮮度と次の取得判断をmetadata-onlyで返す
 - `configure-local-cache`: cache場所をdry-runし、明示されたapply時だけuser configへ安全に保存する
 - `desktop-cache-probe`: Discord Desktop cacheの対象URL参照を本文なしのread-only metadataとして確認する
