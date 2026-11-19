@@ -100,6 +100,7 @@ class ObservedMessage(NamedTuple):
     identity: str
     first_sequence: int
     sequence: int
+    month: str
     record: dict[str, Any]
 
 
@@ -111,29 +112,42 @@ def _record_sequence(record: dict[str, Any], index: int) -> int:
     )
 
 
+def _record_month(record: dict[str, Any]) -> str:
+    return _parse_time(
+        record.get("captured_at") or record.get("observed_at") or record.get("time")
+    ).strftime("%Y-%m")
+
+
 def _message_observation_groups(
     records: Iterable[dict[str, Any]],
 ) -> list[list[ObservedMessage]]:
-    latest: dict[tuple[str, str], tuple[int, int, dict[str, Any]]] = {}
+    observed: dict[tuple[str, str], ObservedMessage] = {}
     for index, record in enumerate(records):
         if record.get("event_type") != "message_observation":
             continue
         target = _target_label(record)
-        key = (target, message_observation_identity(record, index))
+        identity = message_observation_identity(record, index)
         sequence = _record_sequence(record, index)
-        previous = latest.get(key)
+        previous = observed.get((target, identity))
         if previous is None:
-            latest[key] = (sequence, sequence, record)
-        elif sequence >= previous[1]:
-            latest[key] = (previous[0], sequence, record)
+            observed[(target, identity)] = ObservedMessage(
+                identity, sequence, sequence, _record_month(record), record
+            )
+            continue
+        first_sequence, month = previous.first_sequence, previous.month
+        if sequence < first_sequence:
+            first_sequence, month = sequence, _record_month(record)
+        if sequence >= previous.sequence:
+            observed[(target, identity)] = ObservedMessage(
+                identity, first_sequence, sequence, month, record
+            )
+        else:
+            observed[(target, identity)] = previous._replace(
+                first_sequence=first_sequence, month=month
+            )
     grouped: dict[tuple[str, str], list[ObservedMessage]] = defaultdict(list)
-    for (target, identity), (first_sequence, sequence, record) in latest.items():
-        captured = _parse_time(
-            record.get("captured_at") or record.get("observed_at") or record.get("time")
-        )
-        grouped[(target, captured.strftime("%Y-%m"))].append(
-            ObservedMessage(identity, first_sequence, sequence, record)
-        )
+    for (target, _identity), message in observed.items():
+        grouped[(target, message.month)].append(message)
     return [
         sorted(items, key=lambda item: item.first_sequence)
         for _key, items in sorted(grouped.items())
@@ -389,10 +403,7 @@ def export_obsidian_projection(
         target = _target_label(record)
         label = _display_label(record)
         labels_by_target[target] = label
-        captured = _parse_time(
-            record.get("captured_at") or record.get("observed_at") or record.get("time")
-        )
-        month = captured.strftime("%Y-%m")
+        month = _record_month(record) if group is None else group[0].month
         month_name = f"{label} {month}"
         notes_name = f"{label} メモ"
         if month_name not in month_files_by_target[target]:

@@ -394,3 +394,35 @@ def test_export_prefers_message_observations_over_snapshot_for_same_target(tmp_p
     note = notes[0].read_text(encoding="utf-8")
     assert "発言ごとの本文" in note
     assert "全体の本文" not in note
+
+
+def test_export_keeps_reobserved_message_in_its_first_month(tmp_path):
+    snapshot_store = tmp_path / "text-snapshots.ndjson"
+    output_root = tmp_path / "Discord Context"
+    _write_message_observation(
+        snapshot_store, sequence=1, message_id="m1", author="member-a", text="七月の一件目"
+    )
+    _write_message_observation(
+        snapshot_store, sequence=2, message_id="m2", author="member-b", text="七月の二件目"
+    )
+    record = {
+        "event_type": "message_observation",
+        "target_key": "safe-target-a",
+        "stream_id": "safe-target-a",
+        "stream_sequence": 3,
+        "message_id": "m1",
+        "author_label": "member-a",
+        "captured_at": "2026-08-02T10:00:00+09:00",
+        "source": "structured",
+        "content_hash": "hash-3",
+        "text": "七月の一件目",
+    }
+    with snapshot_store.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    export_obsidian_projection(snapshot_store=snapshot_store, output_root=output_root)
+
+    july = next((output_root / "Channels").rglob("* 2026-07.md")).read_text(encoding="utf-8")
+    assert "七月の一件目" in july and "七月の二件目" in july
+    assert "message_count: 2" in july
+    assert list((output_root / "Channels").rglob("* 2026-08.md")) == []
