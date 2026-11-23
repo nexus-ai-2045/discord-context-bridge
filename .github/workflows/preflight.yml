@@ -9,6 +9,6 @@ permissions:
   contents: read
 jobs:
   gate:
-    uses: nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml@e0ef434ae39163fe1b372a18ef3e52dc4c705e01
+    uses: nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml@dc6e68322167f4ccc32ea05b2c526d2c41e4c47c
     with:
       preflight-ref: e0ef434ae39163fe1b372a18ef3e52dc4c705e01
